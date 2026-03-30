@@ -1,4 +1,4 @@
-# LookBack 专业图片参考器
+# OnlyRef 专业图片参考器
 
 面向美术人士的专业图片收集与参考工具，类似于 PureRef，但集成了浏览器采集功能。
 
@@ -6,12 +6,8 @@
 
 *   **浏览器采集插件**：在网页图片上右键，一键收藏到本地。由本地 Python + CLIP 服务直接看图打 Tag（不依赖页面标题）。
 *   **本地瀑布流图库**：所有收藏的图片以瀑布流形式展示，支持 Tag 搜索。
-*   **无限画布 (Canvas)**：类似 PureRef 的操作体验。
-    *   从左侧图库拖拽图片到画布。
-    *   支持图片拖拽移动、缩放 (滚轮)、删除 (选中后按 Delete)。
-*   **窗口控制**：
-    *   **Always on Top**: 点击标题栏 Pin 图标，保持窗口置顶。
-    *   **Ghost Mode**: 点击标题栏幽灵图标，半透明显示，方便临摹。
+*   **纯图片收藏图库**：聚焦本地收藏、标签整理、颜色筛选与图片预览。
+*   **本地优先**：所有配置与数据都持久化到本地文件。
 
 ## 安装与运行
 
@@ -38,9 +34,8 @@ npm run dev
 
 1.  启动 Electron 应用。
 2.  在浏览器中浏览图片网站（如 Pinterest, ArtStation）。
-3.  在喜欢的图片上右键 -> **Collect to LookBack**。
-4.  回到 LookBack 应用，图片会自动出现在左侧列表。
-5.  将图片拖入右侧画布，自由排版。
+3.  在喜欢的图片上右键 -> **Collect to OnlyRef**。
+4.  回到 OnlyRef 应用，图片会自动出现在图库中。
 
 ## 技术栈
 
@@ -61,7 +56,7 @@ npm run dev
 
 ### 自动初始化（推荐）
 
-首次启动 LookBack 时会自动完成以下初始化：
+首次启动 OnlyRef 时会自动完成以下初始化：
 
 - 自动下载 uv（如系统未安装）
 - 使用 uv 在 `app/backend/python` 下创建/同步运行环境（根据 lockfile）
@@ -90,7 +85,7 @@ CLIP 标签的类别和候选值由 `app/electron/tag_config.json` 控制，结�
 }
 ```
 
-- `name`：在 LookBack 中输出的前缀，例如 `style:anime`。
+- `name`：在 OnlyRef 中输出的前缀，例如 `style:anime`。
 - `labels`：这一类下所有候选标签，支持自由增删。
 - `template`：生成 CLIP 文本 prompt 的模板，占位符 `{}` 会被替换成 label 文本。
 

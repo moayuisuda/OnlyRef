@@ -1,6 +1,6 @@
-# LookBack Release Guide
+# OnlyRef Release Guide
 
-本文档详细说明了 LookBack 应用的发布流程，确保自动更新（Auto Update）功能正常工作。
+本文档详细说明了 OnlyRef 应用的发布流程，确保自动更新（Auto Update）功能正常工作。
 
 ## 1. 准备工作
 
@@ -35,16 +35,16 @@ npm run build:mac
 ### Windows 必需文件
 | 文件名示例 | 说明 | 必须性 |
 | :--- | :--- | :--- |
-| `LookBack-Setup-x.x.x.exe` | 安装包 | ✅ 必须 |
-| `LookBack-Setup-x.x.x.exe.blockmap` | 增量更新校验文件 | ✅ 必须 |
+| `OnlyRef-Setup-x.x.x.exe` | 安装包 | ✅ 必须 |
+| `OnlyRef-Setup-x.x.x.exe.blockmap` | 增量更新校验文件 | ✅ 必须 |
 | `latest.yml` | Windows 版本索引文件 | ✅ 必须 |
 
 ### macOS 必需文件
 | 文件名示例 | 说明 | 必须性 |
 | :--- | :--- | :--- |
-| `LookBack-x.x.x.dmg` | 安装包 | ✅ 必须 |
-| `LookBack-x.x.x.dmg.blockmap` | 增量更新校验文件 | ✅ 必须 |
-| `LookBack-x.x.x-mac.zip` | 自动更新替换包 | ✅ 必须 |
+| `OnlyRef-x.x.x.dmg` | 安装包 | ✅ 必须 |
+| `OnlyRef-x.x.x.dmg.blockmap` | 增量更新校验文件 | ✅ 必须 |
+| `OnlyRef-x.x.x-mac.zip` | 自动更新替换包 | ✅ 必须 |
 | `latest-mac.yml` | macOS 版本索引文件 | ✅ 必须 |
 
 > **注意**：请直接上传构建生成的原文件名，不要手动修改文件名。

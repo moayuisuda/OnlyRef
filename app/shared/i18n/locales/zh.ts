@@ -64,7 +64,7 @@ export const zh: I18nDict = {
   'toast.shortcutInvalid': '快捷键无效',
   'toast.shortcutUpdateFailed': '更新快捷键失败：{{error}}',
 
-  'envInit.brandTitle': 'Oh, Captain!',
+  'envInit.brandTitle': 'OnlyRef',
   'envInit.heading': '正在配置 Python 环境…',
   'envInit.subheading': '首次运行可能会下载工具并安装依赖，这是一次性步骤。',
   'envInit.preparing': '准备中…',
@@ -89,7 +89,7 @@ export const zh: I18nDict = {
   'indexing.progress': '索引中 {{current}}/{{total}}…',
   'indexing.completed': '完成',
 
-  'errors.title': 'Oh Captain，出错了',
+  'errors.title': 'OnlyRef 出现错误',
   'errors.unexpected': '发生了一个意外错误。',
   'errors.applicationLogTitle': '应用日志（最近 50KB）',
   'errors.loadingLogs': '正在加载日志…',
@@ -173,7 +173,7 @@ export const zh: I18nDict = {
   'dialog.modelDownloadFailedTitle': '模型下载失败',
   'dialog.modelDownloadFailedMessage': '无法下载模型文件。',
   'dialog.modelDownloadFailedDetail': '退出码：{{code}}\n进度：{{progress}}%\n模型目录：{{dir}}',
-  'dialog.chooseStorageFolderTitle': '选择 LookBack 存储文件夹',
+  'dialog.chooseStorageFolderTitle': '选择 OnlyRef 存储文件夹',
 
   'toast.globalError': '错误：{{message}}',
   'toast.unhandledRejection': '未处理的 Promise 拒绝：{{reason}}',

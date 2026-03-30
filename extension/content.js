@@ -1,4 +1,4 @@
-// LookBack Collector Content Script
+// OnlyRef Collector Content Script
 
 const API_PORT = 30001;
 const API_BASE = `http://localhost:${API_PORT}/api`;

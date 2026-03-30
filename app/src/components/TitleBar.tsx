@@ -223,35 +223,30 @@ export const TitleBar: React.FC = () => {
         : null;
 
   return (
-    <div className="draggable relative z-30 border-b border-neutral-800 bg-neutral-950/90 backdrop-blur-xl">
-      <div className="flex h-12 items-center gap-3 px-4">
-        <div className="flex min-w-0 flex-1 items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-[var(--color-primary)]/15 text-[var(--color-primary)] no-drag">
-            <span className="text-sm font-semibold">LB</span>
-          </div>
-          <div className="min-w-0">
-            <div className="truncate text-sm font-semibold text-white">LookBack Gallery</div>
-            <div className="truncate text-[11px] text-neutral-400">
-              {gallerySnap.images.length} images
-              {progressText ? ` · ${progressText}` : " · Drop or paste images to import"}
-            </div>
+    <div className="draggable relative z-30 border-b border-neutral-800 bg-neutral-900/95 backdrop-blur">
+      <div className="flex h-10 items-center gap-3 px-3">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium text-white">OnlyRef</div>
+          <div className="truncate text-[11px] text-neutral-400">
+            {gallerySnap.images.length} images
+            {progressText ? ` · ${progressText}` : " · Drop or paste images to import"}
           </div>
         </div>
 
         <div className="no-drag flex items-center gap-2">
           <button
             type="button"
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-neutral-700 bg-neutral-900 text-neutral-300 transition-colors hover:border-neutral-500 hover:text-white"
+            className="flex h-7 w-7 items-center justify-center rounded border border-neutral-700 bg-neutral-900 text-neutral-300 transition-colors hover:border-neutral-500 hover:text-white"
             title="Refresh gallery"
             onClick={() => galleryActions.reload()}
           >
-            <RefreshCw size={15} />
+            <RefreshCw size={14} />
           </button>
           <button
             ref={settingsButtonRef}
             type="button"
             className={clsx(
-              "flex h-8 w-8 items-center justify-center rounded-lg border bg-neutral-900 transition-colors",
+              "flex h-7 w-7 items-center justify-center rounded border bg-neutral-900 transition-colors",
               settingsOpen
                 ? "border-[var(--color-primary)] text-[var(--color-primary)]"
                 : "border-neutral-700 text-neutral-300 hover:border-neutral-500 hover:text-white",
@@ -259,19 +254,19 @@ export const TitleBar: React.FC = () => {
             title="Settings"
             onClick={() => setSettingsOpen((open) => !open)}
           >
-            <Settings size={15} />
+            <Settings size={14} />
           </button>
           <button
             type="button"
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-neutral-700 bg-neutral-900 text-neutral-300 transition-colors hover:border-neutral-500 hover:text-white"
+            className="flex h-7 w-7 items-center justify-center rounded border border-neutral-700 bg-neutral-900 text-neutral-300 transition-colors hover:border-neutral-500 hover:text-white"
             title="Minimize"
             onClick={() => window.electron?.min()}
           >
-            <Minus size={15} />
+            <Minus size={14} />
           </button>
           <button
             type="button"
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-neutral-700 bg-neutral-900 text-neutral-300 transition-colors hover:border-neutral-500 hover:text-white"
+            className="flex h-7 w-7 items-center justify-center rounded border border-neutral-700 bg-neutral-900 text-neutral-300 transition-colors hover:border-neutral-500 hover:text-white"
             title="Maximize"
             onClick={() => window.electron?.max()}
           >
@@ -279,7 +274,7 @@ export const TitleBar: React.FC = () => {
           </button>
           <button
             type="button"
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-red-900/60 bg-red-950/50 text-red-200 transition-colors hover:border-red-700 hover:bg-red-900/60"
+            className="flex h-7 w-7 items-center justify-center rounded border border-red-900/60 bg-red-950/40 text-red-200 transition-colors hover:border-red-700 hover:bg-red-900/60"
             title="Close"
             onClick={() => window.electron?.close()}
           >
@@ -291,18 +286,16 @@ export const TitleBar: React.FC = () => {
       {settingsOpen && (
         <div
           ref={settingsPanelRef}
-          className="no-drag absolute right-4 top-[calc(100%+0.75rem)] z-40 w-[420px] rounded-2xl border border-neutral-800 bg-neutral-950/95 p-4 shadow-2xl backdrop-blur-xl"
+          className="no-drag absolute right-3 top-[calc(100%+0.5rem)] z-40 w-[420px] rounded-lg border border-neutral-800 bg-neutral-900/95 p-3 shadow-2xl backdrop-blur"
         >
-          <div className="mb-4">
-            <div className="text-sm font-semibold text-white">Settings</div>
-            <div className="text-xs text-neutral-400">
-              Configure storage, search, and indexing for your gallery.
-            </div>
+          <div className="mb-3">
+            <div className="text-sm font-medium text-white">Settings</div>
+            <div className="text-xs text-neutral-400">Library, search, and indexing.</div>
           </div>
 
-          <div className="space-y-4">
-            <section className="rounded-xl border border-neutral-800 bg-neutral-900/70 p-3">
-              <div className="mb-2 text-xs font-medium uppercase tracking-[0.12em] text-neutral-500">
+          <div className="space-y-3">
+            <section className="rounded-md border border-neutral-800 bg-neutral-950/70 p-3">
+              <div className="mb-2 text-xs font-medium text-neutral-500">
                 Library
               </div>
               <div className="space-y-2">
@@ -323,8 +316,8 @@ export const TitleBar: React.FC = () => {
               </div>
             </section>
 
-            <section className="rounded-xl border border-neutral-800 bg-neutral-900/70 p-3">
-              <div className="mb-2 text-xs font-medium uppercase tracking-[0.12em] text-neutral-500">
+            <section className="rounded-md border border-neutral-800 bg-neutral-950/70 p-3">
+              <div className="mb-2 text-xs font-medium text-neutral-500">
                 Search
               </div>
               <div className="flex items-center justify-between gap-3">
@@ -341,8 +334,8 @@ export const TitleBar: React.FC = () => {
               </div>
             </section>
 
-            <section className="rounded-xl border border-neutral-800 bg-neutral-900/70 p-3">
-              <div className="mb-2 text-xs font-medium uppercase tracking-[0.12em] text-neutral-500">
+            <section className="rounded-md border border-neutral-800 bg-neutral-950/70 p-3">
+              <div className="mb-2 text-xs font-medium text-neutral-500">
                 Indexing
               </div>
               {(indexingSnap.isIndexing || modelSnap.isDownloading) && (
@@ -384,8 +377,8 @@ export const TitleBar: React.FC = () => {
               </button>
             </section>
 
-            <section className="rounded-xl border border-neutral-800 bg-neutral-900/70 p-3">
-              <div className="mb-2 text-xs font-medium uppercase tracking-[0.12em] text-neutral-500">
+            <section className="rounded-md border border-neutral-800 bg-neutral-950/70 p-3">
+              <div className="mb-2 text-xs font-medium text-neutral-500">
                 Window
               </div>
               <div className="space-y-2">
@@ -400,8 +393,8 @@ export const TitleBar: React.FC = () => {
             </section>
 
             {snap.enableVectorSearch && (
-              <section className="rounded-xl border border-neutral-800 bg-neutral-900/70 p-3">
-                <div className="mb-2 text-xs font-medium uppercase tracking-[0.12em] text-neutral-500">
+              <section className="rounded-md border border-neutral-800 bg-neutral-950/70 p-3">
+                <div className="mb-2 text-xs font-medium text-neutral-500">
                   Query Translation
                 </div>
                 <div className="mb-3 flex items-center justify-between gap-3">

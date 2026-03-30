@@ -62,7 +62,7 @@ export const en = {
   'toast.shortcutInvalid': 'Invalid shortcut',
   'toast.shortcutUpdateFailed': 'Failed to update shortcut: {{error}}',
 
-  'envInit.brandTitle': 'Oh, Captain!',
+  'envInit.brandTitle': 'OnlyRef',
   'envInit.heading': 'Setting up the Python environment...',
   'envInit.subheading':
     'First run may download tools and install dependencies. This is a one-time step.',
@@ -88,7 +88,7 @@ export const en = {
   'indexing.progress': 'Indexing {{current}}/{{total}}...',
   'indexing.completed': 'Completed',
 
-  'errors.title': 'Oh Captain, Something went wrong',
+  'errors.title': 'OnlyRef encountered an error',
   'errors.unexpected': 'An unexpected error occurred.',
   'errors.applicationLogTitle': 'Application Log (Last 50KB)',
   'errors.loadingLogs': 'Loading logs...',
@@ -119,8 +119,8 @@ export const en = {
   'gallery.contextMenu.indexVector': 'Index Vector',
   'gallery.contextMenu.deleteImage': 'Delete Image',
   'gallery.dominantColor.title': 'Dominant Color',
-  'gallery.empty.bodyLine1': 'Your journey begins.',
-  'gallery.empty.bodyLine2': 'Drag & drop to command your fleet.',
+  'gallery.empty.bodyLine1': 'Your image collection starts here.',
+  'gallery.empty.bodyLine2': 'Drop or paste images to build your reference library.',
   'gallery.empty.dragHint': 'Drag images here',
 
   'tag.setColor': 'Set Color',
@@ -174,7 +174,7 @@ export const en = {
   'dialog.modelDownloadFailedMessage': 'Failed to download model files.',
   'dialog.modelDownloadFailedDetail':
     'Exit code: {{code}}\nProgress: {{progress}}%\nModel dir: {{dir}}',
-  'dialog.chooseStorageFolderTitle': 'Choose LookBack storage folder',
+  'dialog.chooseStorageFolderTitle': 'Choose OnlyRef storage folder',
 
   'toast.globalError': 'Error: {{message}}',
   'toast.unhandledRejection': 'Unhandled Promise Rejection: {{reason}}',

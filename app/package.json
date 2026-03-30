@@ -1,13 +1,13 @@
 {
   "name": "pic-captain",
-  "productName": "LookBack",
+  "productName": "OnlyRef",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "main": "dist-electron/main.cjs",
   "build": {
-    "appId": "com.lookback.app",
-    "productName": "LookBack",
+    "appId": "com.onlyref.app",
+    "productName": "OnlyRef",
     "icon": "resources/icon.png",
     "files": [
       "dist-electron",
