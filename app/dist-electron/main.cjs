@@ -1980,9 +1980,16 @@ var BasePythonService = class {
       process.platform === "win32" ? "uv.exe" : "uv"
     );
   }
+  getBundledUvPath() {
+    const executable = process.platform === "win32" ? "uv.exe" : "uv";
+    const target = `${process.platform}-${process.arch}`;
+    const root = import_electron2.app.isPackaged ? import_path4.default.join(process.resourcesPath, "uv") : import_path4.default.join(__dirname, "../resources/uv");
+    return import_path4.default.join(root, target, executable);
+  }
   getUvCandidates() {
     var _a;
     const candidates = [];
+    candidates.push(this.getBundledUvPath());
     const env = (_a = process.env.PROREF_UV_PATH) == null ? void 0 : _a.trim();
     if (env) candidates.push(env);
     candidates.push(this.getManagedUvPath());
@@ -3137,6 +3144,8 @@ async function hasRequiredModelFiles(modelDir) {
 function getUvCandidates() {
   var _a;
   const candidates = [];
+  const bundled = getBundledUvPath();
+  if (bundled) candidates.push(bundled);
   const env = (_a = process.env.PROREF_UV_PATH) == null ? void 0 : _a.trim();
   if (env) candidates.push(env);
   candidates.push(getManagedUvPath());
@@ -3189,6 +3198,12 @@ function getManagedUvPath() {
     "uv",
     process.platform === "win32" ? "uv.exe" : "uv"
   );
+}
+function getBundledUvPath() {
+  const executable = process.platform === "win32" ? "uv.exe" : "uv";
+  const target = `${process.platform}-${process.arch}`;
+  const root = import_electron3.app.isPackaged ? import_path5.default.join(process.resourcesPath, "uv") : import_path5.default.join(__dirname, "../resources/uv");
+  return import_path5.default.join(root, target, executable);
 }
 var UV_VERSION = "latest";
 function resolveUvReleaseAsset() {

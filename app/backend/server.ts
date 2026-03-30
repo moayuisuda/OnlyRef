@@ -193,8 +193,19 @@ class BasePythonService {
     );
   }
 
+  protected getBundledUvPath(): string {
+    const executable = process.platform === "win32" ? "uv.exe" : "uv";
+    const target = `${process.platform}-${process.arch}`;
+    const root = app.isPackaged
+      ? path.join(process.resourcesPath, "uv")
+      : path.join(__dirname, "../resources/uv");
+    return path.join(root, target, executable);
+  }
+
   protected getUvCandidates(): string[] {
     const candidates: string[] = [];
+
+    candidates.push(this.getBundledUvPath());
 
     const env = process.env.PROREF_UV_PATH?.trim();
     if (env) candidates.push(env);

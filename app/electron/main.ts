@@ -469,10 +469,13 @@ async function hasRequiredModelFiles(modelDir: string): Promise<boolean> {
 function getUvCandidates(): string[] {
   const candidates: string[] = [];
 
+  const bundled = getBundledUvPath();
+  if (bundled) candidates.push(bundled);
+
   const env = process.env.PROREF_UV_PATH?.trim();
   if (env) candidates.push(env);
 
-  // 统一使用应用管理的 uv 路径（自动下载）
+  // 保留用户目录下的已管理 uv 作为次级来源
   candidates.push(getManagedUvPath());
 
   const uniq: string[] = [];
@@ -531,6 +534,15 @@ function getManagedUvPath(): string {
     "uv",
     process.platform === "win32" ? "uv.exe" : "uv",
   );
+}
+
+function getBundledUvPath(): string | null {
+  const executable = process.platform === "win32" ? "uv.exe" : "uv";
+  const target = `${process.platform}-${process.arch}`;
+  const root = app.isPackaged
+    ? path.join(process.resourcesPath, "uv")
+    : path.join(__dirname, "../resources/uv");
+  return path.join(root, target, executable);
 }
 
 const UV_VERSION = "latest"; // Set to a specific tag like 'v0.5.5' to lock version
