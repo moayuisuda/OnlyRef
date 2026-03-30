@@ -524,7 +524,7 @@ export const Gallery: React.FC = () => {
 
   return (
     <div
-      className="flex h-full flex-col bg-transparent transition-colors"
+      className="flex h-full flex-col bg-neutral-950 transition-colors"
       onDrop={handleDrop}
       onDragOver={(e) => e.preventDefault()}
       onDragEnter={(e) => e.preventDefault()}
@@ -538,7 +538,7 @@ export const Gallery: React.FC = () => {
         <GalleryHeader loading={snap.loading || snap.vectorLoading} allTags={allTags} />
 
         <div
-          className="scrollbar-hide flex-1 overflow-y-auto overflow-x-hidden px-4 pb-5 pt-4"
+          className="flex-1 overflow-y-auto overflow-x-hidden p-4 scrollbar-hide"
           ref={galleryRef}
           onDrop={handleDrop}
           onDragOver={(e) => e.preventDefault()}
@@ -554,8 +554,8 @@ export const Gallery: React.FC = () => {
             >
               <Masonry
                 breakpointCols={columnCount}
-                className="flex w-auto -ml-5"
-                columnClassName="pl-5 bg-clip-padding"
+                className="flex w-auto -ml-4"
+                columnClassName="pl-4 bg-clip-padding"
               >
                 {sortedImages.map((image) => (
                   <SortableGalleryItem
@@ -653,7 +653,7 @@ export const Gallery: React.FC = () => {
             onMouseDown={() => setTagColorPicker(null)}
           />
           <div
-            className="surface-panel-strong fixed z-[61] w-62 rounded-[1.35rem] p-3.5"
+            className="fixed z-[61] w-62 bg-neutral-900/95 border border-neutral-700/80 rounded-xl shadow-2xl p-3 backdrop-blur"
             style={{
               top: tagColorPicker.y,
               left: tagColorPicker.x,
@@ -667,7 +667,7 @@ export const Gallery: React.FC = () => {
                 className="truncate max-w-[150px]"
               />
               <button
-                className="text-xs text-neutral-400 transition-colors hover:text-white"
+                className="text-xs text-neutral-400 hover:text-white transition-colors"
                 onClick={() => globalActions.clearTagColor(tagColorPicker.tag)}
               >
                 {t("common.clear")}
@@ -681,10 +681,10 @@ export const Gallery: React.FC = () => {
                 }
               />
               <div className="flex-1 min-w-0">
-                <div className="truncate text-xs font-semibold text-neutral-200">
+                <div className="text-xs text-neutral-200 font-semibold truncate">
                   {t("common.color")}
                 </div>
-                <div className="truncate text-xs text-neutral-500">
+                <div className="text-xs text-neutral-500 truncate">
                   {appSnap.tagColors[tagColorPicker.tag] || t("common.notSet")}
                 </div>
               </div>
@@ -721,7 +721,7 @@ export const Gallery: React.FC = () => {
             }}
           />
           <div
-            className="surface-panel-strong fixed z-[61] w-62 rounded-[1.35rem] p-3.5"
+            className="fixed z-[61] w-62 bg-neutral-900/95 border border-neutral-700/80 rounded-xl shadow-2xl p-3 backdrop-blur"
             style={{
               top: dominantColorPicker.y,
               left: dominantColorPicker.x,
@@ -730,12 +730,12 @@ export const Gallery: React.FC = () => {
             onMouseDown={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-2">
-              <div className="text-xs font-semibold text-neutral-200">
+              <div className="text-xs text-neutral-200 font-semibold">
                 {t("gallery.dominantColor.title")}
               </div>
               <button
                 type="button"
-                className="text-xs text-neutral-400 transition-colors hover:text-white"
+                className="text-xs text-neutral-400 hover:text-white transition-colors"
                 onClick={async () => {
                   debouncedUpdateDominantColor.cancel();
                   await handleUpdateDominantColor(contextMenu.image, null);
@@ -760,10 +760,10 @@ export const Gallery: React.FC = () => {
                 }}
               />
               <div className="flex-1 min-w-0">
-                <div className="truncate text-xs font-semibold text-neutral-200">
+                <div className="text-xs text-neutral-200 font-semibold truncate">
                   {t("gallery.colorFilter.selected")}
                 </div>
-                <div className="truncate text-xs text-neutral-500">
+                <div className="text-xs text-neutral-500 truncate">
                   {dominantColorPicker.draft}
                 </div>
               </div>

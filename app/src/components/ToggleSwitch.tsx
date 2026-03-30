@@ -1,37 +1,37 @@
-import React from "react";
-import { clsx } from "clsx";
+import React from 'react';
+import { clsx } from 'clsx';
+import { THEME } from '../theme';
 
 export type ToggleSwitchProps = {
   checked: boolean;
-  onChange: (checked: boolean) => void;
+  onToggle: () => void;
   disabled?: boolean;
 };
 
 export const ToggleSwitch: React.FC<ToggleSwitchProps> = ({
   checked,
-  onChange,
+  onToggle,
   disabled,
 }) => {
   return (
     <button
       type="button"
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
+      onClick={onToggle}
       disabled={disabled}
       className={clsx(
-        "relative h-6 w-11 rounded-full border transition-all duration-200 disabled:opacity-60",
-        checked
-          ? "border-[rgba(57,197,187,0.28)] bg-[rgba(57,197,187,0.22)]"
-          : "border-white/10 bg-white/[0.05]",
+        'w-8 h-4 rounded-full relative transition-colors duration-200 bg-neutral-700 disabled:opacity-60',
       )}
+      style={{
+        backgroundColor: checked ? THEME.primary : undefined,
+      }}
     >
       <div
         className={clsx(
-          "absolute left-0.5 top-0.5 h-[18px] w-[18px] rounded-full bg-[rgba(237,241,243,0.96)] shadow-[0_6px_14px_rgba(0,0,0,0.28)] transition-transform duration-200",
-          checked ? "translate-x-[20px]" : "translate-x-0",
+          'absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform duration-200',
+          checked ? 'translate-x-4' : 'translate-x-0',
         )}
       />
     </button>
   );
 };
+

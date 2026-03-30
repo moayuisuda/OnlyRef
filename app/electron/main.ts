@@ -731,9 +731,50 @@ function downloadBuffer(
   });
 }
 
-async function ensureUvInstalled(): Promise<string> {
+type EnvInitProgressPayload = {
+  isOpen: boolean;
+  statusKey: I18nKey;
+  progress: number;
+  percentText: string;
+  statusParams?: I18nParams;
+};
+
+function sendEnvInitProgress(
+  parent: BrowserWindow,
+  payload: EnvInitProgressPayload,
+): void {
+  if (parent.isDestroyed()) return;
+  parent.webContents.send("env-init-progress", payload);
+}
+
+function makeEnvInitReporter(parent: BrowserWindow) {
+  return (
+    statusKey: I18nKey,
+    progress: number,
+    statusParams?: I18nParams,
+  ) => {
+    const normalized = Math.max(0, Math.min(1, progress));
+    sendEnvInitProgress(parent, {
+      isOpen: true,
+      statusKey,
+      statusParams,
+      progress: normalized,
+      percentText: `${Math.round(normalized * 100)}%`,
+    });
+  };
+}
+
+function closeEnvInitProgress(parent: BrowserWindow): void {
+  if (parent.isDestroyed()) return;
+  parent.webContents.send("env-init-progress", { isOpen: false });
+}
+
+async function ensureUvInstalled(
+  onProgress?: (statusKey: I18nKey, progress: number) => void,
+): Promise<string> {
   const candidates = getUvCandidates();
   let existing = "";
+  onProgress?.("envInit.checkingUv", 0.08);
   for (const c of candidates) {
     if (path.isAbsolute(c) && (await lockedFs.pathExists(c))) {
       existing = c;
@@ -751,7 +792,15 @@ async function ensureUvInstalled(): Promise<string> {
   await lockedFs.ensureDir(path.dirname(uvPath));
   const { url, kind } = resolveUvReleaseAsset();
   log.info(`Downloading uv from: ${url}`);
-  const buf = await downloadBuffer(url);
+  onProgress?.("envInit.downloadingUv", 0.18);
+  const buf = await downloadBuffer(url, (current, total) => {
+    if (total <= 0) {
+      onProgress?.("envInit.downloadingUv", 0.26);
+      return;
+    }
+    const ratio = current / total;
+    onProgress?.("envInit.downloadingUv", 0.18 + ratio * 0.22);
+  });
 
   let binary: Buffer | null = null;
   if (kind === "tar.gz") {
@@ -786,6 +835,7 @@ function getUnpackedPath(originalPath: string): string {
 }
 
 async function ensurePythonRuntime(parent: BrowserWindow): Promise<void> {
+  const reportEnvInit = makeEnvInitReporter(parent);
   const modelDir = getModelDir();
   process.env.PROREF_MODEL_DIR = modelDir; // Ensure env is set for sync if needed
   const scriptPath = getUnpackedPath(
@@ -793,47 +843,82 @@ async function ensurePythonRuntime(parent: BrowserWindow): Promise<void> {
   );
   const pythonDir = path.dirname(scriptPath);
 
-  // 1. Ensure uv
-  console.log("Ensuring uv installation...");
-  await ensureUvInstalled();
+  reportEnvInit("envInit.preparing", 0);
 
-  // Check if we have a pre-packaged environment
-  const venvPath = path.join(pythonDir, ".venv");
-  if (app.isPackaged && (await lockedFs.pathExists(venvPath))) {
-    console.log("Found pre-packaged python environment, skipping uv sync");
-    return;
-  }
-
-  // 2. uv sync
-  const syncProc = await spawnUvPython(["sync", "--frozen"], pythonDir, {
-    ...process.env,
-    PROREF_MODEL_DIR: modelDir,
-    UV_NO_COLOR: "1",
-  });
-
-  if (syncProc.stderr) {
-    syncProc.stderr.on("data", (chunk: Buffer) => {
-      const text = chunk.toString().toLowerCase();
-      console.log({ text });
+  try {
+    // 1. Ensure uv
+    console.log("Ensuring uv installation...");
+    await ensureUvInstalled((statusKey, progress) => {
+      reportEnvInit(statusKey, progress);
     });
-  }
 
-  const syncExit: number = await new Promise((resolve) =>
-    syncProc.once("exit", resolve),
-  );
+    // Check if we have a pre-packaged environment
+    const venvPath = path.join(pythonDir, ".venv");
+    if (app.isPackaged && (await lockedFs.pathExists(venvPath))) {
+      console.log("Found pre-packaged python environment, skipping uv sync");
+      reportEnvInit("envInit.pythonEnvReady", 1);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      return;
+    }
 
-  if (syncExit !== 0) {
-    const locale = await getLocale();
-    await dialog.showMessageBox(parent, {
-      type: "error",
-      title: translate(locale, "dialog.pythonSetupFailedTitle"),
-      message: translate(locale, "dialog.pythonSetupFailedMessage"),
-      detail: translate(locale, "dialog.pythonSetupFailedDetail", {
-        code: syncExit,
-        dir: pythonDir,
-      }),
+    reportEnvInit("envInit.initializingPythonEnv", 0.42);
+
+    // 2. uv sync
+    const syncProc = await spawnUvPython(["sync", "--frozen"], pythonDir, {
+      ...process.env,
+      PROREF_MODEL_DIR: modelDir,
+      UV_NO_COLOR: "1",
     });
-    throw new Error("Python setup failed");
+
+    if (syncProc.stderr) {
+      syncProc.stderr.on("data", (chunk: Buffer) => {
+        const text = chunk.toString();
+        const lower = text.toLowerCase();
+        console.log({ text: lower });
+
+        if (lower.includes("resolved")) {
+          reportEnvInit("envInit.resolvingDependencies", 0.58);
+          return;
+        }
+        if (lower.includes("downloading")) {
+          reportEnvInit("envInit.downloadingPackages", 0.72);
+          return;
+        }
+        if (
+          lower.includes("installed") ||
+          lower.includes("installing") ||
+          lower.includes("prepared")
+        ) {
+          reportEnvInit("envInit.installingPackages", 0.88);
+          return;
+        }
+      });
+    }
+
+    const syncExit: number = await new Promise((resolve) =>
+      syncProc.once("exit", resolve),
+    );
+
+    if (syncExit !== 0) {
+      const locale = await getLocale();
+      closeEnvInitProgress(parent);
+      await dialog.showMessageBox(parent, {
+        type: "error",
+        title: translate(locale, "dialog.pythonSetupFailedTitle"),
+        message: translate(locale, "dialog.pythonSetupFailedMessage"),
+        detail: translate(locale, "dialog.pythonSetupFailedDetail", {
+          code: syncExit,
+          dir: pythonDir,
+        }),
+      });
+      throw new Error("Python setup failed");
+    }
+
+    reportEnvInit("envInit.verifyingEnvironment", 0.96);
+    reportEnvInit("envInit.pythonEnvReady", 1);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  } finally {
+    closeEnvInitProgress(parent);
   }
 }
 

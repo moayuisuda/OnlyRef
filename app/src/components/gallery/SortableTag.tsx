@@ -89,10 +89,10 @@ export const SortableTag: React.FC<SortableTagProps> = ({
       >
         <input
           autoFocus
-          className="min-w-[72px] rounded-full border bg-white/[0.05] px-3 py-1.5 text-xs text-white outline-none"
+          className="bg-neutral-800 text-white text-xs px-2 py-1 rounded outline-none border min-w-[60px]"
           style={{
             borderColor,
-            backgroundColor: normalized.length > 0 ? `${normalized}20` : "rgba(255,255,255,0.04)",
+            backgroundColor: normalized.length > 0 ? `${normalized}20` : undefined,
           }}
           value={editValue}
           onChange={(e) => setEditValue(e.target.value)}

@@ -52,7 +52,7 @@ export const SortableGalleryItem: React.FC<SortableGalleryItemProps> = ({
       style={style}
       {...attributes}
       {...listeners}
-      className="group relative mb-5 cursor-grab overflow-hidden rounded-[1.35rem] border border-white/6 bg-[rgba(255,255,255,0.02)] shadow-[0_18px_48px_rgba(0,0,0,0.22)] transition-all duration-300 hover:z-10 hover:-translate-y-1 hover:border-white/12 active:cursor-grabbing"
+      className="mb-4 group overflow-hidden relative rounded hover:z-10 cursor-grab active:cursor-grabbing"
     >
       <div
         draggable
@@ -60,18 +60,17 @@ export const SortableGalleryItem: React.FC<SortableGalleryItemProps> = ({
         onContextMenu={(e) => onContextMenu(e, image)}
         onClick={() => onClick(image)}
       >
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-16 bg-gradient-to-b from-black/32 to-transparent" />
         <img
           src={getImageUrl(image.imagePath)}
           alt={name || t("gallery.referenceAlt")}
-          className="w-full bg-neutral-800 transition-transform duration-500 group-hover:scale-[1.035]"
+          className="w-full bg-neutral-800 transition-transform duration-300 group-hover:scale-105"
           loading="lazy"
         />
 
-        <div className="pointer-events-none absolute left-3 top-3 z-20 flex max-w-[calc(100%-2.75rem)] flex-col gap-1.5">
+        <div className="absolute top-2 left-2 z-20 flex flex-col gap-1 pointer-events-none max-w-[calc(100%-2rem)]">
           {name && (
             <div
-              className="w-fit max-w-full rounded-full border border-white/10 bg-black/28 px-2.5 py-1 text-[9px] font-medium leading-none text-white/92 backdrop-blur-md"
+              className="px-2 py-1 rounded bg-black/30 backdrop-blur-sm text-white text-[8px] font-normal leading-none truncate w-fit max-w-full"
               title={name}
             >
               {name}
@@ -79,7 +78,7 @@ export const SortableGalleryItem: React.FC<SortableGalleryItemProps> = ({
           )}
           {import.meta.env.DEV && score !== undefined && (
             <div
-              className="w-fit max-w-full rounded-full border border-white/10 bg-black/28 px-2.5 py-1 text-[9px] font-medium leading-none text-white/92 backdrop-blur-md"
+              className="px-2 py-1 rounded bg-black/30 backdrop-blur-sm text-white text-[8px] font-normal leading-none truncate w-fit max-w-full"
               title={`Score: ${score.toFixed(4)}`}
             >
               {score.toFixed(4)}
@@ -89,33 +88,27 @@ export const SortableGalleryItem: React.FC<SortableGalleryItemProps> = ({
 
         {enableVectorSearch && !image.hasVector && (
           <div
-            className="absolute right-3 top-3 h-2.5 w-2.5 rounded-full bg-amber-300 shadow-[0_0_0_4px_rgba(251,191,36,0.12)]"
+            className="absolute top-2 right-2 w-2 h-2 rounded-full bg-yellow-500 shadow-sm"
             title={t("gallery.notIndexed")}
           />
         )}
 
         {image.isVectorResult && (
           <div
-            className="absolute right-3 top-3 rounded-full border border-[rgba(57,197,187,0.26)] bg-[rgba(57,197,187,0.18)] p-1.5 text-white backdrop-blur-md"
+            className="absolute top-2 right-2 p-1 rounded bg-purple-500/80 backdrop-blur-sm text-white shadow-sm"
             title={t("gallery.vectorResult")}
           >
             <Sparkles size={10} strokeWidth={3} />
           </div>
         )}
 
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 p-3 opacity-100">
-          <div className="rounded-[1.1rem] border border-white/8 bg-[linear-gradient(180deg,rgba(9,11,13,0.05),rgba(9,11,13,0.78))] p-2.5 opacity-0 transition-all duration-300 group-hover:translate-y-0 group-hover:opacity-100">
-            <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-[0.18em] text-white/45">
-              <span>Tags</span>
-              <span>{ensureTags(image.tags as string[]).length}</span>
-            </div>
-            <div className="flex flex-wrap items-center gap-1.5">
+        <div className="absolute bottom-0 left-0 right-0 p-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+          <div className="flex flex-wrap gap-1 items-center">
             {ensureTags(image.tags as string[])
               .slice(0, 5)
               .map((tag) => (
                 <Tag key={tag} tag={tag} />
               ))}
-            </div>
           </div>
         </div>
       </div>

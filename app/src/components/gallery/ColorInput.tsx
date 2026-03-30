@@ -15,7 +15,7 @@ export const ColorInput: React.FC<ColorInputProps> = ({
 
   return (
     <div
-      className={`relative h-10 w-10 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] ${
+      className={`relative w-8 h-8 rounded overflow-hidden border border-neutral-700 bg-neutral-800 ${
         className || ""
       }`}
     >
@@ -23,7 +23,7 @@ export const ColorInput: React.FC<ColorInputProps> = ({
         type="color"
         value={value || "#000000"}
         onChange={(e) => onChange(e.target.value)}
-        className="absolute left-1/2 top-1/2 m-0 h-[150%] w-[150%] -translate-x-1/2 -translate-y-1/2 cursor-pointer border-0 p-0"
+        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[150%] h-[150%] p-0 m-0 border-0 cursor-pointer"
         style={{ opacity: isEmpty ? 0 : 1 }}
       />
     </div>
