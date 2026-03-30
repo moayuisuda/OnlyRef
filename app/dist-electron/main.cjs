@@ -2453,8 +2453,8 @@ var en = {
   "toast.shortcutInvalid": "Invalid shortcut",
   "toast.shortcutUpdateFailed": "Failed to update shortcut: {{error}}",
   "envInit.brandTitle": "PiCaptain",
-  "envInit.heading": "Setting up the Python environment...",
-  "envInit.subheading": "First run may download tools and install dependencies. This is a one-time step.",
+  "envInit.heading": "Preparing PiCaptain...",
+  "envInit.subheading": "First run may download tools, install dependencies, and fetch the local model. This is a one-time step.",
   "envInit.preparing": "Preparing...",
   "envInit.checkingUv": "Checking uv...",
   "envInit.downloadingUv": "Downloading uv...",
@@ -2645,8 +2645,8 @@ var zh = {
   "toast.shortcutInvalid": "\u5FEB\u6377\u952E\u65E0\u6548",
   "toast.shortcutUpdateFailed": "\u66F4\u65B0\u5FEB\u6377\u952E\u5931\u8D25\uFF1A{{error}}",
   "envInit.brandTitle": "PiCaptain",
-  "envInit.heading": "\u6B63\u5728\u914D\u7F6E Python \u73AF\u5883\u2026",
-  "envInit.subheading": "\u9996\u6B21\u8FD0\u884C\u53EF\u80FD\u4F1A\u4E0B\u8F7D\u5DE5\u5177\u5E76\u5B89\u88C5\u4F9D\u8D56\uFF0C\u8FD9\u662F\u4E00\u6B21\u6027\u6B65\u9AA4\u3002",
+  "envInit.heading": "\u6B63\u5728\u51C6\u5907 PiCaptain\u2026",
+  "envInit.subheading": "\u9996\u6B21\u8FD0\u884C\u53EF\u80FD\u4F1A\u4E0B\u8F7D\u5DE5\u5177\u3001\u5B89\u88C5\u4F9D\u8D56\u5E76\u62C9\u53D6\u672C\u5730\u6A21\u578B\uFF0C\u8FD9\u662F\u4E00\u6B21\u6027\u6B65\u9AA4\u3002",
   "envInit.preparing": "\u51C6\u5907\u4E2D\u2026",
   "envInit.checkingUv": "\u6B63\u5728\u68C0\u67E5 uv\u2026",
   "envInit.downloadingUv": "\u6B63\u5728\u4E0B\u8F7D uv\u2026",
@@ -3020,17 +3020,6 @@ async function createWindow(options) {
       return `Failed to read log file: ${error instanceof Error ? error.message : String(error)}`;
     }
   });
-  import_electron3.ipcMain.handle("ensure-model-ready", async () => {
-    if (!mainWindow) return;
-    try {
-      await ensurePythonRuntime(mainWindow);
-      await ensureModelReady(mainWindow, true);
-      return { success: true };
-    } catch (e) {
-      import_electron_log.default.error("Manual ensure model failed:", e);
-      return { success: false, error: String(e) };
-    }
-  });
   import_electron3.ipcMain.handle("open-external", async (_event, rawUrl) => {
     try {
       if (typeof rawUrl !== "string") {
@@ -3363,6 +3352,14 @@ function closeEnvInitProgress(parent) {
   if (parent.isDestroyed()) return;
   parent.webContents.send("env-init-progress", { isOpen: false });
 }
+function createStageReporter(report, start, end) {
+  const span = Math.max(0, end - start);
+  return (statusKey, progress, statusParams) => {
+    const normalized = Math.max(0, Math.min(1, progress));
+    report(statusKey, start + span * normalized, statusParams);
+  };
+}
+var delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function ensureUvInstalled(onProgress) {
   const candidates = getUvCandidates();
   let existing = "";
@@ -3420,8 +3417,7 @@ function getUnpackedPath(originalPath) {
   }
   return originalPath;
 }
-async function ensurePythonRuntime(parent) {
-  const reportEnvInit = makeEnvInitReporter(parent);
+async function preparePythonRuntime(parent, reportEnvInit) {
   const modelDir = getModelDir();
   process.env.PROREF_MODEL_DIR = modelDir;
   const scriptPath = getUnpackedPath(
@@ -3429,68 +3425,64 @@ async function ensurePythonRuntime(parent) {
   );
   const pythonDir = import_path5.default.dirname(scriptPath);
   reportEnvInit("envInit.preparing", 0);
-  try {
-    console.log("Ensuring uv installation...");
-    await ensureUvInstalled((statusKey, progress) => {
-      reportEnvInit(statusKey, progress);
-    });
-    const venvPath = import_path5.default.join(pythonDir, ".venv");
-    if (import_electron3.app.isPackaged && await lockedFs.pathExists(venvPath)) {
-      console.log("Found pre-packaged python environment, skipping uv sync");
-      reportEnvInit("envInit.pythonEnvReady", 1);
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      return;
-    }
-    reportEnvInit("envInit.initializingPythonEnv", 0.42);
-    const syncProc = await spawnUvPython(["sync", "--frozen"], pythonDir, {
-      ...process.env,
-      PROREF_MODEL_DIR: modelDir,
-      UV_NO_COLOR: "1"
-    });
-    if (syncProc.stderr) {
-      syncProc.stderr.on("data", (chunk) => {
-        const text = chunk.toString();
-        const lower = text.toLowerCase();
-        console.log({ text: lower });
-        if (lower.includes("resolved")) {
-          reportEnvInit("envInit.resolvingDependencies", 0.58);
-          return;
-        }
-        if (lower.includes("downloading")) {
-          reportEnvInit("envInit.downloadingPackages", 0.72);
-          return;
-        }
-        if (lower.includes("installed") || lower.includes("installing") || lower.includes("prepared")) {
-          reportEnvInit("envInit.installingPackages", 0.88);
-          return;
-        }
-      });
-    }
-    const syncExit = await new Promise(
-      (resolve) => syncProc.once("exit", resolve)
-    );
-    if (syncExit !== 0) {
-      const locale = await getLocale();
-      closeEnvInitProgress(parent);
-      await import_electron3.dialog.showMessageBox(parent, {
-        type: "error",
-        title: t(locale, "dialog.pythonSetupFailedTitle"),
-        message: t(locale, "dialog.pythonSetupFailedMessage"),
-        detail: t(locale, "dialog.pythonSetupFailedDetail", {
-          code: syncExit,
-          dir: pythonDir
-        })
-      });
-      throw new Error("Python setup failed");
-    }
-    reportEnvInit("envInit.verifyingEnvironment", 0.96);
+  console.log("Ensuring uv installation...");
+  await ensureUvInstalled((statusKey, progress) => {
+    reportEnvInit(statusKey, progress);
+  });
+  const venvPath = import_path5.default.join(pythonDir, ".venv");
+  if (import_electron3.app.isPackaged && await lockedFs.pathExists(venvPath)) {
+    console.log("Found pre-packaged python environment, skipping uv sync");
     reportEnvInit("envInit.pythonEnvReady", 1);
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  } finally {
-    closeEnvInitProgress(parent);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    return;
   }
+  reportEnvInit("envInit.initializingPythonEnv", 0.42);
+  const syncProc = await spawnUvPython(["sync", "--frozen"], pythonDir, {
+    ...process.env,
+    PROREF_MODEL_DIR: modelDir,
+    UV_NO_COLOR: "1"
+  });
+  if (syncProc.stderr) {
+    syncProc.stderr.on("data", (chunk) => {
+      const text = chunk.toString();
+      const lower = text.toLowerCase();
+      console.log({ text: lower });
+      if (lower.includes("resolved")) {
+        reportEnvInit("envInit.resolvingDependencies", 0.58);
+        return;
+      }
+      if (lower.includes("downloading")) {
+        reportEnvInit("envInit.downloadingPackages", 0.72);
+        return;
+      }
+      if (lower.includes("installed") || lower.includes("installing") || lower.includes("prepared")) {
+        reportEnvInit("envInit.installingPackages", 0.88);
+        return;
+      }
+    });
+  }
+  const syncExit = await new Promise(
+    (resolve) => syncProc.once("exit", resolve)
+  );
+  if (syncExit !== 0) {
+    const locale = await getLocale();
+    closeEnvInitProgress(parent);
+    await import_electron3.dialog.showMessageBox(parent, {
+      type: "error",
+      title: t(locale, "dialog.pythonSetupFailedTitle"),
+      message: t(locale, "dialog.pythonSetupFailedMessage"),
+      detail: t(locale, "dialog.pythonSetupFailedDetail", {
+        code: syncExit,
+        dir: pythonDir
+      })
+    });
+    throw new Error("Python setup failed");
+  }
+  reportEnvInit("envInit.verifyingEnvironment", 0.96);
+  reportEnvInit("envInit.pythonEnvReady", 1);
 }
-async function ensureModelReady(parent, force = false) {
+async function ensureModelReady(parent, options = {}) {
+  const { force = false, reportProgress } = options;
   const modelDir = getModelDir();
   process.env.PROREF_MODEL_DIR = modelDir;
   const debug = process.env.PROREF_DEBUG_MODEL === "1";
@@ -3523,10 +3515,15 @@ async function ensureModelReady(parent, force = false) {
   }
   if (!modelMissing) {
     if (debug) console.log("[model] ok");
+    reportProgress == null ? void 0 : reportProgress("model.ready", 1);
     return;
   }
   if (debug) console.log("[model] missing, start download");
   const sendProgress = (statusKey, percentText2, progress2, filename, statusParams) => {
+    if (reportProgress) {
+      reportProgress(statusKey, progress2, statusParams);
+      return;
+    }
     if (parent.isDestroyed()) return;
     parent.webContents.send("model-download-progress", {
       isOpen: true,
@@ -3668,7 +3665,9 @@ async function ensureModelReady(parent, force = false) {
     (resolve) => proc.once("exit", resolve)
   );
   parent.setProgressBar(-1);
-  parent.webContents.send("model-download-progress", { isOpen: false });
+  if (!reportProgress) {
+    parent.webContents.send("model-download-progress", { isOpen: false });
+  }
   const ok = await hasRequiredModelFiles(modelDir);
   if (debug) console.log("[model] download exit:", exitCode, "ok:", ok);
   if (exitCode !== 0 || !ok) {
@@ -3686,6 +3685,21 @@ async function ensureModelReady(parent, force = false) {
       })
     });
     throw new Error("Model download failed");
+  }
+}
+async function ensureStartupInitialization(parent) {
+  const reportEnvInit = makeEnvInitReporter(parent);
+  const reportPythonInit = createStageReporter(reportEnvInit, 0, 0.68);
+  const reportModelInit = createStageReporter(reportEnvInit, 0.68, 1);
+  try {
+    await preparePythonRuntime(parent, reportPythonInit);
+    await ensureModelReady(parent, {
+      force: true,
+      reportProgress: reportModelInit
+    });
+    await delay(250);
+  } finally {
+    closeEnvInitProgress(parent);
   }
 }
 async function startServer2() {
@@ -3723,15 +3737,15 @@ import_electron3.app.whenReady().then(async () => {
   if (mainWindow) {
     try {
       await taskStartServer;
-      import_electron_log.default.info("Ensuring Python runtime...");
-      await ensurePythonRuntime(mainWindow);
-      import_electron_log.default.info("Ensuring model ready...");
-      await ensureModelReady(mainWindow);
-      import_electron_log.default.info("Model ready.");
+      import_electron_log.default.info("Ensuring startup initialization...");
+      await ensureStartupInitialization(mainWindow);
+      import_electron_log.default.info("Startup initialization ready.");
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      console.error("[model] ensure failed:", message);
-      import_electron_log.default.error("[model] ensure failed:", message);
+      console.error("[startup] initialization failed:", message);
+      import_electron_log.default.error("[startup] initialization failed:", message);
+      import_electron3.app.quit();
+      return;
     }
   }
   import_electron3.app.on("activate", () => {

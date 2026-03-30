@@ -28,11 +28,6 @@ contextBridge.exposeInMainWorld('electron', {
     ipcRenderer.on('search-updated', handler);
     return () => ipcRenderer.off('search-updated', handler);
   },
-  onModelDownloadProgress: (callback: (data: unknown) => void) => {
-    const handler = (_: unknown, data: unknown) => callback(data);
-    ipcRenderer.on('model-download-progress', handler);
-    return () => ipcRenderer.off('model-download-progress', handler);
-  },
   onEnvInitProgress: (callback: (data: unknown) => void) => {
     const handler = (_: unknown, data: unknown) => callback(data);
     ipcRenderer.on('env-init-progress', handler);
@@ -50,5 +45,4 @@ contextBridge.exposeInMainWorld('electron', {
   },
   log: (level: string, ...args: unknown[]) => ipcRenderer.send('log-message', level, ...args),
   getLogContent: () => ipcRenderer.invoke('get-log-content'),
-  ensureModelReady: () => ipcRenderer.invoke('ensure-model-ready'),
 });

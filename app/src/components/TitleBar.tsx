@@ -14,8 +14,6 @@ import {
   globalState,
   indexingActions,
   indexingState,
-  modelProgressActions,
-  modelProgressState,
 } from "../store/globalStore";
 import { state as galleryState } from "../store/galleryStore";
 import { indexImages } from "../service";
@@ -95,7 +93,6 @@ export const TitleBar: React.FC = () => {
   const snap = useSnapshot(globalState);
   const gallerySnap = useSnapshot(galleryState);
   const indexingSnap = useSnapshot(indexingState);
-  const modelSnap = useSnapshot(modelProgressState);
   const { t } = useT();
 
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -115,28 +112,6 @@ export const TitleBar: React.FC = () => {
   }, [settingsOpen]);
 
   useEffect(() => {
-    const cleanupModel = window.electron?.onModelDownloadProgress?.((data) => {
-      if (!isRecord(data)) return;
-
-      if (data.isOpen === false) {
-        modelProgressActions.reset();
-        return;
-      }
-
-      if (typeof data.progress === "number" && isI18nKey(data.statusKey)) {
-        modelProgressActions.update({
-          isDownloading: true,
-          current: Math.round(Math.max(0, Math.min(1, data.progress)) * 100),
-          total: 100,
-          statusKey: data.statusKey as I18nKey,
-          statusParams: isRecord(data.statusParams)
-            ? (data.statusParams as I18nParams)
-            : undefined,
-          filename: typeof data.filename === "string" ? data.filename : undefined,
-        });
-      }
-    });
-
     const cleanupIndexing = window.electron?.onIndexingProgress?.((data) => {
       if (!isRecord(data)) return;
 
@@ -153,7 +128,6 @@ export const TitleBar: React.FC = () => {
     });
 
     return () => {
-      cleanupModel?.();
       cleanupIndexing?.();
     };
   }, []);
@@ -168,23 +142,8 @@ export const TitleBar: React.FC = () => {
       .finally(() => setLoadingStorageDir(false));
   }, [settingsOpen]);
 
-  const handleToggleVectorSearch = async (enabled: boolean) => {
-    const previous = snap.enableVectorSearch;
+  const handleToggleVectorSearch = (enabled: boolean) => {
     globalActions.setEnableVectorSearch(enabled);
-
-    if (!enabled) return;
-
-    const result = await window.electron?.ensureModelReady?.();
-    if (result && result.success !== true) {
-      globalActions.setEnableVectorSearch(previous);
-      globalActions.pushToast(
-        { key: "toast.modelCheckFailed", params: { error: result.error ?? "" } },
-        "error",
-      );
-      return;
-    }
-
-    globalActions.pushToast({ key: "toast.modelReady" }, "success");
   };
 
   const handleChooseStorageDir = async () => {
@@ -257,9 +216,7 @@ export const TitleBar: React.FC = () => {
   const progressText =
     indexingSnap.isIndexing && indexingSnap.statusKey
       ? t(indexingSnap.statusKey, indexingSnap.statusParams)
-      : modelSnap.isDownloading && modelSnap.statusKey
-        ? t(modelSnap.statusKey, modelSnap.statusParams)
-        : null;
+      : null;
 
   const imageCount = gallerySnap.images.length;
   const imageCountLabel = `${imageCount} ${imageCount === 1 ? "image" : "images"}`;
@@ -275,13 +232,6 @@ export const TitleBar: React.FC = () => {
             ? Math.round((indexingSnap.current / indexingSnap.total) * 100)
             : 12,
       }
-    : modelSnap.isDownloading
-      ? {
-          title: progressText ?? "Preparing semantic search",
-          detail:
-            modelSnap.filename || "Downloading the search model for semantic retrieval.",
-          percent: Math.max(8, modelSnap.current || 8),
-        }
       : {
           title: imageCountLabel,
           detail: snap.enableVectorSearch
@@ -302,7 +252,7 @@ export const TitleBar: React.FC = () => {
 
           <div className="hidden min-w-0 flex-1 items-center gap-2 text-xs md:flex">
             <div className="min-w-0 truncate text-neutral-400">{statusMeta.title}</div>
-            {(indexingSnap.isIndexing || modelSnap.isDownloading) && (
+            {indexingSnap.isIndexing && (
               <>
                 <div className="w-16 shrink-0">
                   <ProgressBar value={statusMeta.percent} />

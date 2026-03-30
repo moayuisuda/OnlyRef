@@ -330,30 +330,6 @@ async function createWindow(options?: { load?: boolean }) {
     }
   });
 
-  ipcMain.handle("ensure-model-ready", async () => {
-    if (!mainWindow) return;
-    try {
-      // Force check/download even if settings check passes inside ensureModelReady?
-      // ensureModelReady checks settings. We should probably update settings BEFORE calling this.
-      // Frontend updates settings via API, then calls this.
-      // But ensureModelReady reads settings from disk. We need to make sure disk is updated.
-      // The API call to update settings awaits file write, so it should be fine.
-
-      // However, ensureModelReady has a check:
-      // if (!settings.enableVectorSearch) return;
-      // If we just updated settings to true, this check will pass.
-
-      // Also ensure runtime just in case
-      await ensurePythonRuntime(mainWindow);
-      // Force check since user explicitly requested it
-      await ensureModelReady(mainWindow, true);
-      return { success: true };
-    } catch (e) {
-      log.error("Manual ensure model failed:", e);
-      return { success: false, error: String(e) };
-    }
-  });
-
   ipcMain.handle("open-external", async (_event, rawUrl: string) => {
     try {
       if (typeof rawUrl !== "string") {
@@ -769,6 +745,25 @@ function closeEnvInitProgress(parent: BrowserWindow): void {
   parent.webContents.send("env-init-progress", { isOpen: false });
 }
 
+function createStageReporter(
+  report: (statusKey: I18nKey, progress: number, statusParams?: I18nParams) => void,
+  start: number,
+  end: number,
+) {
+  const span = Math.max(0, end - start);
+  return (
+    statusKey: I18nKey,
+    progress: number,
+    statusParams?: I18nParams,
+  ) => {
+    const normalized = Math.max(0, Math.min(1, progress));
+    report(statusKey, start + span * normalized, statusParams);
+  };
+}
+
+const delay = (ms: number) =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
 async function ensureUvInstalled(
   onProgress?: (statusKey: I18nKey, progress: number) => void,
 ): Promise<string> {
@@ -834,8 +829,14 @@ function getUnpackedPath(originalPath: string): string {
   return originalPath;
 }
 
-async function ensurePythonRuntime(parent: BrowserWindow): Promise<void> {
-  const reportEnvInit = makeEnvInitReporter(parent);
+async function preparePythonRuntime(
+  parent: BrowserWindow,
+  reportEnvInit: (
+    statusKey: I18nKey,
+    progress: number,
+    statusParams?: I18nParams,
+  ) => void,
+): Promise<void> {
   const modelDir = getModelDir();
   process.env.PROREF_MODEL_DIR = modelDir; // Ensure env is set for sync if needed
   const scriptPath = getUnpackedPath(
@@ -845,87 +846,92 @@ async function ensurePythonRuntime(parent: BrowserWindow): Promise<void> {
 
   reportEnvInit("envInit.preparing", 0);
 
-  try {
-    // 1. Ensure uv
-    console.log("Ensuring uv installation...");
-    await ensureUvInstalled((statusKey, progress) => {
-      reportEnvInit(statusKey, progress);
-    });
+  // 1. Ensure uv
+  console.log("Ensuring uv installation...");
+  await ensureUvInstalled((statusKey, progress) => {
+    reportEnvInit(statusKey, progress);
+  });
 
-    // Check if we have a pre-packaged environment
-    const venvPath = path.join(pythonDir, ".venv");
-    if (app.isPackaged && (await lockedFs.pathExists(venvPath))) {
-      console.log("Found pre-packaged python environment, skipping uv sync");
-      reportEnvInit("envInit.pythonEnvReady", 1);
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      return;
-    }
-
-    reportEnvInit("envInit.initializingPythonEnv", 0.42);
-
-    // 2. uv sync
-    const syncProc = await spawnUvPython(["sync", "--frozen"], pythonDir, {
-      ...process.env,
-      PROREF_MODEL_DIR: modelDir,
-      UV_NO_COLOR: "1",
-    });
-
-    if (syncProc.stderr) {
-      syncProc.stderr.on("data", (chunk: Buffer) => {
-        const text = chunk.toString();
-        const lower = text.toLowerCase();
-        console.log({ text: lower });
-
-        if (lower.includes("resolved")) {
-          reportEnvInit("envInit.resolvingDependencies", 0.58);
-          return;
-        }
-        if (lower.includes("downloading")) {
-          reportEnvInit("envInit.downloadingPackages", 0.72);
-          return;
-        }
-        if (
-          lower.includes("installed") ||
-          lower.includes("installing") ||
-          lower.includes("prepared")
-        ) {
-          reportEnvInit("envInit.installingPackages", 0.88);
-          return;
-        }
-      });
-    }
-
-    const syncExit: number = await new Promise((resolve) =>
-      syncProc.once("exit", resolve),
-    );
-
-    if (syncExit !== 0) {
-      const locale = await getLocale();
-      closeEnvInitProgress(parent);
-      await dialog.showMessageBox(parent, {
-        type: "error",
-        title: translate(locale, "dialog.pythonSetupFailedTitle"),
-        message: translate(locale, "dialog.pythonSetupFailedMessage"),
-        detail: translate(locale, "dialog.pythonSetupFailedDetail", {
-          code: syncExit,
-          dir: pythonDir,
-        }),
-      });
-      throw new Error("Python setup failed");
-    }
-
-    reportEnvInit("envInit.verifyingEnvironment", 0.96);
+  // Check if we have a pre-packaged environment
+  const venvPath = path.join(pythonDir, ".venv");
+  if (app.isPackaged && (await lockedFs.pathExists(venvPath))) {
+    console.log("Found pre-packaged python environment, skipping uv sync");
     reportEnvInit("envInit.pythonEnvReady", 1);
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  } finally {
-    closeEnvInitProgress(parent);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    return;
   }
+
+  reportEnvInit("envInit.initializingPythonEnv", 0.42);
+
+  // 2. uv sync
+  const syncProc = await spawnUvPython(["sync", "--frozen"], pythonDir, {
+    ...process.env,
+    PROREF_MODEL_DIR: modelDir,
+    UV_NO_COLOR: "1",
+  });
+
+  if (syncProc.stderr) {
+    syncProc.stderr.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      const lower = text.toLowerCase();
+      console.log({ text: lower });
+
+      if (lower.includes("resolved")) {
+        reportEnvInit("envInit.resolvingDependencies", 0.58);
+        return;
+      }
+      if (lower.includes("downloading")) {
+        reportEnvInit("envInit.downloadingPackages", 0.72);
+        return;
+      }
+      if (
+        lower.includes("installed") ||
+        lower.includes("installing") ||
+        lower.includes("prepared")
+      ) {
+        reportEnvInit("envInit.installingPackages", 0.88);
+        return;
+      }
+    });
+  }
+
+  const syncExit: number = await new Promise((resolve) =>
+    syncProc.once("exit", resolve),
+  );
+
+  if (syncExit !== 0) {
+    const locale = await getLocale();
+    closeEnvInitProgress(parent);
+    await dialog.showMessageBox(parent, {
+      type: "error",
+      title: translate(locale, "dialog.pythonSetupFailedTitle"),
+      message: translate(locale, "dialog.pythonSetupFailedMessage"),
+      detail: translate(locale, "dialog.pythonSetupFailedDetail", {
+        code: syncExit,
+        dir: pythonDir,
+      }),
+    });
+    throw new Error("Python setup failed");
+  }
+
+  reportEnvInit("envInit.verifyingEnvironment", 0.96);
+  reportEnvInit("envInit.pythonEnvReady", 1);
 }
+
+type EnsureModelReadyOptions = {
+  force?: boolean;
+  reportProgress?: (
+    statusKey: I18nKey,
+    progress: number,
+    statusParams?: I18nParams,
+  ) => void;
+};
 
 async function ensureModelReady(
   parent: BrowserWindow,
-  force: boolean = false,
+  options: EnsureModelReadyOptions = {},
 ): Promise<void> {
+  const { force = false, reportProgress } = options;
   const modelDir = getModelDir();
   process.env.PROREF_MODEL_DIR = modelDir;
   const debug = process.env.PROREF_DEBUG_MODEL === "1";
@@ -965,6 +971,7 @@ async function ensureModelReady(
 
   if (!modelMissing) {
     if (debug) console.log("[model] ok");
+    reportProgress?.("model.ready", 1);
     return;
   }
   if (debug) console.log("[model] missing, start download");
@@ -977,6 +984,10 @@ async function ensureModelReady(
     filename?: string,
     statusParams?: I18nParams,
   ) => {
+    if (reportProgress) {
+      reportProgress(statusKey, progress, statusParams);
+      return;
+    }
     if (parent.isDestroyed()) return;
     parent.webContents.send("model-download-progress", {
       isOpen: true,
@@ -1008,14 +1019,6 @@ async function ensureModelReady(
     path.join(__dirname, "../backend/python/tagger.py"),
   );
   const pythonDir = path.dirname(scriptPath);
-
-  // Ensure Runtime (in case it wasn't run or we need to be sure)
-  // But strictly, we should assume runtime is ready if we enforce order.
-  // Let's re-run ensurePythonRuntime here? No, that would close/open modal.
-  // We assume ensurePythonRuntime was called before.
-
-  // However, for robustness, if we are in ensureModelReady, we need python.
-  // So we should probably just proceed to run python.
 
   let percentText = "0%";
   let progress = 0;
@@ -1174,7 +1177,9 @@ async function ensureModelReady(
     proc.once("exit", resolve),
   );
   parent.setProgressBar(-1);
-  parent.webContents.send("model-download-progress", { isOpen: false });
+  if (!reportProgress) {
+    parent.webContents.send("model-download-progress", { isOpen: false });
+  }
 
   const ok = await hasRequiredModelFiles(modelDir);
   if (debug) console.log("[model] download exit:", exitCode, "ok:", ok);
@@ -1194,6 +1199,23 @@ async function ensureModelReady(
         }),
     });
     throw new Error("Model download failed");
+  }
+}
+
+async function ensureStartupInitialization(parent: BrowserWindow): Promise<void> {
+  const reportEnvInit = makeEnvInitReporter(parent);
+  const reportPythonInit = createStageReporter(reportEnvInit, 0, 0.68);
+  const reportModelInit = createStageReporter(reportEnvInit, 0.68, 1);
+
+  try {
+    await preparePythonRuntime(parent, reportPythonInit);
+    await ensureModelReady(parent, {
+      force: true,
+      reportProgress: reportModelInit,
+    });
+    await delay(250);
+  } finally {
+    closeEnvInitProgress(parent);
   }
 }
 
@@ -1242,22 +1264,15 @@ app.whenReady().then(async () => {
   if (mainWindow) {
     try {
       await taskStartServer;
-
-      // Always ensure Python environment is ready (uv + sync)
-      // This is fast if already done, but necessary for basic features like color/tone.
-      // We do this BEFORE ensuring model.
-      log.info("Ensuring Python runtime...");
-      await ensurePythonRuntime(mainWindow);
-
-      log.info("Ensuring model ready...");
-      await ensureModelReady(mainWindow);
-      log.info("Model ready.");
+      log.info("Ensuring startup initialization...");
+      await ensureStartupInitialization(mainWindow);
+      log.info("Startup initialization ready.");
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      console.error("[model] ensure failed:", message);
-      log.error("[model] ensure failed:", message);
-      // app.quit();
-      // return;
+      console.error("[startup] initialization failed:", message);
+      log.error("[startup] initialization failed:", message);
+      app.quit();
+      return;
     }
   }
 

@@ -1,4 +1,4 @@
-# OnlyRef 专业图片参考器
+# PiCaptain 专业图片参考器
 
 面向美术人士的专业图片收集与参考工具，类似于 PureRef，但集成了浏览器采集功能。
 
@@ -34,8 +34,8 @@ npm run dev
 
 1.  启动 Electron 应用。
 2.  在浏览器中浏览图片网站（如 Pinterest, ArtStation）。
-3.  在喜欢的图片上右键 -> **Collect to OnlyRef**。
-4.  回到 OnlyRef 应用，图片会自动出现在图库中。
+3.  在喜欢的图片上右键 -> **Collect to PiCaptain**。
+4.  回到 PiCaptain 应用，图片会自动出现在图库中。
 
 ## 技术栈
 
@@ -56,7 +56,7 @@ npm run dev
 
 ### 自动初始化（推荐）
 
-首次启动 OnlyRef 时会自动完成以下初始化：
+首次启动 PiCaptain 时会自动完成以下初始化：
 
 - 自动下载 uv（如系统未安装）
 - 使用 uv 在 `app/backend/python` 下创建/同步运行环境（根据 lockfile）
@@ -85,7 +85,7 @@ CLIP 标签的类别和候选值由 `app/electron/tag_config.json` 控制，结�
 }
 ```
 
-- `name`：在 OnlyRef 中输出的前缀，例如 `style:anime`。
+- `name`：在 PiCaptain 中输出的前缀，例如 `style:anime`。
 - `labels`：这一类下所有候选标签，支持自由增删。
 - `template`：生成 CLIP 文本 prompt 的模板，占位符 `{}` 会被替换成 label 文本。
 
