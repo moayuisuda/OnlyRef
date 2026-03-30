@@ -13,9 +13,6 @@ import { debounce } from "radash";
 import { createImagesRouter } from "./routes/images";
 import { createTagsRouter } from "./routes/tags";
 import { createSettingsRouter } from "./routes/settings";
-import { createCanvasRouter } from "./routes/canvas";
-import { createAnchorsRouter } from "./routes/anchors";
-import { createTempRouter } from "./routes/temp";
 import { createModelRouter } from "./routes/model";
 import { lockedFs, withFileLock } from "./fileLock";
 import { getDominantColor, calculateTone } from "./imageAnalysis";
@@ -88,16 +85,12 @@ const loadStorageRoot = async (): Promise<string> => {
 
 let STORAGE_DIR = DEFAULT_STORAGE_DIR;
 let IMAGE_DIR = path.join(STORAGE_DIR, "images");
-let CANVAS_TEMP_DIR = path.join(STORAGE_DIR, "canvas_temp");
-let CANVASES_DIR = path.join(STORAGE_DIR, "canvases");
 let SETTINGS_FILE = path.join(STORAGE_DIR, "settings.json");
 let settingsCache: Record<string, unknown> | null = null;
 
 const updateStoragePaths = (root: string) => {
   STORAGE_DIR = root;
   IMAGE_DIR = path.join(STORAGE_DIR, "images");
-  CANVAS_TEMP_DIR = path.join(STORAGE_DIR, "canvas_temp");
-  CANVASES_DIR = path.join(STORAGE_DIR, "canvases");
   SETTINGS_FILE = path.join(STORAGE_DIR, "settings.json");
 };
 
@@ -106,8 +99,6 @@ const ensureStorageDirs = async (root: string) => {
     lockedFs.ensureDir(root),
     lockedFs.ensureDir(path.join(root, "images")),
     lockedFs.ensureDir(path.join(root, "model")),
-    lockedFs.ensureDir(path.join(root, "canvas_temp")),
-    lockedFs.ensureDir(path.join(root, "canvases")),
   ]);
 };
 
@@ -631,24 +622,6 @@ export async function startServer(sendToRenderer?: SendToRenderer) {
 
   server.use(createSettingsRouter({ readSettings, writeSettings }));
   server.use(
-    createCanvasRouter({
-      getCanvasesDir: () => CANVASES_DIR,
-      getCanvasTempDir: () => CANVAS_TEMP_DIR,
-    })
-  );
-  server.use(
-    createAnchorsRouter({
-      getStorageDir: () => STORAGE_DIR,
-    })
-  );
-  server.use(
-    createTempRouter({
-      getCanvasTempDir: () => CANVAS_TEMP_DIR,
-      downloadImage,
-      runPythonDominantColor,
-    })
-  );
-  server.use(
     createModelRouter({
       downloadModel: (onProgress) =>
         vectorService.downloadModel((data) => {
@@ -682,7 +655,6 @@ export async function startServer(sendToRenderer?: SendToRenderer) {
   );
 
   server.use("/images", express.static(STORAGE_DIR));
-  server.use("/temp-images", express.static(CANVAS_TEMP_DIR));
 
   server.use(
     (

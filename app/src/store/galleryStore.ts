@@ -8,7 +8,6 @@ import {
   updateImage,
   deleteImage,
 } from '../service';
-import { canvasActions } from './canvasStore';
 import { API_BASE_URL } from '../config';
 import { globalActions, globalState, type LLMSettings } from './globalStore';
 import { translateToClipFriendly } from '../llmService';
@@ -478,7 +477,6 @@ export const actions = {
     if (index !== -1) {
       state.images.splice(index, 1);
     }
-    canvasActions.removeImageFromCanvas(imageId);
   },
 
   updateImage: (imageId: string, updates: Partial<ImageMeta>) => {

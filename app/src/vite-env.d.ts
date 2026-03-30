@@ -6,18 +6,10 @@ interface Window {
     max: () => void;
     close: () => void;
     focus: () => void;
-    toggleAlwaysOnTop: (flag: boolean) => void;
-    setPinMode: (enabled: boolean, widthDelta: number) => void;
-    setPinTransparent: (enabled: boolean) => void;
-    resizeWindowBy: (delta: number) => void;
     setWindowBounds: (bounds: { x?: number; y?: number; width?: number; height?: number }) => void;
     setToggleWindowShortcut: (
       accelerator: string,
     ) => Promise<{ success: boolean; error?: string; accelerator?: string }>;
-    setToggleMouseThroughShortcut: (
-      accelerator: string,
-    ) => Promise<{ success: boolean; error?: string; accelerator?: string }>;
-    setIgnoreMouseEvents: (ignore: boolean, options?: { forward: boolean }) => void;
     setSettingsOpen: (open: boolean) => void;
     onImageUpdated: (callback: (data: unknown) => void) => () => void;
     onSearchUpdated: (callback: (data: unknown) => void) => () => void;

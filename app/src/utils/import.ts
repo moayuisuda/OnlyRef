@@ -1,38 +1,5 @@
 import { actions, type ImageMeta } from '../store/galleryStore';
-import { getTempDominantColor, importImage, localApi } from '../service';
-
-const fileToDataUrl = (file: File): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-
-const uploadTempImage = async (
-  file: File
-): Promise<{ filename: string; path: string } | null> => {
-  const imageBase64 = await fileToDataUrl(file);
-  if (!imageBase64) return null;
-
-  const data = await localApi<{
-    success?: boolean;
-    filename?: string;
-    path?: string;
-  }>('/api/upload-temp', {
-    imageBase64,
-    filename: file.name,
-  });
-  if (
-    !data ||
-    !data.success ||
-    typeof data.filename !== 'string' ||
-    typeof data.path !== 'string'
-  ) {
-    return null;
-  }
-  return { filename: data.filename, path: data.path };
-};
+import { importImage } from '../service';
 
 export const scanDroppedItems = async (dataTransfer: DataTransfer): Promise<File[]> => {
   const items = Array.from(dataTransfer.items);
@@ -127,30 +94,4 @@ export const importFiles = async (files: File[]): Promise<ImageMeta[]> => {
   }
 
   return importedImages;
-};
-
-export const createTempMetasFromFiles = async (
-  files: File[]
-): Promise<ImageMeta[]> => {
-  const metas: ImageMeta[] = [];
-
-  for (const file of files) {
-    if (!file.type.startsWith('image/')) continue;
-    try {
-      const uploaded = await uploadTempImage(file);
-      if (!uploaded) continue;
-      const dominantColor = await getTempDominantColor(uploaded.path);
-      const meta = actions.createDroppedImageMeta({
-        path: uploaded.path,
-        storedFilename: `temp-images/${uploaded.filename}`,
-        originalName: file.name,
-        dominantColor,
-      });
-      metas.push(meta);
-    } catch (e) {
-      console.error('Error creating temp meta', file.name, e);
-    }
-  }
-
-  return metas;
 };

@@ -51,38 +51,13 @@ import { debounce } from "radash";
 
 let mainWindow: BrowserWindow | null = null;
 let isAppHidden = false;
-let lastGalleryDockDelta = 0;
 let localeCache: { locale: Locale; mtimeMs: number } | null = null;
 const DEFAULT_TOGGLE_WINDOW_SHORTCUT =
   process.platform === "darwin" ? "Command+L" : "Ctrl+L";
-const DEFAULT_TOGGLE_MOUSE_THROUGH_SHORTCUT =
-  process.platform === "darwin" ? "Command+T" : "Ctrl+T";
 
 let toggleWindowShortcut = DEFAULT_TOGGLE_WINDOW_SHORTCUT;
-let toggleMouseThroughShortcut = DEFAULT_TOGGLE_MOUSE_THROUGH_SHORTCUT;
 
 let isSettingsOpen = false;
-let isPinMode: boolean;
-let isPinTransparent: boolean;
-
-function syncWindowShadow() {
-  if (!mainWindow) return;
-  if (process.platform !== "darwin") return;
-  const shouldHaveShadow = !(isPinMode && isPinTransparent);
-  mainWindow.setHasShadow(shouldHaveShadow);
-}
-
-function applyPinStateToWindow() {
-  if (!mainWindow) return;
-  if (isPinMode) {
-    mainWindow.setAlwaysOnTop(true, "floating");
-    mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  } else {
-    mainWindow.setAlwaysOnTop(false);
-    mainWindow.setVisibleOnAllWorkspaces(false);
-  }
-  syncWindowShadow();
-}
 
 const isLocale = (value: unknown): value is Locale =>
   value === "en" || value === "zh";
@@ -117,29 +92,6 @@ async function loadShortcuts(): Promise<void> {
       .toggleWindowShortcut;
     if (typeof rawToggle === "string" && rawToggle.trim()) {
       toggleWindowShortcut = rawToggle.trim();
-    }
-
-    const rawMouseThrough = (settings as Record<string, unknown>)
-      .toggleMouseThroughShortcut;
-    if (typeof rawMouseThrough === "string" && rawMouseThrough.trim()) {
-      toggleMouseThroughShortcut = rawMouseThrough.trim();
-    }
-  } catch {
-    // ignore
-  }
-}
-
-async function loadWindowPinState(): Promise<void> {
-  try {
-    const settingsPath = path.join(getStorageDir(), "settings.json");
-    const settings = await lockedFs.readJson(settingsPath).catch(() => null);
-    if (!settings || typeof settings !== "object") return;
-    const raw = settings as { pinMode?: unknown; pinTransparent?: unknown };
-    if (typeof raw.pinMode === "boolean") {
-      isPinMode = raw.pinMode;
-    }
-    if (typeof raw.pinTransparent === "boolean") {
-      isPinTransparent = raw.pinTransparent;
     }
   } catch {
     // ignore
@@ -273,8 +225,8 @@ async function createWindow(options?: { load?: boolean }) {
       preload: path.join(__dirname, "preload.cjs"),
     },
     frame: false,
-    transparent: true,
-    backgroundColor: "#00000000",
+    transparent: false,
+    backgroundColor: "#0a0a0a",
     alwaysOnTop: false,
     hasShadow: true,
   });
@@ -324,84 +276,6 @@ async function createWindow(options?: { load?: boolean }) {
   });
   ipcMain.on("window-close", () => mainWindow?.close());
   ipcMain.on("window-focus", () => mainWindow?.focus());
-
-  ipcMain.on("toggle-always-on-top", (_event, flag) => {
-    if (flag) {
-      mainWindow?.setAlwaysOnTop(true, "screen-saver");
-      mainWindow?.setVisibleOnAllWorkspaces(true, {
-        visibleOnFullScreen: true,
-      });
-    } else {
-      mainWindow?.setAlwaysOnTop(false);
-      mainWindow?.setVisibleOnAllWorkspaces(false);
-    }
-  });
-
-  ipcMain.on(
-    "set-pin-mode",
-    (
-      _event,
-      { enabled, widthDelta }: { enabled: boolean; widthDelta: number },
-    ) => {
-      if (!mainWindow) return;
-
-      const requested = Math.round(widthDelta);
-      const shouldResize = Number.isFinite(requested) && requested > 0;
-
-      if (shouldResize) {
-        const [w, h] = mainWindow.getSize();
-        const [x, y] = mainWindow.getPosition();
-        const right = x + w;
-
-        if (enabled) {
-          const [minW] = mainWindow.getMinimumSize();
-          const nextWidth = Math.max(minW, w - requested);
-          const applied = Math.max(0, w - nextWidth);
-          lastGalleryDockDelta = applied;
-
-          mainWindow.setBounds({
-            x: right - nextWidth,
-            y,
-            width: nextWidth,
-            height: h,
-          });
-        } else {
-          const applied =
-            lastGalleryDockDelta > 0 ? lastGalleryDockDelta : requested;
-          lastGalleryDockDelta = 0;
-          const nextWidth = w + applied;
-
-          mainWindow.setBounds({
-            x: right - nextWidth,
-            y,
-            width: nextWidth,
-            height: h,
-          });
-        }
-      }
-
-      isPinMode = enabled;
-      applyPinStateToWindow();
-    },
-  );
-
-  ipcMain.on("set-pin-transparent", (_event, enabled: boolean) => {
-    if (!mainWindow) return;
-    isPinTransparent = enabled;
-    syncWindowShadow();
-  });
-
-  ipcMain.on("resize-window-by", (_event, deltaWidth) => {
-    if (!mainWindow) return;
-    const [w, h] = mainWindow.getSize();
-    const [x, y] = mainWindow.getPosition();
-    mainWindow.setBounds({
-      x: x - Math.round(deltaWidth),
-      y: y,
-      width: w + Math.round(deltaWidth),
-      height: h,
-    });
-  });
 
   ipcMain.on(
     "set-window-bounds",
@@ -594,41 +468,6 @@ function registerToggleWindowShortcut(accelerator: string) {
     toggleMainWindowVisibility,
     true,
   );
-}
-
-function registerToggleMouseThroughShortcut(accelerator: string) {
-  return registerShortcut(
-    accelerator,
-    toggleMouseThroughShortcut,
-    (v) => {
-      toggleMouseThroughShortcut = v;
-    },
-    () => {
-      mainWindow?.webContents.send("renderer-event", "toggle-mouse-through");
-    },
-  );
-}
-
-function registerAnchorShortcuts() {
-  const anchors = ["1", "2", "3"];
-  anchors.forEach((key) => {
-    // Restore: Cmd+Key / Ctrl+Key
-    const restoreAccel =
-      process.platform === "darwin" ? `Command+${key}` : `Ctrl+${key}`;
-    globalShortcut.register(restoreAccel, () => {
-      mainWindow?.webContents.send("renderer-event", "restore-anchor", key);
-    });
-
-    // Save: Cmd+Shift+Key / Ctrl+Shift+Key
-    // Note: Cmd+Shift+3 is a system screenshot shortcut on macOS, it might be intercepted by system.
-    const saveAccel =
-      process.platform === "darwin"
-        ? `Command+Shift+${key}`
-        : `Ctrl+Shift+${key}`;
-    globalShortcut.register(saveAccel, () => {
-      mainWindow?.webContents.send("renderer-event", "save-anchor", key);
-    });
-  });
 }
 
 function getModelDir(): string {
@@ -1306,19 +1145,14 @@ app.whenReady().then(async () => {
   log.info("App path:", app.getAppPath());
   log.info("User data:", app.getPath("userData"));
 
-  const taskLoadPin = loadWindowPinState();
   const taskLoadShortcuts = loadShortcuts();
   const taskCreateWindow = createWindow();
   // Start server early, but handle errors later
   const taskStartServer = startServer();
 
-  await Promise.all([taskLoadPin, taskLoadShortcuts, taskCreateWindow]);
-
-  applyPinStateToWindow();
+  await Promise.all([taskLoadShortcuts, taskCreateWindow]);
 
   registerToggleWindowShortcut(toggleWindowShortcut);
-  registerToggleMouseThroughShortcut(toggleMouseThroughShortcut);
-  registerAnchorShortcuts();
 
   if (mainWindow) {
     try {
@@ -1345,7 +1179,6 @@ app.whenReady().then(async () => {
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
-      applyPinStateToWindow();
     }
   });
 });
@@ -1354,22 +1187,6 @@ ipcMain.handle(
   "set-toggle-window-shortcut",
   async (_event, accelerator: string) => {
     return registerToggleWindowShortcut(accelerator);
-  },
-);
-
-ipcMain.handle(
-  "set-toggle-mouse-through-shortcut",
-  async (_event, accelerator: string) => {
-    return registerToggleMouseThroughShortcut(accelerator);
-  },
-);
-
-ipcMain.on(
-  "set-ignore-mouse-events",
-  (_event, ignore: boolean, options?: { forward: boolean }) => {
-    if (mainWindow) {
-      mainWindow.setIgnoreMouseEvents(ignore, options);
-    }
   },
 );
 

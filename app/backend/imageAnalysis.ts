@@ -1,5 +1,4 @@
 import sharp from "sharp";
-import fs from "fs-extra";
 
 // Helper: RGB to HSV
 // r, g, b in [0, 255]
@@ -42,7 +41,7 @@ function rgbToHex(r: number, g: number, b: number): string {
 
 export async function getDominantColor(filePath: string): Promise<string> {
   try {
-    const { data, info } = await sharp(filePath)
+    const { data } = await sharp(filePath)
       .resize(150, 150, { fit: "cover" }) // Resize for performance
       .removeAlpha() // Ensure RGB
       .raw()
@@ -95,7 +94,7 @@ export async function getDominantColor(filePath: string): Promise<string> {
 
     for (const color of sortedColors) {
       const { r, g, b, count } = color;
-      const { h, s, v } = rgbToHsv(r, g, b);
+      const { s, v } = rgbToHsv(r, g, b);
 
       const dominance = count / totalPixels;
       let score = dominance;

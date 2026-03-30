@@ -5,7 +5,7 @@ export const THEME = {
   secondary: "#17524e",
   danger: "#ef4444",
   
-  // Canvas Specific
+  // Selection visuals
   canvas: {
     selectionFill: "rgba(57, 197, 187, 0.2)",
     controlsBg: "white",

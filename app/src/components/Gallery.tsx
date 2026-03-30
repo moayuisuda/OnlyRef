@@ -307,54 +307,12 @@ export const Gallery: React.FC = () => {
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
-    const { active, over, activatorEvent, delta } = event;
+    const { active, over } = event;
 
     setActiveImage(null);
     setActiveSize(null);
     setActiveTag(null);
     setActiveTagSize(null);
-
-    const galleryEl = galleryRef.current;
-
-    // Calculate final pointer position
-    let pointerX = 0;
-    let pointerY = 0;
-    let hasPointer = false;
-
-    if (activatorEvent instanceof MouseEvent) {
-      pointerX = activatorEvent.clientX + delta.x;
-      pointerY = activatorEvent.clientY + delta.y;
-      hasPointer = true;
-    } else if (window.TouchEvent && activatorEvent instanceof TouchEvent) {
-      const touch = activatorEvent.changedTouches[0];
-      if (touch) {
-        pointerX = touch.clientX + delta.x;
-        pointerY = touch.clientY + delta.y;
-        hasPointer = true;
-      }
-    }
-
-    // Check if dragged out to Canvas (right side)
-    // Use pointer position instead of item rect center for better responsiveness
-    if (galleryEl && hasPointer) {
-      const rect = galleryEl.getBoundingClientRect();
-
-      if (pointerX > rect.right) {
-        const image = snap.images.find((i) => i.id === active.id);
-        if (image) {
-          window.dispatchEvent(
-            new CustomEvent("canvas-drop-request", {
-              detail: {
-                image: image as unknown as ImageMeta,
-                x: pointerX,
-                y: pointerY,
-              },
-            })
-          );
-          return;
-        }
-      }
-    }
 
     if (!over || active.id === over.id) return;
 
@@ -564,37 +522,16 @@ export const Gallery: React.FC = () => {
     }
   };
 
-  // Custom collision detection to stop sorting when dragging out
-  const customCollisionDetection = React.useCallback(
-    (args: Parameters<typeof closestCenter>[0]) => {
-      const { pointerCoordinates } = args;
-
-      if (galleryRef.current && pointerCoordinates) {
-        const rect = galleryRef.current.getBoundingClientRect();
-        // If pointer is near or past the right edge, disable sorting collision
-        // Adding a small buffer (e.g., 20px) inside the gallery to make it more sensitive
-        if (pointerCoordinates.x > rect.right - 20) {
-          return [];
-        }
-      }
-      return closestCenter(args);
-    },
-    []
-  );
-
   return (
     <div
-      className="flex flex-col h-full bg-neutral-900 border-r border-neutral-800 flex-shrink-0 relative transition-colors"
-      style={{ width: appSnap.sidebarWidth }}
+      className="flex h-full flex-col bg-neutral-950 transition-colors"
       onDrop={handleDrop}
       onDragOver={(e) => e.preventDefault()}
       onDragEnter={(e) => e.preventDefault()}
-      onClick={() => globalActions.setActiveArea("gallery")}
-      onFocus={() => globalActions.setActiveArea("gallery")}
     >
       <DndContext
         sensors={sensors}
-        collisionDetection={customCollisionDetection}
+        collisionDetection={closestCenter}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
       >
