@@ -8,12 +8,17 @@ import warnings
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
 os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "30")
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 warnings.filterwarnings("ignore", category=UserWarning, module="transformers")
 
 import torch
 from PIL import Image, ImageStat
 from transformers import CLIPModel, CLIPProcessor
+from transformers.utils import logging as transformers_logging
+
+transformers_logging.set_verbosity_error()
 
 
 _MODEL: Optional[CLIPModel] = None
@@ -347,14 +352,32 @@ def _get_clip() -> Tuple[CLIPModel, CLIPProcessor, torch.device]:
     return _MODEL, _PROCESSOR, _DEVICE
 
 
+def _to_normalized_vector_tensor(features: object) -> torch.Tensor:
+    tensor: Optional[torch.Tensor] = None
+    if isinstance(features, torch.Tensor):
+        tensor = features
+    elif isinstance(features, (tuple, list)) and len(features) > 0 and isinstance(features[0], torch.Tensor):
+        tensor = features[0]
+    elif hasattr(features, "pooler_output"):
+        pooler_output = getattr(features, "pooler_output")
+        if isinstance(pooler_output, torch.Tensor):
+            tensor = pooler_output
+    elif hasattr(features, "last_hidden_state"):
+        last_hidden_state = getattr(features, "last_hidden_state")
+        if isinstance(last_hidden_state, torch.Tensor):
+            tensor = last_hidden_state[:, 0, :]
+    if tensor is None:
+        raise RuntimeError(f"Unexpected feature output type: {type(features).__name__}")
+    return tensor / tensor.norm(dim=-1, keepdim=True)
+
+
 def encode_image(path: str) -> List[float]:
     model, processor, device = _get_clip()
     image = _load_image(path)
     inputs = processor(images=image, return_tensors="pt")
     inputs = {k: v.to(device) for k, v in inputs.items()}
     with torch.no_grad():
-        image_features = model.get_image_features(**inputs)
-        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+        image_features = _to_normalized_vector_tensor(model.get_image_features(**inputs))
     return image_features[0].cpu().tolist()
 
 
@@ -363,8 +386,7 @@ def encode_text(text: str) -> List[float]:
     inputs = processor(text=[text], return_tensors="pt", padding=True)
     inputs = {k: v.to(device) for k, v in inputs.items()}
     with torch.no_grad():
-        text_features = model.get_text_features(**inputs)
-        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+        text_features = _to_normalized_vector_tensor(model.get_text_features(**inputs))
     return text_features[0].cpu().tolist()
 
 

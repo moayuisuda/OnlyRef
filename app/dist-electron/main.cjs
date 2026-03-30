@@ -1235,27 +1235,32 @@ var createImagesRouter = (deps) => {
       res.json({ success: true, meta });
       void (async () => {
         var _a;
-        const settings = await deps.readSettings();
-        const enableVectorSearch = Boolean(settings.enableVectorSearch);
-        console.log("[VectorIndex] start import", {
-          id,
-          rowid,
-          enableVectorSearch,
-          imagePath: localPath
-        });
-        if (enableVectorSearch) {
-          const vector = await deps.runPythonVector("encode-image", localPath);
-          if (vector) {
-            imageDb2.setImageVector(rowid, vector);
-            console.log("[VectorIndex] stored import", {
-              id,
-              rowid,
-              length: vector.length
-            });
-            (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "image-updated", { id, hasVector: true });
-          } else {
-            console.error("[VectorIndex] vector missing import", { id, rowid });
+        try {
+          const settings = await deps.readSettings();
+          const enableVectorSearch = Boolean(settings.enableVectorSearch);
+          console.log("[VectorIndex] start import", {
+            id,
+            rowid,
+            enableVectorSearch,
+            imagePath: localPath
+          });
+          if (enableVectorSearch) {
+            const vector = await deps.runPythonVector("encode-image", localPath);
+            if (vector) {
+              imageDb2.setImageVector(rowid, vector);
+              console.log("[VectorIndex] stored import", {
+                id,
+                rowid,
+                length: vector.length
+              });
+              (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "image-updated", { id, hasVector: true });
+            } else {
+              console.error("[VectorIndex] vector missing import", { id, rowid });
+            }
           }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error("Async vector import failed:", message);
         }
       })();
       void (async () => {
@@ -2048,6 +2053,10 @@ var BasePythonService = class {
     const env = {
       ...process.env,
       PROREF_MODEL_DIR: import_path4.default.join(getStorageDir(), "model"),
+      PYTHONIOENCODING: "utf-8",
+      PYTHONUTF8: "1",
+      TRANSFORMERS_VERBOSITY: "error",
+      HF_HUB_DISABLE_PROGRESS_BARS: "1",
       // Use Aliyun mirror for PyPI (often more stable/accessible)
       UV_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
       // Also set PIP_INDEX_URL as fallback/standard
@@ -2152,6 +2161,10 @@ var PythonVectorService = class extends BasePythonService {
         const env = {
           ...process.env,
           PROREF_MODEL_DIR: import_path4.default.join(getStorageDir(), "model"),
+          PYTHONIOENCODING: "utf-8",
+          PYTHONUTF8: "1",
+          TRANSFORMERS_VERBOSITY: "error",
+          HF_HUB_DISABLE_PROGRESS_BARS: "1",
           UV_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
           PIP_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
           HF_ENDPOINT: "https://hf-mirror.com"
@@ -3190,7 +3203,7 @@ function getManagedUvPath() {
 }
 var UV_VERSION = "latest";
 function resolveUvReleaseAsset() {
-  const baseUrl = "https://xget.xi-xu.me/gh/astral-sh/uv/releases";
+  const baseUrl = "https://xget-5sd.pages.dev/gh/astral-sh/uv/releases";
   const downloadPath = UV_VERSION === "latest" ? "latest/download" : `download/${UV_VERSION}`;
   const base = `${baseUrl}/${downloadPath}`;
   if (process.platform === "darwin") {

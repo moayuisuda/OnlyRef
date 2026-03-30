@@ -292,6 +292,10 @@ class BasePythonService {
     const env = {
       ...process.env,
       PROREF_MODEL_DIR: path.join(getStorageDir(), "model"),
+      PYTHONIOENCODING: "utf-8",
+      PYTHONUTF8: "1",
+      TRANSFORMERS_VERBOSITY: "error",
+      HF_HUB_DISABLE_PROGRESS_BARS: "1",
       // Use Aliyun mirror for PyPI (often more stable/accessible)
       UV_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
       // Also set PIP_INDEX_URL as fallback/standard
@@ -408,6 +412,10 @@ class PythonVectorService extends BasePythonService {
         const env = {
           ...process.env,
           PROREF_MODEL_DIR: path.join(getStorageDir(), "model"),
+          PYTHONIOENCODING: "utf-8",
+          PYTHONUTF8: "1",
+          TRANSFORMERS_VERBOSITY: "error",
+          HF_HUB_DISABLE_PROGRESS_BARS: "1",
           UV_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
           PIP_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
           HF_ENDPOINT: "https://hf-mirror.com",

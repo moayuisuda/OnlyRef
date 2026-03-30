@@ -560,7 +560,7 @@ function getManagedUvPath(): string {
 const UV_VERSION = "latest"; // Set to a specific tag like 'v0.5.5' to lock version
 
 function resolveUvReleaseAsset(): { url: string; kind: "tar.gz" | "zip" } {
-  const baseUrl = "https://xget.xi-xu.me/gh/astral-sh/uv/releases";
+  const baseUrl = "https://xget-5sd.pages.dev/gh/astral-sh/uv/releases";
   const downloadPath =
     UV_VERSION === "latest" ? "latest/download" : `download/${UV_VERSION}`;
   const base = `${baseUrl}/${downloadPath}`;

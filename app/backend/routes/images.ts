@@ -676,27 +676,32 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
       res.json({ success: true, meta });
 
       void (async () => {
-        const settings = await deps.readSettings();
-        const enableVectorSearch = Boolean(settings.enableVectorSearch);
-        console.log("[VectorIndex] start import", {
-          id,
-          rowid,
-          enableVectorSearch,
-          imagePath: localPath,
-        });
-        if (enableVectorSearch) {
-          const vector = await deps.runPythonVector("encode-image", localPath);
-          if (vector) {
-            imageDb.setImageVector(rowid, vector);
-            console.log("[VectorIndex] stored import", {
-              id,
-              rowid,
-              length: vector.length,
-            });
-            deps.sendToRenderer?.("image-updated", { id, hasVector: true });
-          } else {
-            console.error("[VectorIndex] vector missing import", { id, rowid });
+        try {
+          const settings = await deps.readSettings();
+          const enableVectorSearch = Boolean(settings.enableVectorSearch);
+          console.log("[VectorIndex] start import", {
+            id,
+            rowid,
+            enableVectorSearch,
+            imagePath: localPath,
+          });
+          if (enableVectorSearch) {
+            const vector = await deps.runPythonVector("encode-image", localPath);
+            if (vector) {
+              imageDb.setImageVector(rowid, vector);
+              console.log("[VectorIndex] stored import", {
+                id,
+                rowid,
+                length: vector.length,
+              });
+              deps.sendToRenderer?.("image-updated", { id, hasVector: true });
+            } else {
+              console.error("[VectorIndex] vector missing import", { id, rowid });
+            }
           }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error("Async vector import failed:", message);
         }
       })();
 
