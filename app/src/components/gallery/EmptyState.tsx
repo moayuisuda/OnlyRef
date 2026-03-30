@@ -47,7 +47,7 @@ export const GalleryEmptyState: React.FC = () => {
       <div className="mt-12 flex flex-col items-center gap-2 opacity-40 hover:opacity-80 transition-opacity">
         <div className="h-px w-12 bg-neutral-700" />
         <div className="text-neutral-500 text-[10px] font-mono tracking-[0.2em] uppercase">
-          OnlyRef
+          PiCaptain
         </div>
       </div>
     </div>

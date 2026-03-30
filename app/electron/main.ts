@@ -17,7 +17,7 @@ import { lockedFs, withFileLock } from "../backend/fileLock";
 // Ensure app name is correct for log paths
 if (!app.isPackaged) {
   // In development, electron might use 'Electron' or 'app' as name
-  app.setName("OnlyRef");
+  app.setName("PiCaptain");
 }
 
 Object.assign(console, log.functions);

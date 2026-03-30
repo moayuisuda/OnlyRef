@@ -23,8 +23,8 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 
 // electron/main.ts
 var import_electron3 = require("electron");
-var import_path8 = __toESM(require("path"), 1);
-var import_fs_extra7 = __toESM(require("fs-extra"), 1);
+var import_path5 = __toESM(require("path"), 1);
+var import_fs_extra4 = __toESM(require("fs-extra"), 1);
 var import_electron_log = __toESM(require("electron-log"), 1);
 var import_electron_updater = require("electron-updater");
 var import_child_process2 = require("child_process");
@@ -101,11 +101,11 @@ var import_zlib = __toESM(require("zlib"), 1);
 
 // backend/server.ts
 var import_electron2 = require("electron");
-var import_path7 = __toESM(require("path"), 1);
-var import_express8 = __toESM(require("express"), 1);
+var import_path4 = __toESM(require("path"), 1);
+var import_express5 = __toESM(require("express"), 1);
 var import_cors = __toESM(require("cors"), 1);
 var import_body_parser = __toESM(require("body-parser"), 1);
-var import_fs_extra6 = __toESM(require("fs-extra"), 1);
+var import_fs_extra3 = __toESM(require("fs-extra"), 1);
 var import_https = __toESM(require("https"), 1);
 var import_http = __toESM(require("http"), 1);
 var import_child_process = require("child_process");
@@ -464,6 +464,17 @@ var createImageDb = (db) => {
     });
     tx();
   };
+  const deleteTag = (name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const row = db.prepare(`SELECT id FROM tags WHERE name = ?`).get(trimmed);
+    if (!(row == null ? void 0 : row.id)) return;
+    const tx = db.transaction(() => {
+      db.prepare(`DELETE FROM image_tags WHERE tagId = ?`).run(row.id);
+      db.prepare(`DELETE FROM tags WHERE id = ?`).run(row.id);
+    });
+    tx();
+  };
   const searchImages = (params) => {
     const { vector, limit, tagIds, tagCount, tone, color, afterDistance, afterRowid } = params;
     if (!vector || vector.length === 0) return [];
@@ -554,12 +565,14 @@ var createImageDb = (db) => {
   const searchImagesByText = (params) => {
     const { query, limit, tagIds, tagCount, tone, color, afterCreatedAt, afterRowid } = params;
     const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    if (tokens.length === 0) return [];
+    const hasTextQuery = tokens.length > 0;
+    if (!hasTextQuery && (!tagIds || tagIds.length === 0)) return [];
     const idsJson = JSON.stringify(tagIds ?? []);
     const colorSql = buildColorFilterSql("i", color);
     const textConditions = tokens.map(
       (_, i) => `(lower(i.filename) LIKE @token${i} OR lower(i.imagePath) LIKE @token${i})`
     ).join(" AND ");
+    const textSql = hasTextQuery ? `AND (${textConditions})` : "";
     const sql = `
       WITH tag_ids AS (
         SELECT DISTINCT value AS tagId
@@ -578,7 +591,7 @@ var createImageDb = (db) => {
             HAVING COUNT(DISTINCT it.tagId) = @tagCount
           )
         )
-        AND (${textConditions})
+        ${textSql}
         AND (
           @hasCursor = 0
           OR i.createdAt < @cursorCreatedAt
@@ -624,6 +637,7 @@ var createImageDb = (db) => {
     getImageRowByFilename,
     listTags,
     renameTag,
+    deleteTag,
     resolveTagIds,
     getTagIdsByNames
   };
@@ -910,9 +924,8 @@ var createImagesRouter = (deps) => {
       }
       const tagIds = imageDb2.getTagIdsByNames(tags);
       const tagCount = tags.length;
-      const searchQuery = query || tags.join(" ");
       const results = imageDb2.searchImagesByText({
-        query: searchQuery,
+        query,
         limit: effectiveLimit,
         tagIds,
         tagCount,
@@ -1581,6 +1594,30 @@ var createTagsRouter = (deps) => {
       res.status(500).json({ error: message });
     }
   });
+  router.delete("/api/tag/:name", async (req, res) => {
+    try {
+      if (guardStorage(res)) return;
+      const imageDb2 = deps.getImageDb();
+      const rawName = req.params.name;
+      const name = typeof rawName === "string" ? rawName.trim() : "";
+      if (!name) {
+        res.status(400).json({ error: "Tag name is required" });
+        return;
+      }
+      imageDb2.deleteTag(name);
+      const settings = await deps.readSettings();
+      const tagColors = settings.tagColors || {};
+      if (Object.prototype.hasOwnProperty.call(tagColors, name)) {
+        const nextTagColors = { ...tagColors };
+        delete nextTagColors[name];
+        await deps.writeSettings({ ...settings, tagColors: nextTagColors });
+      }
+      res.json({ success: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    }
+  });
   return router;
 };
 
@@ -1641,397 +1678,10 @@ var createSettingsRouter = (deps) => {
   return router;
 };
 
-// backend/routes/canvas.ts
-var import_path4 = __toESM(require("path"), 1);
-var import_express4 = __toESM(require("express"), 1);
-var import_fs_extra3 = __toESM(require("fs-extra"), 1);
-var getCanvasPaths = (dir, name) => {
-  const safeName = name.replace(/[/\\:*?"<>|]/g, "_") || "Default";
-  const canvasDir = import_path4.default.join(dir, safeName);
-  return {
-    dir: canvasDir,
-    dataFile: import_path4.default.join(canvasDir, "canvas.json"),
-    viewportFile: import_path4.default.join(canvasDir, "canvas_viewport.json")
-  };
-};
-var ensureDefaultCanvas = async (dir) => {
-  const defaultCanvasPath = import_path4.default.join(dir, "Default");
-  const canvases = await lockedFs.readdir(dir).catch(() => []);
-  if (canvases.length === 0) {
-    await lockedFs.ensureDir(defaultCanvasPath);
-  }
-};
-var createCanvasRouter = (deps) => {
-  const router = import_express4.default.Router();
-  router.get("/api/canvases", async (_req, res) => {
-    try {
-      const canvasesDir = deps.getCanvasesDir();
-      await ensureDefaultCanvas(canvasesDir);
-      const dirs = await lockedFs.readdir(canvasesDir);
-      const canvases = [];
-      for (const dir of dirs) {
-        const fullPath = import_path4.default.join(canvasesDir, dir);
-        try {
-          const stat = await lockedFs.stat(fullPath);
-          if (stat.isDirectory()) {
-            canvases.push({ name: dir, lastModified: stat.mtimeMs });
-          }
-        } catch {
-        }
-      }
-      res.json(canvases.sort((a, b) => b.lastModified - a.lastModified));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: message });
-    }
-  });
-  router.post("/api/canvases", async (req, res) => {
-    try {
-      const { name } = req.body;
-      if (!name) {
-        res.status(400).json({ error: "Canvas name is required" });
-        return;
-      }
-      const paths = getCanvasPaths(deps.getCanvasesDir(), name);
-      await withFileLock(paths.dir, async () => {
-        if (await import_fs_extra3.default.pathExists(paths.dir)) {
-          res.status(409).json({ error: "Canvas already exists" });
-          return;
-        }
-        await import_fs_extra3.default.ensureDir(paths.dir);
-      });
-      if (res.headersSent) return;
-      res.json({ success: true });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: message });
-    }
-  });
-  router.post("/api/canvases/rename", async (req, res) => {
-    try {
-      const { oldName, newName } = req.body;
-      if (!oldName || !newName) {
-        res.status(400).json({ error: "Both oldName and newName are required" });
-        return;
-      }
-      const canvasesDir = deps.getCanvasesDir();
-      const oldPaths = getCanvasPaths(canvasesDir, oldName);
-      const newPaths = getCanvasPaths(canvasesDir, newName);
-      await withFileLocks([oldPaths.dir, newPaths.dir], async () => {
-        if (!await import_fs_extra3.default.pathExists(oldPaths.dir)) {
-          res.status(404).json({ error: "Canvas not found" });
-          return;
-        }
-        if (await import_fs_extra3.default.pathExists(newPaths.dir)) {
-          res.status(409).json({ error: "Target canvas name already exists" });
-          return;
-        }
-        await import_fs_extra3.default.rename(oldPaths.dir, newPaths.dir);
-      });
-      if (res.headersSent) return;
-      res.json({ success: true });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: message });
-    }
-  });
-  router.post("/api/canvases/delete", async (req, res) => {
-    try {
-      const { name } = req.body;
-      if (!name) {
-        res.status(400).json({ error: "Canvas name is required" });
-        return;
-      }
-      const paths = getCanvasPaths(deps.getCanvasesDir(), name);
-      await withFileLock(paths.dir, async () => {
-        if (await import_fs_extra3.default.pathExists(paths.dir)) {
-          await import_fs_extra3.default.remove(paths.dir);
-        }
-      });
-      res.json({ success: true });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: message });
-    }
-  });
-  router.post("/api/save-canvas", async (req, res) => {
-    try {
-      const { images, canvasName } = req.body;
-      const paths = getCanvasPaths(deps.getCanvasesDir(), canvasName || "Default");
-      await withFileLocks([paths.dir, paths.dataFile], async () => {
-        await import_fs_extra3.default.ensureDir(paths.dir);
-        await import_fs_extra3.default.writeJson(paths.dataFile, images);
-      });
-      res.json({ success: true });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: message });
-    }
-  });
-  router.post("/api/canvas-viewport", async (req, res) => {
-    try {
-      const { viewport, canvasName } = req.body;
-      const paths = getCanvasPaths(deps.getCanvasesDir(), canvasName || "Default");
-      await withFileLocks([paths.dir, paths.viewportFile], async () => {
-        await import_fs_extra3.default.ensureDir(paths.dir);
-        await import_fs_extra3.default.writeJson(paths.viewportFile, viewport);
-      });
-      res.json({ success: true });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: message });
-    }
-  });
-  router.get("/api/canvas-viewport", async (req, res) => {
-    try {
-      const canvasName = req.query.canvasName;
-      const paths = getCanvasPaths(deps.getCanvasesDir(), canvasName || "Default");
-      await withFileLock(paths.viewportFile, async () => {
-        if (await import_fs_extra3.default.pathExists(paths.viewportFile)) {
-          const viewport = await import_fs_extra3.default.readJson(paths.viewportFile);
-          res.json(viewport);
-          return;
-        }
-        res.json(null);
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: message });
-    }
-  });
-  router.get("/api/load-canvas", async (req, res) => {
-    try {
-      const canvasName = req.query.canvasName;
-      const paths = getCanvasPaths(deps.getCanvasesDir(), canvasName || "Default");
-      let images = [];
-      await withFileLock(paths.dataFile, async () => {
-        if (await import_fs_extra3.default.pathExists(paths.dataFile)) {
-          images = await import_fs_extra3.default.readJson(paths.dataFile);
-        }
-      });
-      try {
-        const canvasTempDir = deps.getCanvasTempDir();
-        await withFileLock(canvasTempDir, async () => {
-          if (await import_fs_extra3.default.pathExists(canvasTempDir)) {
-            const usedTempFiles = /* @__PURE__ */ new Set();
-            if (Array.isArray(images)) {
-              images.forEach((img) => {
-                const pathValue = img.localPath || img.imagePath;
-                if (pathValue) {
-                  const basename = import_path4.default.basename(pathValue);
-                  usedTempFiles.add(basename);
-                }
-              });
-            }
-            const files = await import_fs_extra3.default.readdir(canvasTempDir);
-            for (const file of files) {
-              if (!usedTempFiles.has(file)) {
-                await import_fs_extra3.default.unlink(import_path4.default.join(canvasTempDir, file));
-              }
-            }
-          }
-        });
-      } catch {
-      }
-      res.json(images);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: message });
-    }
-  });
-  return router;
-};
-
-// backend/routes/anchors.ts
-var import_express5 = __toESM(require("express"), 1);
-var import_path5 = __toESM(require("path"), 1);
-var import_fs_extra4 = __toESM(require("fs-extra"), 1);
-var createAnchorsRouter = (deps) => {
-  const router = import_express5.default.Router();
-  const getAnchorsPath = () => import_path5.default.join(deps.getStorageDir(), "anchors.json");
-  router.get("/api/anchors", async (_req, res) => {
-    try {
-      const anchorsPath = getAnchorsPath();
-      await withFileLock(anchorsPath, async () => {
-        if (await import_fs_extra4.default.pathExists(anchorsPath)) {
-          const anchors = await import_fs_extra4.default.readJson(anchorsPath);
-          res.json(anchors);
-          return;
-        }
-        res.json({});
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: message });
-    }
-  });
-  router.post("/api/anchors", async (req, res) => {
-    try {
-      const anchors = req.body;
-      const anchorsPath = getAnchorsPath();
-      await withFileLock(anchorsPath, async () => {
-        await import_fs_extra4.default.ensureFile(anchorsPath);
-        await import_fs_extra4.default.writeJson(anchorsPath, anchors);
-      });
-      res.json({ success: true });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: message });
-    }
-  });
-  return router;
-};
-
-// backend/routes/temp.ts
-var import_path6 = __toESM(require("path"), 1);
-var import_express6 = __toESM(require("express"), 1);
-var import_fs_extra5 = __toESM(require("fs-extra"), 1);
-var createTempRouter = (deps) => {
-  const router = import_express6.default.Router();
-  router.post("/api/download-url", async (req, res) => {
-    try {
-      const { url } = req.body;
-      if (!url || typeof url !== "string") {
-        res.status(400).json({ error: "URL is required" });
-        return;
-      }
-      const trimmedUrl = url.trim();
-      if (!trimmedUrl.startsWith("http://") && !trimmedUrl.startsWith("https://")) {
-        res.status(400).json({ error: "Invalid URL" });
-        return;
-      }
-      let urlFilename = "image.jpg";
-      try {
-        const urlObj = new URL(trimmedUrl);
-        const pathname = urlObj.pathname;
-        const baseName = import_path6.default.basename(pathname).split("?")[0];
-        if (baseName && /\.(jpe?g|png|gif|webp|bmp|svg)$/i.test(baseName)) {
-          urlFilename = baseName;
-        }
-      } catch {
-      }
-      const ext = import_path6.default.extname(urlFilename) || ".jpg";
-      const nameWithoutExt = import_path6.default.basename(urlFilename, ext);
-      const safeName = nameWithoutExt.replace(/[^a-zA-Z0-9.\-_]/g, "_") || "image";
-      const timestamp = Date.now();
-      const filename = `${safeName}_${timestamp}${ext}`;
-      const filepath = import_path6.default.join(deps.getCanvasTempDir(), filename);
-      await deps.downloadImage(trimmedUrl, filepath);
-      res.json({
-        success: true,
-        filename,
-        path: filepath
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: message });
-    }
-  });
-  router.post("/api/upload-temp", async (req, res) => {
-    try {
-      const { imageBase64, filename: providedFilename } = req.body;
-      if (!imageBase64) {
-        res.status(400).json({ error: "No image data" });
-        return;
-      }
-      let filename = "temp.png";
-      if (providedFilename) {
-        const ext = import_path6.default.extname(providedFilename) || ".png";
-        const name = import_path6.default.basename(providedFilename, ext);
-        const safeName = name.replace(/[^a-zA-Z0-9.\-_]/g, "_");
-        filename = `${safeName}${ext}`;
-      }
-      const filepath = import_path6.default.join(deps.getCanvasTempDir(), filename);
-      const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
-      await withFileLock(filepath, async () => {
-        await import_fs_extra5.default.writeFile(filepath, base64Data, "base64");
-      });
-      res.json({
-        success: true,
-        filename,
-        path: filepath
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: message });
-    }
-  });
-  router.post("/api/delete-temp-file", async (req, res) => {
-    try {
-      const { filePath } = req.body;
-      if (!filePath) {
-        res.status(400).json({ error: "File path is required" });
-        return;
-      }
-      const canvasTempDir = deps.getCanvasTempDir();
-      const normalizedPath = import_path6.default.normalize(filePath);
-      if (!normalizedPath.startsWith(canvasTempDir)) {
-        const inTemp = import_path6.default.join(canvasTempDir, import_path6.default.basename(filePath));
-        await withFileLock(inTemp, async () => {
-          if (await import_fs_extra5.default.pathExists(inTemp)) {
-            await import_fs_extra5.default.unlink(inTemp);
-            res.json({ success: true });
-            return;
-          }
-          res.status(403).json({ error: "Invalid file path: Must be in temp directory" });
-        });
-        return;
-      }
-      await withFileLock(normalizedPath, async () => {
-        if (await import_fs_extra5.default.pathExists(normalizedPath)) {
-          await import_fs_extra5.default.unlink(normalizedPath);
-          res.json({ success: true });
-          return;
-        }
-        res.status(404).json({ error: "File not found" });
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: message });
-    }
-  });
-  router.post("/api/temp-dominant-color", async (req, res) => {
-    try {
-      const { filePath } = req.body;
-      if (!filePath) {
-        res.status(400).json({ error: "File path is required" });
-        return;
-      }
-      const normalizedPath = import_path6.default.normalize(filePath);
-      let targetPath = normalizedPath;
-      const canvasTempDir = deps.getCanvasTempDir();
-      if (!normalizedPath.startsWith(canvasTempDir)) {
-        const inTemp = import_path6.default.join(canvasTempDir, import_path6.default.basename(filePath));
-        const exists = await withFileLock(inTemp, () => import_fs_extra5.default.pathExists(inTemp));
-        if (!exists) {
-          res.status(403).json({ error: "Invalid file path: Must be in temp directory" });
-          return;
-        }
-        targetPath = inTemp;
-      } else {
-        const exists = await withFileLock(
-          normalizedPath,
-          () => import_fs_extra5.default.pathExists(normalizedPath)
-        );
-        if (!exists) {
-          res.status(404).json({ error: "File not found" });
-          return;
-        }
-      }
-      const dominantColor = await deps.runPythonDominantColor(targetPath);
-      res.json({ success: true, dominantColor });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: message });
-    }
-  });
-  return router;
-};
-
 // backend/routes/model.ts
-var import_express7 = __toESM(require("express"), 1);
+var import_express4 = __toESM(require("express"), 1);
 var createModelRouter = (deps) => {
-  const router = import_express7.default.Router();
+  const router = import_express4.default.Router();
   router.post("/api/download-model", async (_req, res) => {
     try {
       deps.downloadModel((data) => {
@@ -2086,7 +1736,7 @@ function rgbToHex(r, g, b) {
 }
 async function getDominantColor(filePath) {
   try {
-    const { data, info } = await (0, import_sharp.default)(filePath).resize(150, 150, { fit: "cover" }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const { data } = await (0, import_sharp.default)(filePath).resize(150, 150, { fit: "cover" }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
     const pixelCount = data.length / 3;
     const colorCounts = /* @__PURE__ */ new Map();
     const QUANTIZATION_BITS = 5;
@@ -2117,7 +1767,7 @@ async function getDominantColor(filePath) {
     const totalPixels = pixelCount;
     for (const color of sortedColors) {
       const { r, g, b, count } = color;
-      const { h, s, v } = rgbToHsv(r, g, b);
+      const { s, v } = rgbToHsv(r, g, b);
       const dominance = count / totalPixels;
       let score = dominance;
       score *= 1 + s * 1.5;
@@ -2197,8 +1847,8 @@ async function calculateTone(filePath) {
 
 // backend/server.ts
 var SERVER_PORT = 30001;
-var CONFIG_FILE = import_path7.default.join(import_electron2.app.getPath("userData"), "lookback_config.json");
-var DEFAULT_STORAGE_DIR = import_path7.default.join(import_electron2.app.getPath("userData"), "lookback_storage");
+var CONFIG_FILE = import_path4.default.join(import_electron2.app.getPath("userData"), "picaptain_config.json");
+var DEFAULT_STORAGE_DIR = import_path4.default.join(import_electron2.app.getPath("userData"), "picaptain_storage");
 var loadStorageRoot = async () => {
   try {
     if (await lockedFs.pathExists(CONFIG_FILE)) {
@@ -2211,16 +1861,16 @@ var loadStorageRoot = async () => {
   }
   if (import_electron2.app.isPackaged && process.platform !== "darwin") {
     try {
-      const exeDir = import_path7.default.dirname(import_electron2.app.getPath("exe"));
-      const portableDataDir = import_path7.default.join(exeDir, "data");
+      const exeDir = import_path4.default.dirname(import_electron2.app.getPath("exe"));
+      const portableDataDir = import_path4.default.join(exeDir, "data");
       if (await lockedFs.pathExists(portableDataDir)) {
         return portableDataDir;
       }
-      const testFile = import_path7.default.join(exeDir, ".write_test");
+      const testFile = import_path4.default.join(exeDir, ".write_test");
       const writable = await withFileLock(testFile, async () => {
         try {
-          await import_fs_extra6.default.writeFile(testFile, "test");
-          await import_fs_extra6.default.remove(testFile);
+          await import_fs_extra3.default.writeFile(testFile, "test");
+          await import_fs_extra3.default.remove(testFile);
           return true;
         } catch {
           return false;
@@ -2235,25 +1885,19 @@ var loadStorageRoot = async () => {
   return DEFAULT_STORAGE_DIR;
 };
 var STORAGE_DIR = DEFAULT_STORAGE_DIR;
-var IMAGE_DIR = import_path7.default.join(STORAGE_DIR, "images");
-var CANVAS_TEMP_DIR = import_path7.default.join(STORAGE_DIR, "canvas_temp");
-var CANVASES_DIR = import_path7.default.join(STORAGE_DIR, "canvases");
-var SETTINGS_FILE = import_path7.default.join(STORAGE_DIR, "settings.json");
+var IMAGE_DIR = import_path4.default.join(STORAGE_DIR, "images");
+var SETTINGS_FILE = import_path4.default.join(STORAGE_DIR, "settings.json");
 var settingsCache = null;
 var updateStoragePaths = (root) => {
   STORAGE_DIR = root;
-  IMAGE_DIR = import_path7.default.join(STORAGE_DIR, "images");
-  CANVAS_TEMP_DIR = import_path7.default.join(STORAGE_DIR, "canvas_temp");
-  CANVASES_DIR = import_path7.default.join(STORAGE_DIR, "canvases");
-  SETTINGS_FILE = import_path7.default.join(STORAGE_DIR, "settings.json");
+  IMAGE_DIR = import_path4.default.join(STORAGE_DIR, "images");
+  SETTINGS_FILE = import_path4.default.join(STORAGE_DIR, "settings.json");
 };
 var ensureStorageDirs = async (root) => {
   await Promise.all([
     lockedFs.ensureDir(root),
-    lockedFs.ensureDir(import_path7.default.join(root, "images")),
-    lockedFs.ensureDir(import_path7.default.join(root, "model")),
-    lockedFs.ensureDir(import_path7.default.join(root, "canvas_temp")),
-    lockedFs.ensureDir(import_path7.default.join(root, "canvases"))
+    lockedFs.ensureDir(import_path4.default.join(root, "images")),
+    lockedFs.ensureDir(import_path4.default.join(root, "model"))
   ]);
 };
 var getStorageDir = () => STORAGE_DIR;
@@ -2264,19 +1908,19 @@ var setStorageRoot = async (root) => {
   settingsCache = null;
   await ensureStorageDirs(STORAGE_DIR);
   await withFileLock(CONFIG_FILE, async () => {
-    await import_fs_extra6.default.writeJson(CONFIG_FILE, { storageDir: STORAGE_DIR });
+    await import_fs_extra3.default.writeJson(CONFIG_FILE, { storageDir: STORAGE_DIR });
   });
   initDatabase();
 };
 var readSettings = async () => {
   if (settingsCache) return settingsCache;
   return withFileLock(SETTINGS_FILE, async () => {
-    if (!await import_fs_extra6.default.pathExists(SETTINGS_FILE)) {
+    if (!await import_fs_extra3.default.pathExists(SETTINGS_FILE)) {
       settingsCache = {};
       return settingsCache;
     }
     try {
-      const raw = await import_fs_extra6.default.readJson(SETTINGS_FILE);
+      const raw = await import_fs_extra3.default.readJson(SETTINGS_FILE);
       if (raw && typeof raw === "object") {
         settingsCache = raw;
         return settingsCache;
@@ -2291,7 +1935,7 @@ var readSettings = async () => {
 var persistSettings = (0, import_radash.debounce)({ delay: 500 }, async (settings) => {
   await withFileLock(SETTINGS_FILE, async () => {
     try {
-      await import_fs_extra6.default.writeJson(SETTINGS_FILE, settings);
+      await import_fs_extra3.default.writeJson(SETTINGS_FILE, settings);
     } catch (error) {
       console.error("Failed to write settings file", error);
     }
@@ -2324,50 +1968,19 @@ var BasePythonService = class {
   process = null;
   queue = [];
   serviceName = "Python Service";
+  getManagedUvPath() {
+    return import_path4.default.join(
+      import_electron2.app.getPath("userData"),
+      "uv",
+      process.platform === "win32" ? "uv.exe" : "uv"
+    );
+  }
   getUvCandidates() {
-    var _a, _b;
+    var _a;
     const candidates = [];
-    if (import_electron2.app.isPackaged) {
-      if (process.platform === "win32") {
-        candidates.push(import_path7.default.join(process.resourcesPath, "bin", "uv.exe"));
-      } else if (process.platform === "darwin") {
-        candidates.push(
-          import_path7.default.join(
-            process.resourcesPath,
-            "bin",
-            "mac",
-            "arm64",
-            "uv"
-          )
-        );
-      }
-    } else {
-      if (process.platform === "win32") {
-        console.log(import_path7.default.join(import_electron2.app.getAppPath(), "bin", "win32", "uv.exe"));
-        candidates.push(import_path7.default.join(import_electron2.app.getAppPath(), "bin", "win32", "uv.exe"));
-      } else if (process.platform === "darwin") {
-        candidates.push(
-          import_path7.default.join(
-            import_electron2.app.getAppPath(),
-            "bin",
-            "mac",
-            "arm64",
-            "uv"
-          )
-        );
-      }
-    }
     const env = (_a = process.env.PROREF_UV_PATH) == null ? void 0 : _a.trim();
     if (env) candidates.push(env);
-    const home = (_b = process.env.HOME) == null ? void 0 : _b.trim();
-    if (home) {
-      const versions = ["3.14", "3.13", "3.12", "3.11", "3.10"];
-      for (const v of versions) {
-        candidates.push(import_path7.default.join(home, "Library", "Python", v, "bin", "uv"));
-      }
-      candidates.push(import_path7.default.join(home, ".local", "bin", "uv"));
-    }
-    candidates.push("/opt/homebrew/bin/uv", "/usr/local/bin/uv", "uv");
+    candidates.push(this.getManagedUvPath());
     const uniq = [];
     const seen = /* @__PURE__ */ new Set();
     for (const c of candidates) {
@@ -2434,7 +2047,7 @@ var BasePythonService = class {
   spawnProcess(command, args, cwd) {
     const env = {
       ...process.env,
-      PROREF_MODEL_DIR: import_path7.default.join(getStorageDir(), "model"),
+      PROREF_MODEL_DIR: import_path4.default.join(getStorageDir(), "model"),
       // Use Aliyun mirror for PyPI (often more stable/accessible)
       UV_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
       // Also set PIP_INDEX_URL as fallback/standard
@@ -2452,11 +2065,11 @@ var BasePythonService = class {
   }
   start() {
     if (this.process) return;
-    let scriptPath = import_path7.default.join(__dirname, "../backend/python/tagger.py");
+    let scriptPath = import_path4.default.join(__dirname, "../backend/python/tagger.py");
     if (import_electron2.app.isPackaged) {
       scriptPath = scriptPath.replace("app.asar", "app.asar.unpacked");
     }
-    const pythonDir = import_path7.default.dirname(scriptPath);
+    const pythonDir = import_path4.default.dirname(scriptPath);
     const uvArgs = ["run", "python", scriptPath];
     const uvCandidates = this.getUvCandidates();
     const trySpawn = async (index) => {
@@ -2467,7 +2080,7 @@ var BasePythonService = class {
         return;
       }
       const command = uvCandidates[index];
-      if (import_path7.default.isAbsolute(command)) {
+      if (import_path4.default.isAbsolute(command)) {
         const exists = await lockedFs.pathExists(command);
         if (!exists) {
           await trySpawn(index + 1);
@@ -2515,11 +2128,11 @@ var PythonVectorService = class extends BasePythonService {
   }
   downloadModel(onProgress) {
     return new Promise((resolve, reject) => {
-      let scriptPath = import_path7.default.join(__dirname, "../backend/python/tagger.py");
+      let scriptPath = import_path4.default.join(__dirname, "../backend/python/tagger.py");
       if (import_electron2.app.isPackaged) {
         scriptPath = scriptPath.replace("app.asar", "app.asar.unpacked");
       }
-      const pythonDir = import_path7.default.dirname(scriptPath);
+      const pythonDir = import_path4.default.dirname(scriptPath);
       const uvArgs = ["run", "python", scriptPath, "--download-model"];
       const uvCandidates = this.getUvCandidates();
       const trySpawn = async (index) => {
@@ -2529,7 +2142,7 @@ var PythonVectorService = class extends BasePythonService {
           return;
         }
         const command = uvCandidates[index];
-        if (import_path7.default.isAbsolute(command)) {
+        if (import_path4.default.isAbsolute(command)) {
           const exists = await lockedFs.pathExists(command);
           if (!exists) {
             await trySpawn(index + 1);
@@ -2538,7 +2151,7 @@ var PythonVectorService = class extends BasePythonService {
         }
         const env = {
           ...process.env,
-          PROREF_MODEL_DIR: import_path7.default.join(getStorageDir(), "model"),
+          PROREF_MODEL_DIR: import_path4.default.join(getStorageDir(), "model"),
           UV_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
           PIP_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
           HF_ENDPOINT: "https://hf-mirror.com"
@@ -2632,14 +2245,14 @@ function downloadImage(url, dest) {
         }
       }
       srcPath = decodeURIComponent(srcPath);
-      import_fs_extra6.default.copy(srcPath, dest).then(() => resolve()).catch((err) => {
-        import_fs_extra6.default.unlink(dest, () => {
+      import_fs_extra3.default.copy(srcPath, dest).then(() => resolve()).catch((err) => {
+        import_fs_extra3.default.unlink(dest, () => {
         });
         reject(err);
       });
       return;
     }
-    const file = import_fs_extra6.default.createWriteStream(dest);
+    const file = import_fs_extra3.default.createWriteStream(dest);
     const client = url.startsWith("https") ? import_https.default : import_http.default;
     const request = client.get(url, (response) => {
       if (response.statusCode === 200) {
@@ -2650,7 +2263,7 @@ function downloadImage(url, dest) {
         });
       } else {
         file.close();
-        import_fs_extra6.default.unlink(dest, () => {
+        import_fs_extra3.default.unlink(dest, () => {
         });
         reject(
           new Error(
@@ -2660,12 +2273,12 @@ function downloadImage(url, dest) {
       }
     });
     request.on("error", (err) => {
-      import_fs_extra6.default.unlink(dest, () => {
+      import_fs_extra3.default.unlink(dest, () => {
       });
       reject(err);
     });
     file.on("error", (err) => {
-      import_fs_extra6.default.unlink(dest, () => {
+      import_fs_extra3.default.unlink(dest, () => {
       });
       reject(err);
     });
@@ -2673,7 +2286,7 @@ function downloadImage(url, dest) {
 }
 async function startServer(sendToRenderer) {
   await initializeStorage();
-  const server = (0, import_express8.default)();
+  const server = (0, import_express5.default)();
   server.use((0, import_cors.default)());
   server.use(import_body_parser.default.json({ limit: "25mb" }));
   const vectorService = new PythonVectorService();
@@ -2698,10 +2311,10 @@ async function startServer(sendToRenderer) {
       method: req == null ? void 0 : req.method,
       url: req == null ? void 0 : req.originalUrl
     };
-    const logFile = import_path7.default.join(STORAGE_DIR, "server.log");
+    const logFile = import_path4.default.join(STORAGE_DIR, "server.log");
     await withFileLock(logFile, async () => {
-      await import_fs_extra6.default.ensureFile(logFile);
-      await import_fs_extra6.default.appendFile(logFile, `${JSON.stringify(payload)}
+      await import_fs_extra3.default.ensureFile(logFile);
+      await import_fs_extra3.default.appendFile(logFile, `${JSON.stringify(payload)}
 `);
     });
   };
@@ -2715,24 +2328,6 @@ async function startServer(sendToRenderer) {
     return imageDb;
   };
   server.use(createSettingsRouter({ readSettings, writeSettings }));
-  server.use(
-    createCanvasRouter({
-      getCanvasesDir: () => CANVASES_DIR,
-      getCanvasTempDir: () => CANVAS_TEMP_DIR
-    })
-  );
-  server.use(
-    createAnchorsRouter({
-      getStorageDir: () => STORAGE_DIR
-    })
-  );
-  server.use(
-    createTempRouter({
-      getCanvasTempDir: () => CANVAS_TEMP_DIR,
-      downloadImage,
-      runPythonDominantColor
-    })
-  );
   server.use(
     createModelRouter({
       downloadModel: (onProgress) => vectorService.downloadModel((data) => {
@@ -2764,8 +2359,7 @@ async function startServer(sendToRenderer) {
       sendToRenderer: sendRenderer
     })
   );
-  server.use("/images", import_express8.default.static(STORAGE_DIR));
-  server.use("/temp-images", import_express8.default.static(CANVAS_TEMP_DIR));
+  server.use("/images", import_express5.default.static(STORAGE_DIR));
   server.use(
     (err, req, res, _next) => {
       const message = err instanceof Error ? err.message : String(err);
@@ -2785,6 +2379,7 @@ var en = {
   "common.ok": "OK",
   "common.confirm": "Confirm",
   "common.cancel": "Cancel",
+  "common.delete": "Delete",
   "common.close": "Close",
   "common.loading": "Loading...",
   "common.clear": "Clear",
@@ -2830,6 +2425,8 @@ var en = {
   "toast.logCopyFailed": "Failed to copy log",
   "toast.tagRenamed": "Tag renamed",
   "toast.tagRenameFailed": "Failed to rename tag",
+  "toast.tagDeleted": "Tag deleted",
+  "toast.tagDeleteFailed": "Failed to delete tag",
   "toast.updateTagsFailed": "Failed to update tags",
   "toast.updateDominantColorFailed": "Failed to update dominant color",
   "toast.updateNameFailed": "Failed to update name",
@@ -2842,7 +2439,7 @@ var en = {
   "toast.openFileFailed": "Failed to open file",
   "toast.shortcutInvalid": "Invalid shortcut",
   "toast.shortcutUpdateFailed": "Failed to update shortcut: {{error}}",
-  "envInit.brandTitle": "Oh, Captain!",
+  "envInit.brandTitle": "PiCaptain",
   "envInit.heading": "Setting up the Python environment...",
   "envInit.subheading": "First run may download tools and install dependencies. This is a one-time step.",
   "envInit.preparing": "Preparing...",
@@ -2864,7 +2461,7 @@ var en = {
   "indexing.starting": "Starting...",
   "indexing.progress": "Indexing {{current}}/{{total}}...",
   "indexing.completed": "Completed",
-  "errors.title": "Oh Captain, Something went wrong",
+  "errors.title": "PiCaptain encountered an error",
   "errors.unexpected": "An unexpected error occurred.",
   "errors.applicationLogTitle": "Application Log (Last 50KB)",
   "errors.loadingLogs": "Loading logs...",
@@ -2894,10 +2491,13 @@ var en = {
   "gallery.contextMenu.indexVector": "Index Vector",
   "gallery.contextMenu.deleteImage": "Delete Image",
   "gallery.dominantColor.title": "Dominant Color",
-  "gallery.empty.bodyLine1": "Your journey begins.",
-  "gallery.empty.bodyLine2": "Drag & drop to command your fleet.",
+  "gallery.empty.bodyLine1": "Your image collection starts here.",
+  "gallery.empty.bodyLine2": "Drop or paste images to build your reference library.",
   "gallery.empty.dragHint": "Drag images here",
   "tag.setColor": "Set Color",
+  "tag.delete": "Delete Tag",
+  "tag.deleteConfirmTitle": "Delete Tag",
+  "tag.deleteConfirmMessage": 'Delete "{{tag}}" from all images? This action cannot be undone.',
   "canvas.toolbar.expand": "Expand Toolbar",
   "canvas.toolbar.collapse": "Collapse Toolbar",
   "canvas.toolbar.filters": "Filters",
@@ -2942,7 +2542,7 @@ var en = {
   "dialog.modelDownloadFailedTitle": "Model download failed",
   "dialog.modelDownloadFailedMessage": "Failed to download model files.",
   "dialog.modelDownloadFailedDetail": "Exit code: {{code}}\nProgress: {{progress}}%\nModel dir: {{dir}}",
-  "dialog.chooseStorageFolderTitle": "Choose LookBack storage folder",
+  "dialog.chooseStorageFolderTitle": "Choose PiCaptain storage folder",
   "toast.globalError": "Error: {{message}}",
   "toast.unhandledRejection": "Unhandled Promise Rejection: {{reason}}",
   "toast.storageIncompatible": "Storage is incompatible. Please reset the data folder.",
@@ -2971,6 +2571,7 @@ var zh = {
   "common.ok": "\u786E\u5B9A",
   "common.confirm": "\u786E\u8BA4",
   "common.cancel": "\u53D6\u6D88",
+  "common.delete": "\u5220\u9664",
   "common.close": "\u5173\u95ED",
   "common.loading": "\u52A0\u8F7D\u4E2D\u2026",
   "common.clear": "\u6E05\u9664",
@@ -3016,6 +2617,8 @@ var zh = {
   "toast.logCopyFailed": "\u590D\u5236\u65E5\u5FD7\u5931\u8D25",
   "toast.tagRenamed": "\u6807\u7B7E\u5DF2\u91CD\u547D\u540D",
   "toast.tagRenameFailed": "\u91CD\u547D\u540D\u6807\u7B7E\u5931\u8D25",
+  "toast.tagDeleted": "\u6807\u7B7E\u5DF2\u5220\u9664",
+  "toast.tagDeleteFailed": "\u5220\u9664\u6807\u7B7E\u5931\u8D25",
   "toast.updateTagsFailed": "\u66F4\u65B0\u6807\u7B7E\u5931\u8D25",
   "toast.updateDominantColorFailed": "\u66F4\u65B0\u4E3B\u8272\u5931\u8D25",
   "toast.updateNameFailed": "\u66F4\u65B0\u540D\u79F0\u5931\u8D25",
@@ -3028,7 +2631,7 @@ var zh = {
   "toast.openFileFailed": "\u6253\u5F00\u6587\u4EF6\u5931\u8D25",
   "toast.shortcutInvalid": "\u5FEB\u6377\u952E\u65E0\u6548",
   "toast.shortcutUpdateFailed": "\u66F4\u65B0\u5FEB\u6377\u952E\u5931\u8D25\uFF1A{{error}}",
-  "envInit.brandTitle": "Oh, Captain!",
+  "envInit.brandTitle": "PiCaptain",
   "envInit.heading": "\u6B63\u5728\u914D\u7F6E Python \u73AF\u5883\u2026",
   "envInit.subheading": "\u9996\u6B21\u8FD0\u884C\u53EF\u80FD\u4F1A\u4E0B\u8F7D\u5DE5\u5177\u5E76\u5B89\u88C5\u4F9D\u8D56\uFF0C\u8FD9\u662F\u4E00\u6B21\u6027\u6B65\u9AA4\u3002",
   "envInit.preparing": "\u51C6\u5907\u4E2D\u2026",
@@ -3050,7 +2653,7 @@ var zh = {
   "indexing.starting": "\u5F00\u59CB\u2026",
   "indexing.progress": "\u7D22\u5F15\u4E2D {{current}}/{{total}}\u2026",
   "indexing.completed": "\u5B8C\u6210",
-  "errors.title": "Oh Captain\uFF0C\u51FA\u9519\u4E86",
+  "errors.title": "PiCaptain \u51FA\u73B0\u9519\u8BEF",
   "errors.unexpected": "\u53D1\u751F\u4E86\u4E00\u4E2A\u610F\u5916\u9519\u8BEF\u3002",
   "errors.applicationLogTitle": "\u5E94\u7528\u65E5\u5FD7\uFF08\u6700\u8FD1 50KB\uFF09",
   "errors.loadingLogs": "\u6B63\u5728\u52A0\u8F7D\u65E5\u5FD7\u2026",
@@ -3084,6 +2687,9 @@ var zh = {
   "gallery.empty.bodyLine2": "\u62D6\u653E\u56FE\u7247\u6765\u6307\u6325\u4F60\u7684\u5185\u5BB9\u3002",
   "gallery.empty.dragHint": "\u5C06\u56FE\u7247\u62D6\u5230\u8FD9\u91CC",
   "tag.setColor": "\u8BBE\u7F6E\u989C\u8272",
+  "tag.delete": "\u5220\u9664\u6807\u7B7E",
+  "tag.deleteConfirmTitle": "\u5220\u9664\u6807\u7B7E",
+  "tag.deleteConfirmMessage": "\u8981\u4ECE\u6240\u6709\u56FE\u7247\u4E2D\u5220\u9664\u201C{{tag}}\u201D\u5417\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u53EF\u64A4\u9500\u3002",
   "canvas.toolbar.expand": "\u5C55\u5F00\u5DE5\u5177\u680F",
   "canvas.toolbar.collapse": "\u6536\u8D77\u5DE5\u5177\u680F",
   "canvas.toolbar.filters": "\u6EE4\u955C",
@@ -3128,7 +2734,7 @@ var zh = {
   "dialog.modelDownloadFailedTitle": "\u6A21\u578B\u4E0B\u8F7D\u5931\u8D25",
   "dialog.modelDownloadFailedMessage": "\u65E0\u6CD5\u4E0B\u8F7D\u6A21\u578B\u6587\u4EF6\u3002",
   "dialog.modelDownloadFailedDetail": "\u9000\u51FA\u7801\uFF1A{{code}}\n\u8FDB\u5EA6\uFF1A{{progress}}%\n\u6A21\u578B\u76EE\u5F55\uFF1A{{dir}}",
-  "dialog.chooseStorageFolderTitle": "\u9009\u62E9 LookBack \u5B58\u50A8\u6587\u4EF6\u5939",
+  "dialog.chooseStorageFolderTitle": "\u9009\u62E9 PiCaptain \u5B58\u50A8\u6587\u4EF6\u5939",
   "toast.globalError": "\u9519\u8BEF\uFF1A{{message}}",
   "toast.unhandledRejection": "\u672A\u5904\u7406\u7684 Promise \u62D2\u7EDD\uFF1A{{reason}}",
   "toast.storageIncompatible": "\u5B58\u50A8\u76EE\u5F55\u4E0D\u517C\u5BB9\uFF0C\u8BF7\u91CD\u7F6E\u6570\u636E\u6587\u4EF6\u5939\u3002",
@@ -3170,51 +2776,29 @@ function t(locale, key, params) {
 // electron/main.ts
 var import_radash2 = require("radash");
 if (!import_electron3.app.isPackaged) {
-  import_electron3.app.setName("LookBack");
+  import_electron3.app.setName("PiCaptain");
 }
 Object.assign(console, import_electron_log.default.functions);
 import_electron_log.default.transports.file.level = "info";
 import_electron_log.default.transports.file.maxSize = 5 * 1024 * 1024;
 import_electron_log.default.transports.file.archiveLog = (file) => {
   const filePath = file.toString();
-  const info = import_path8.default.parse(filePath);
-  const dest = import_path8.default.join(info.dir, info.name + ".old" + info.ext);
+  const info = import_path5.default.parse(filePath);
+  const dest = import_path5.default.join(info.dir, info.name + ".old" + info.ext);
   lockedFs.rename(filePath, dest).catch((e) => {
     console.warn("Could not rotate log", e);
   });
 };
 var mainWindow = null;
 var isAppHidden = false;
-var lastGalleryDockDelta = 0;
 var localeCache = null;
 var DEFAULT_TOGGLE_WINDOW_SHORTCUT = process.platform === "darwin" ? "Command+L" : "Ctrl+L";
-var DEFAULT_TOGGLE_MOUSE_THROUGH_SHORTCUT = process.platform === "darwin" ? "Command+T" : "Ctrl+T";
 var toggleWindowShortcut = DEFAULT_TOGGLE_WINDOW_SHORTCUT;
-var toggleMouseThroughShortcut = DEFAULT_TOGGLE_MOUSE_THROUGH_SHORTCUT;
 var isSettingsOpen = false;
-var isPinMode;
-var isPinTransparent;
-function syncWindowShadow() {
-  if (!mainWindow) return;
-  if (process.platform !== "darwin") return;
-  const shouldHaveShadow = !(isPinMode && isPinTransparent);
-  mainWindow.setHasShadow(shouldHaveShadow);
-}
-function applyPinStateToWindow() {
-  if (!mainWindow) return;
-  if (isPinMode) {
-    mainWindow.setAlwaysOnTop(true, "floating");
-    mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  } else {
-    mainWindow.setAlwaysOnTop(false);
-    mainWindow.setVisibleOnAllWorkspaces(false);
-  }
-  syncWindowShadow();
-}
 var isLocale = (value) => value === "en" || value === "zh";
 async function getLocale() {
   try {
-    const settingsPath = import_path8.default.join(getStorageDir(), "settings.json");
+    const settingsPath = import_path5.default.join(getStorageDir(), "settings.json");
     const stat = await lockedFs.stat(settingsPath).catch(() => null);
     if (!stat) return "en";
     if (localeCache && localeCache.mtimeMs === stat.mtimeMs)
@@ -3230,31 +2814,12 @@ async function getLocale() {
 }
 async function loadShortcuts() {
   try {
-    const settingsPath = import_path8.default.join(getStorageDir(), "settings.json");
+    const settingsPath = import_path5.default.join(getStorageDir(), "settings.json");
     const settings = await lockedFs.readJson(settingsPath).catch(() => null);
     if (!settings || typeof settings !== "object") return;
     const rawToggle = settings.toggleWindowShortcut;
     if (typeof rawToggle === "string" && rawToggle.trim()) {
       toggleWindowShortcut = rawToggle.trim();
-    }
-    const rawMouseThrough = settings.toggleMouseThroughShortcut;
-    if (typeof rawMouseThrough === "string" && rawMouseThrough.trim()) {
-      toggleMouseThroughShortcut = rawMouseThrough.trim();
-    }
-  } catch {
-  }
-}
-async function loadWindowPinState() {
-  try {
-    const settingsPath = import_path8.default.join(getStorageDir(), "settings.json");
-    const settings = await lockedFs.readJson(settingsPath).catch(() => null);
-    if (!settings || typeof settings !== "object") return;
-    const raw = settings;
-    if (typeof raw.pinMode === "boolean") {
-      isPinMode = raw.pinMode;
-    }
-    if (typeof raw.pinTransparent === "boolean") {
-      isPinTransparent = raw.pinTransparent;
     }
   } catch {
   }
@@ -3265,7 +2830,7 @@ function loadMainWindow() {
     import_electron_log.default.info("Loading renderer from localhost");
     void mainWindow.loadURL("http://localhost:5173");
   } else {
-    const filePath = import_path8.default.join(__dirname, "../dist-renderer/index.html");
+    const filePath = import_path5.default.join(__dirname, "../dist-renderer/index.html");
     import_electron_log.default.info("Loading renderer from file:", filePath);
     void mainWindow.loadFile(filePath);
   }
@@ -3312,7 +2877,7 @@ async function saveWindowBounds() {
   if (mainWindow.isMinimized() || mainWindow.isMaximized()) return;
   try {
     const bounds = mainWindow.getBounds();
-    const settingsPath = import_path8.default.join(getStorageDir(), "settings.json");
+    const settingsPath = import_path5.default.join(getStorageDir(), "settings.json");
     const settings = await lockedFs.readJson(settingsPath).catch(() => ({}));
     await lockedFs.writeJson(settingsPath, {
       ...settings,
@@ -3329,7 +2894,7 @@ async function createWindow(options) {
   const { width, height } = import_electron3.screen.getPrimaryDisplay().workAreaSize;
   let windowState = {};
   try {
-    const settingsPath = import_path8.default.join(getStorageDir(), "settings.json");
+    const settingsPath = import_path5.default.join(getStorageDir(), "settings.json");
     if (await lockedFs.pathExists(settingsPath)) {
       const settingsRaw = await lockedFs.readJson(settingsPath);
       if (settingsRaw && typeof settingsRaw === "object") {
@@ -3347,15 +2912,15 @@ async function createWindow(options) {
     height: windowState.height || Math.floor(height * 0.8),
     x: windowState.x,
     y: windowState.y,
-    icon: import_path8.default.join(__dirname, "../resources/icon.svg"),
+    icon: import_path5.default.join(__dirname, "../resources/icon.svg"),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: import_path8.default.join(__dirname, "preload.cjs")
+      preload: import_path5.default.join(__dirname, "preload.cjs")
     },
     frame: false,
-    transparent: true,
-    backgroundColor: "#00000000",
+    transparent: false,
+    backgroundColor: "#0a0a0a",
     alwaysOnTop: false,
     hasShadow: true
   });
@@ -3395,70 +2960,6 @@ async function createWindow(options) {
   });
   import_electron3.ipcMain.on("window-close", () => mainWindow == null ? void 0 : mainWindow.close());
   import_electron3.ipcMain.on("window-focus", () => mainWindow == null ? void 0 : mainWindow.focus());
-  import_electron3.ipcMain.on("toggle-always-on-top", (_event, flag) => {
-    if (flag) {
-      mainWindow == null ? void 0 : mainWindow.setAlwaysOnTop(true, "screen-saver");
-      mainWindow == null ? void 0 : mainWindow.setVisibleOnAllWorkspaces(true, {
-        visibleOnFullScreen: true
-      });
-    } else {
-      mainWindow == null ? void 0 : mainWindow.setAlwaysOnTop(false);
-      mainWindow == null ? void 0 : mainWindow.setVisibleOnAllWorkspaces(false);
-    }
-  });
-  import_electron3.ipcMain.on(
-    "set-pin-mode",
-    (_event, { enabled, widthDelta }) => {
-      if (!mainWindow) return;
-      const requested = Math.round(widthDelta);
-      const shouldResize = Number.isFinite(requested) && requested > 0;
-      if (shouldResize) {
-        const [w, h] = mainWindow.getSize();
-        const [x, y] = mainWindow.getPosition();
-        const right = x + w;
-        if (enabled) {
-          const [minW] = mainWindow.getMinimumSize();
-          const nextWidth = Math.max(minW, w - requested);
-          const applied = Math.max(0, w - nextWidth);
-          lastGalleryDockDelta = applied;
-          mainWindow.setBounds({
-            x: right - nextWidth,
-            y,
-            width: nextWidth,
-            height: h
-          });
-        } else {
-          const applied = lastGalleryDockDelta > 0 ? lastGalleryDockDelta : requested;
-          lastGalleryDockDelta = 0;
-          const nextWidth = w + applied;
-          mainWindow.setBounds({
-            x: right - nextWidth,
-            y,
-            width: nextWidth,
-            height: h
-          });
-        }
-      }
-      isPinMode = enabled;
-      applyPinStateToWindow();
-    }
-  );
-  import_electron3.ipcMain.on("set-pin-transparent", (_event, enabled) => {
-    if (!mainWindow) return;
-    isPinTransparent = enabled;
-    syncWindowShadow();
-  });
-  import_electron3.ipcMain.on("resize-window-by", (_event, deltaWidth) => {
-    if (!mainWindow) return;
-    const [w, h] = mainWindow.getSize();
-    const [x, y] = mainWindow.getPosition();
-    mainWindow.setBounds({
-      x: x - Math.round(deltaWidth),
-      y,
-      width: w + Math.round(deltaWidth),
-      height: h
-    });
-  });
   import_electron3.ipcMain.on(
     "set-window-bounds",
     (_event, bounds) => {
@@ -3489,7 +2990,7 @@ async function createWindow(options) {
         const start = Math.max(0, size - READ_SIZE);
         return await withFileLock(logPath, () => {
           return new Promise((resolve, reject) => {
-            const stream = import_fs_extra7.default.createReadStream(logPath, {
+            const stream = import_fs_extra4.default.createReadStream(logPath, {
               start,
               encoding: "utf8"
             });
@@ -3613,67 +3114,27 @@ function registerToggleWindowShortcut(accelerator) {
     true
   );
 }
-function registerToggleMouseThroughShortcut(accelerator) {
-  return registerShortcut(
-    accelerator,
-    toggleMouseThroughShortcut,
-    (v) => {
-      toggleMouseThroughShortcut = v;
-    },
-    () => {
-      mainWindow == null ? void 0 : mainWindow.webContents.send("renderer-event", "toggle-mouse-through");
-    }
-  );
-}
-function registerAnchorShortcuts() {
-  const anchors = ["1", "2", "3"];
-  anchors.forEach((key) => {
-    const restoreAccel = process.platform === "darwin" ? `Command+${key}` : `Ctrl+${key}`;
-    import_electron3.globalShortcut.register(restoreAccel, () => {
-      mainWindow == null ? void 0 : mainWindow.webContents.send("renderer-event", "restore-anchor", key);
-    });
-    const saveAccel = process.platform === "darwin" ? `Command+Shift+${key}` : `Ctrl+Shift+${key}`;
-    import_electron3.globalShortcut.register(saveAccel, () => {
-      mainWindow == null ? void 0 : mainWindow.webContents.send("renderer-event", "save-anchor", key);
-    });
-  });
-}
 function getModelDir() {
-  return import_path8.default.join(getStorageDir(), "model");
+  return import_path5.default.join(getStorageDir(), "model");
 }
 async function hasRequiredModelFiles(modelDir) {
   const hasConfig = await lockedFs.pathExists(
-    import_path8.default.join(modelDir, "config.json")
+    import_path5.default.join(modelDir, "config.json")
   );
   const hasWeights = await lockedFs.pathExists(
-    import_path8.default.join(modelDir, "model.safetensors")
+    import_path5.default.join(modelDir, "model.safetensors")
   );
   const hasProcessor = await lockedFs.pathExists(
-    import_path8.default.join(modelDir, "preprocessor_config.json")
+    import_path5.default.join(modelDir, "preprocessor_config.json")
   );
   const hasTokenizer = await lockedFs.pathExists(
-    import_path8.default.join(modelDir, "tokenizer.json")
+    import_path5.default.join(modelDir, "tokenizer.json")
   );
   return hasConfig && hasWeights && hasProcessor && hasTokenizer;
 }
 function getUvCandidates() {
   var _a;
   const candidates = [];
-  if (import_electron3.app.isPackaged) {
-    if (process.platform === "win32") {
-      candidates.push(import_path8.default.join(process.resourcesPath, "bin", "uv.exe"));
-    } else if (process.platform === "darwin") {
-      candidates.push(
-        import_path8.default.join(process.resourcesPath, "bin", "mac", "arm64", "uv")
-      );
-    }
-  } else {
-    if (process.platform === "win32") {
-      candidates.push(import_path8.default.join(import_electron3.app.getAppPath(), "bin", "win32", "uv.exe"));
-    } else if (process.platform === "darwin") {
-      candidates.push(import_path8.default.join(import_electron3.app.getAppPath(), "bin", "mac", "arm64", "uv"));
-    }
-  }
   const env = (_a = process.env.PROREF_UV_PATH) == null ? void 0 : _a.trim();
   if (env) candidates.push(env);
   candidates.push(getManagedUvPath());
@@ -3696,7 +3157,7 @@ function spawnUvPython(args, cwd, env) {
         return;
       }
       const command = candidates[index];
-      if (import_path8.default.isAbsolute(command)) {
+      if (import_path5.default.isAbsolute(command)) {
         const exists = await lockedFs.pathExists(command);
         if (!exists) {
           trySpawn(index + 1);
@@ -3721,7 +3182,7 @@ function spawnUvPython(args, cwd, env) {
   });
 }
 function getManagedUvPath() {
-  return import_path8.default.join(
+  return import_path5.default.join(
     import_electron3.app.getPath("userData"),
     "uv",
     process.platform === "win32" ? "uv.exe" : "uv"
@@ -3869,11 +3330,32 @@ function downloadBuffer(url, onProgress) {
     fetch(url, 0);
   });
 }
-async function ensureUvInstalled() {
+function sendEnvInitProgress(parent, payload) {
+  if (parent.isDestroyed()) return;
+  parent.webContents.send("env-init-progress", payload);
+}
+function makeEnvInitReporter(parent) {
+  return (statusKey, progress, statusParams) => {
+    const normalized = Math.max(0, Math.min(1, progress));
+    sendEnvInitProgress(parent, {
+      isOpen: true,
+      statusKey,
+      statusParams,
+      progress: normalized,
+      percentText: `${Math.round(normalized * 100)}%`
+    });
+  };
+}
+function closeEnvInitProgress(parent) {
+  if (parent.isDestroyed()) return;
+  parent.webContents.send("env-init-progress", { isOpen: false });
+}
+async function ensureUvInstalled(onProgress) {
   const candidates = getUvCandidates();
   let existing = "";
+  onProgress == null ? void 0 : onProgress("envInit.checkingUv", 0.08);
   for (const c of candidates) {
-    if (import_path8.default.isAbsolute(c) && await lockedFs.pathExists(c)) {
+    if (import_path5.default.isAbsolute(c) && await lockedFs.pathExists(c)) {
       existing = c;
       break;
     }
@@ -3884,10 +3366,18 @@ async function ensureUvInstalled() {
     process.env.PROREF_UV_PATH = uvPath;
     return uvPath;
   }
-  await lockedFs.ensureDir(import_path8.default.dirname(uvPath));
+  await lockedFs.ensureDir(import_path5.default.dirname(uvPath));
   const { url, kind } = resolveUvReleaseAsset();
   import_electron_log.default.info(`Downloading uv from: ${url}`);
-  const buf = await downloadBuffer(url);
+  onProgress == null ? void 0 : onProgress("envInit.downloadingUv", 0.18);
+  const buf = await downloadBuffer(url, (current, total) => {
+    if (total <= 0) {
+      onProgress == null ? void 0 : onProgress("envInit.downloadingUv", 0.26);
+      return;
+    }
+    const ratio = current / total;
+    onProgress == null ? void 0 : onProgress("envInit.downloadingUv", 0.18 + ratio * 0.22);
+  });
   let binary = null;
   if (kind === "tar.gz") {
     const tar = import_zlib.default.gunzipSync(buf);
@@ -3906,7 +3396,7 @@ async function ensureUvInstalled() {
   }
   await lockedFs.writeFile(uvPath, binary);
   if (process.platform !== "win32") {
-    await withFileLock(uvPath, () => import_fs_extra7.default.chmod(uvPath, 493));
+    await withFileLock(uvPath, () => import_fs_extra4.default.chmod(uvPath, 493));
   }
   process.env.PROREF_UV_PATH = uvPath;
   return uvPath;
@@ -3918,45 +3408,73 @@ function getUnpackedPath(originalPath) {
   return originalPath;
 }
 async function ensurePythonRuntime(parent) {
+  const reportEnvInit = makeEnvInitReporter(parent);
   const modelDir = getModelDir();
   process.env.PROREF_MODEL_DIR = modelDir;
   const scriptPath = getUnpackedPath(
-    import_path8.default.join(__dirname, "../backend/python/tagger.py")
+    import_path5.default.join(__dirname, "../backend/python/tagger.py")
   );
-  const pythonDir = import_path8.default.dirname(scriptPath);
-  console.log("Ensuring uv installation...");
-  await ensureUvInstalled();
-  const venvPath = import_path8.default.join(pythonDir, ".venv");
-  if (import_electron3.app.isPackaged && await lockedFs.pathExists(venvPath)) {
-    console.log("Found pre-packaged python environment, skipping uv sync");
-    return;
-  }
-  const syncProc = await spawnUvPython(["sync", "--frozen"], pythonDir, {
-    ...process.env,
-    PROREF_MODEL_DIR: modelDir,
-    UV_NO_COLOR: "1"
-  });
-  if (syncProc.stderr) {
-    syncProc.stderr.on("data", (chunk) => {
-      const text = chunk.toString().toLowerCase();
-      console.log({ text });
+  const pythonDir = import_path5.default.dirname(scriptPath);
+  reportEnvInit("envInit.preparing", 0);
+  try {
+    console.log("Ensuring uv installation...");
+    await ensureUvInstalled((statusKey, progress) => {
+      reportEnvInit(statusKey, progress);
     });
-  }
-  const syncExit = await new Promise(
-    (resolve) => syncProc.once("exit", resolve)
-  );
-  if (syncExit !== 0) {
-    const locale = await getLocale();
-    await import_electron3.dialog.showMessageBox(parent, {
-      type: "error",
-      title: t(locale, "dialog.pythonSetupFailedTitle"),
-      message: t(locale, "dialog.pythonSetupFailedMessage"),
-      detail: t(locale, "dialog.pythonSetupFailedDetail", {
-        code: syncExit,
-        dir: pythonDir
-      })
+    const venvPath = import_path5.default.join(pythonDir, ".venv");
+    if (import_electron3.app.isPackaged && await lockedFs.pathExists(venvPath)) {
+      console.log("Found pre-packaged python environment, skipping uv sync");
+      reportEnvInit("envInit.pythonEnvReady", 1);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      return;
+    }
+    reportEnvInit("envInit.initializingPythonEnv", 0.42);
+    const syncProc = await spawnUvPython(["sync", "--frozen"], pythonDir, {
+      ...process.env,
+      PROREF_MODEL_DIR: modelDir,
+      UV_NO_COLOR: "1"
     });
-    throw new Error("Python setup failed");
+    if (syncProc.stderr) {
+      syncProc.stderr.on("data", (chunk) => {
+        const text = chunk.toString();
+        const lower = text.toLowerCase();
+        console.log({ text: lower });
+        if (lower.includes("resolved")) {
+          reportEnvInit("envInit.resolvingDependencies", 0.58);
+          return;
+        }
+        if (lower.includes("downloading")) {
+          reportEnvInit("envInit.downloadingPackages", 0.72);
+          return;
+        }
+        if (lower.includes("installed") || lower.includes("installing") || lower.includes("prepared")) {
+          reportEnvInit("envInit.installingPackages", 0.88);
+          return;
+        }
+      });
+    }
+    const syncExit = await new Promise(
+      (resolve) => syncProc.once("exit", resolve)
+    );
+    if (syncExit !== 0) {
+      const locale = await getLocale();
+      closeEnvInitProgress(parent);
+      await import_electron3.dialog.showMessageBox(parent, {
+        type: "error",
+        title: t(locale, "dialog.pythonSetupFailedTitle"),
+        message: t(locale, "dialog.pythonSetupFailedMessage"),
+        detail: t(locale, "dialog.pythonSetupFailedDetail", {
+          code: syncExit,
+          dir: pythonDir
+        })
+      });
+      throw new Error("Python setup failed");
+    }
+    reportEnvInit("envInit.verifyingEnvironment", 0.96);
+    reportEnvInit("envInit.pythonEnvReady", 1);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  } finally {
+    closeEnvInitProgress(parent);
   }
 }
 async function ensureModelReady(parent, force = false) {
@@ -3967,7 +3485,7 @@ async function ensureModelReady(parent, force = false) {
   const modelMissing = !await hasRequiredModelFiles(modelDir);
   if (!force) {
     try {
-      const settingsPath = import_path8.default.join(getStorageDir(), "settings.json");
+      const settingsPath = import_path5.default.join(getStorageDir(), "settings.json");
       if (await lockedFs.pathExists(settingsPath)) {
         const settingsRaw = await lockedFs.readJson(settingsPath);
         if (settingsRaw && typeof settingsRaw === "object") {
@@ -4021,9 +3539,9 @@ async function ensureModelReady(parent, force = false) {
   sendProgress("model.preparingDownload", "0%", 0);
   parent.setProgressBar(0);
   const scriptPath = getUnpackedPath(
-    import_path8.default.join(__dirname, "../backend/python/tagger.py")
+    import_path5.default.join(__dirname, "../backend/python/tagger.py")
   );
-  const pythonDir = import_path8.default.dirname(scriptPath);
+  const pythonDir = import_path5.default.dirname(scriptPath);
   let percentText = "0%";
   let progress = 0;
   sendProgress("model.downloading", percentText, progress);
@@ -4184,15 +3702,11 @@ import_electron3.app.whenReady().then(async () => {
   import_electron_log.default.info("Log file location:", import_electron_log.default.transports.file.getFile().path);
   import_electron_log.default.info("App path:", import_electron3.app.getAppPath());
   import_electron_log.default.info("User data:", import_electron3.app.getPath("userData"));
-  const taskLoadPin = loadWindowPinState();
   const taskLoadShortcuts = loadShortcuts();
   const taskCreateWindow = createWindow();
   const taskStartServer = startServer2();
-  await Promise.all([taskLoadPin, taskLoadShortcuts, taskCreateWindow]);
-  applyPinStateToWindow();
+  await Promise.all([taskLoadShortcuts, taskCreateWindow]);
   registerToggleWindowShortcut(toggleWindowShortcut);
-  registerToggleMouseThroughShortcut(toggleMouseThroughShortcut);
-  registerAnchorShortcuts();
   if (mainWindow) {
     try {
       await taskStartServer;
@@ -4210,7 +3724,6 @@ import_electron3.app.whenReady().then(async () => {
   import_electron3.app.on("activate", () => {
     if (import_electron3.BrowserWindow.getAllWindows().length === 0) {
       createWindow();
-      applyPinStateToWindow();
     }
   });
 });
@@ -4218,20 +3731,6 @@ import_electron3.ipcMain.handle(
   "set-toggle-window-shortcut",
   async (_event, accelerator) => {
     return registerToggleWindowShortcut(accelerator);
-  }
-);
-import_electron3.ipcMain.handle(
-  "set-toggle-mouse-through-shortcut",
-  async (_event, accelerator) => {
-    return registerToggleMouseThroughShortcut(accelerator);
-  }
-);
-import_electron3.ipcMain.on(
-  "set-ignore-mouse-events",
-  (_event, ignore, options) => {
-    if (mainWindow) {
-      mainWindow.setIgnoreMouseEvents(ignore, options);
-    }
   }
 );
 import_electron3.ipcMain.on("settings-open-changed", (_event, open) => {

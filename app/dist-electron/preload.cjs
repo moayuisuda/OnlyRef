@@ -5,14 +5,8 @@ import_electron.contextBridge.exposeInMainWorld("electron", {
   max: () => import_electron.ipcRenderer.send("window-max"),
   close: () => import_electron.ipcRenderer.send("window-close"),
   focus: () => import_electron.ipcRenderer.send("window-focus"),
-  toggleAlwaysOnTop: (flag) => import_electron.ipcRenderer.send("toggle-always-on-top", flag),
-  setPinMode: (enabled, widthDelta) => import_electron.ipcRenderer.send("set-pin-mode", { enabled, widthDelta }),
-  setPinTransparent: (enabled) => import_electron.ipcRenderer.send("set-pin-transparent", enabled),
-  resizeWindowBy: (delta) => import_electron.ipcRenderer.send("resize-window-by", delta),
   setWindowBounds: (bounds) => import_electron.ipcRenderer.send("set-window-bounds", bounds),
   setToggleWindowShortcut: (accelerator) => import_electron.ipcRenderer.invoke("set-toggle-window-shortcut", accelerator),
-  setToggleMouseThroughShortcut: (accelerator) => import_electron.ipcRenderer.invoke("set-toggle-mouse-through-shortcut", accelerator),
-  setIgnoreMouseEvents: (ignore, options) => import_electron.ipcRenderer.send("set-ignore-mouse-events", ignore, options),
   onRendererEvent: (callback) => {
     const handler = (_, event, ...args) => callback(event, ...args);
     import_electron.ipcRenderer.on("renderer-event", handler);

@@ -1,4 +1,5 @@
 import React from "react";
+import { X } from "lucide-react";
 import { useSnapshot } from "valtio";
 import { globalState } from "../store/globalStore";
 import { THEME, hexToRgba } from "../theme";
@@ -21,6 +22,7 @@ interface TagProps extends React.HTMLAttributes<HTMLDivElement> {
   size?: "sm" | "md";
   isEdit?: boolean;
   showColor?: boolean;
+  onRemove?: () => void;
 }
 
 const TagColorDot: React.FC<{
@@ -70,6 +72,7 @@ export const Tag: React.FC<TagProps> = ({
   size = "sm",
   isEdit = false,
   showColor = true,
+  onRemove,
   onClick,
   className,
   style,
@@ -83,6 +86,7 @@ export const Tag: React.FC<TagProps> = ({
 
   const background = hexToRgba(displayColor, 1);
   const textColor = getContrastTextColor(displayColor);
+  const removeButtonSize = size === "sm" ? 10 : 12;
 
   // Styles
   const baseClasses =
@@ -136,6 +140,25 @@ export const Tag: React.FC<TagProps> = ({
               className="opacity-0 group-hover:opacity-100 transition-opacity mx-1"
               size={size}
             />
+          )}
+          {onRemove && (
+            <button
+              type="button"
+              className="mr-1 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-transparent text-current opacity-0 transition-all group-hover:opacity-100 hover:border-red-700 hover:bg-red-950/80 hover:text-red-200"
+              title={t("common.delete")}
+              aria-label={t("common.delete")}
+              onPointerDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onRemove();
+              }}
+            >
+              <X size={removeButtonSize} />
+            </button>
           )}
         </div>
       )}

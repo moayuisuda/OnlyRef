@@ -694,18 +694,19 @@ const createImageDb = (db: Database.Database): ImageDb => {
       .toLowerCase()
       .split(/\s+/)
       .filter(Boolean);
-    if (tokens.length === 0) return [];
+    const hasTextQuery = tokens.length > 0;
+    if (!hasTextQuery && (!tagIds || tagIds.length === 0)) return [];
 
     const idsJson = JSON.stringify(tagIds ?? []);
     const colorSql = buildColorFilterSql("i", color);
 
-    // Build dynamic SQL for text search
     const textConditions = tokens
       .map(
         (_, i) =>
           `(lower(i.filename) LIKE @token${i} OR lower(i.imagePath) LIKE @token${i})`
       )
       .join(" AND ");
+    const textSql = hasTextQuery ? `AND (${textConditions})` : "";
 
     const sql = `
       WITH tag_ids AS (
@@ -725,7 +726,7 @@ const createImageDb = (db: Database.Database): ImageDb => {
             HAVING COUNT(DISTINCT it.tagId) = @tagCount
           )
         )
-        AND (${textConditions})
+        ${textSql}
         AND (
           @hasCursor = 0
           OR i.createdAt < @cursorCreatedAt

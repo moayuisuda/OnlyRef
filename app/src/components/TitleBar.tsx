@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   FolderOpen,
   Minus,
-  RefreshCw,
   Settings,
   Square,
   X,
@@ -18,7 +17,7 @@ import {
   modelProgressActions,
   modelProgressState,
 } from "../store/globalStore";
-import { actions as galleryActions, state as galleryState } from "../store/galleryStore";
+import { state as galleryState } from "../store/galleryStore";
 import { indexImages } from "../service";
 import { useClickOutside } from "../hooks/useClickOutside";
 import { ToggleSwitch } from "./ToggleSwitch";
@@ -30,13 +29,10 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
 const iconButtonClass =
-  "flex h-7 w-7 items-center justify-center rounded-lg border border-white/8 bg-white/[0.03] text-neutral-400 transition-all hover:border-white/15 hover:bg-white/[0.07] hover:text-white";
+  "flex h-7 w-7 items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-white/[0.06] hover:text-white";
 
 const windowButtonClass =
-  "flex h-7 w-7 items-center justify-center rounded-lg text-neutral-400 transition-all hover:bg-white/[0.08] hover:text-white";
-
-const panelSectionClass =
-  "rounded-2xl border border-white/8 bg-black/20 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
+  "flex h-7 w-7 items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-white/[0.06] hover:text-white";
 
 type SettingInputProps = {
   value: string;
@@ -78,24 +74,6 @@ const SettingInput: React.FC<SettingInputProps> = ({
   );
 };
 
-type StatusBadgeTone = "idle" | "accent" | "progress";
-
-const StatusBadge: React.FC<{
-  label: string;
-  tone: StatusBadgeTone;
-}> = ({ label, tone }) => (
-  <span
-    className={clsx(
-      "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.22em]",
-      tone === "progress" && "bg-[var(--color-primary)]/15 text-[var(--color-primary)]",
-      tone === "accent" && "bg-white/8 text-neutral-200",
-      tone === "idle" && "bg-white/[0.04] text-neutral-500",
-    )}
-  >
-    {label}
-  </span>
-);
-
 const ProgressBar: React.FC<{
   value: number;
   active?: boolean;
@@ -111,20 +89,6 @@ const ProgressBar: React.FC<{
       style={{ width: `${Math.max(6, Math.min(100, value))}%` }}
     />
   </div>
-);
-
-const SettingsSection: React.FC<{
-  title: string;
-  description: string;
-  children: React.ReactNode;
-}> = ({ title, description, children }) => (
-  <section className={panelSectionClass}>
-    <div className="mb-3">
-      <div className="text-sm font-semibold text-white">{title}</div>
-      <div className="mt-1 text-xs text-neutral-400">{description}</div>
-    </div>
-    {children}
-  </section>
 );
 
 export const TitleBar: React.FC = () => {
@@ -297,10 +261,11 @@ export const TitleBar: React.FC = () => {
         ? t(modelSnap.statusKey, modelSnap.statusParams)
         : null;
 
+  const imageCount = gallerySnap.images.length;
+  const imageCountLabel = `${imageCount} ${imageCount === 1 ? "image" : "images"}`;
+
   const statusMeta = indexingSnap.isIndexing
     ? {
-        badge: "Indexing",
-        tone: "progress" as const,
         title: progressText ?? "Preparing library update",
         detail:
           indexingSnap.filename ||
@@ -312,17 +277,13 @@ export const TitleBar: React.FC = () => {
       }
     : modelSnap.isDownloading
       ? {
-          badge: "Model",
-          tone: "progress" as const,
           title: progressText ?? "Preparing semantic search",
           detail:
             modelSnap.filename || "Downloading the search model for semantic retrieval.",
           percent: Math.max(8, modelSnap.current || 8),
         }
       : {
-          badge: snap.enableVectorSearch ? "Semantic" : "Ready",
-          tone: snap.enableVectorSearch ? ("accent" as const) : ("idle" as const),
-          title: "Drop or paste images to import",
+          title: imageCountLabel,
           detail: snap.enableVectorSearch
             ? snap.llmSettings.enabled
               ? "Semantic search and query translation are active."
@@ -331,249 +292,196 @@ export const TitleBar: React.FC = () => {
           percent: 100,
         };
 
-  const imageCount = gallerySnap.images.length;
-  const imageCountLabel = `${imageCount} ${imageCount === 1 ? "image" : "images"}`;
-  const searchModeLabel = snap.enableVectorSearch ? "Semantic search" : "Keyword search";
-
   return (
-    <div className="draggable relative z-30 border-b border-white/8 bg-[radial-gradient(circle_at_top_left,rgba(57,197,187,0.08),transparent_24%),linear-gradient(180deg,rgba(20,20,20,0.98),rgba(10,10,10,0.98))]">
-      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.03),transparent_30%,transparent_70%,rgba(255,255,255,0.02))]" />
-
-      <div className="relative flex h-10 items-center gap-2 px-3">
+    <div className="draggable relative z-30 border-b border-white/6 bg-neutral-950/92 backdrop-blur-xl">
+      <div className="relative flex h-9 items-center gap-3 px-3">
         <div className="flex min-w-0 flex-1 items-center gap-3">
-          <div className="flex items-center gap-2">
-            <div className="flex h-5 w-5 items-center justify-center rounded-full bg-[var(--color-primary)]/12">
-              <div className="h-2.5 w-2.5 rounded-full bg-[var(--color-primary)] shadow-[0_0_10px_rgba(57,197,187,0.65)]" />
-            </div>
-            <div className="text-sm font-semibold leading-none text-white">OnlyRef</div>
+          <div className="flex items-center">
+            <div className="text-sm font-semibold text-[var(--color-primary)]">PiCaptain</div>
           </div>
 
-          <div className="hidden min-w-0 flex-1 items-center gap-2 md:flex">
-            <span className="text-xs text-neutral-500">{imageCountLabel}</span>
-            <span className="h-1 w-1 rounded-full bg-neutral-700" />
-            <span className="text-xs text-neutral-500">{searchModeLabel}</span>
-            <span className="h-1 w-1 rounded-full bg-neutral-700" />
-            <div className="min-w-0 flex flex-1 items-center gap-2">
-              <StatusBadge label={statusMeta.badge} tone={statusMeta.tone} />
-              <div className="min-w-0 truncate text-xs text-neutral-400">{statusMeta.title}</div>
-              {(indexingSnap.isIndexing || modelSnap.isDownloading) && (
-                <>
-                  <div className="w-20 shrink-0">
-                    <ProgressBar value={statusMeta.percent} />
-                  </div>
-                  <div className="shrink-0 text-[11px] text-neutral-500">{statusMeta.percent}%</div>
-                </>
-              )}
-            </div>
+          <div className="hidden min-w-0 flex-1 items-center gap-2 text-xs md:flex">
+            <div className="min-w-0 truncate text-neutral-400">{statusMeta.title}</div>
+            {(indexingSnap.isIndexing || modelSnap.isDownloading) && (
+              <>
+                <div className="w-16 shrink-0">
+                  <ProgressBar value={statusMeta.percent} />
+                </div>
+                <div className="shrink-0 text-[11px] text-neutral-500">{statusMeta.percent}%</div>
+              </>
+            )}
           </div>
         </div>
 
-        <div className="no-drag flex items-center gap-2">
-          <div className="flex items-center gap-1 rounded-xl border border-white/8 bg-white/[0.03] p-1">
-            <button
-              type="button"
-              className={iconButtonClass}
-              title="Refresh library"
-              onClick={() => galleryActions.reload()}
-            >
-              <RefreshCw size={14} />
-            </button>
-            <button
-              ref={settingsButtonRef}
-              type="button"
-              className={clsx(
-                iconButtonClass,
-                settingsOpen &&
-                  "border-[var(--color-primary)]/40 bg-[var(--color-primary)]/12 text-[var(--color-primary)]",
-              )}
-              title="Open settings"
-              onClick={() => setSettingsOpen((open) => !open)}
-            >
-              <Settings size={14} />
-            </button>
-          </div>
-
-          <div className="flex items-center gap-1 rounded-xl border border-white/8 bg-white/[0.03] p-1">
-            <button
-              type="button"
-              className={windowButtonClass}
-              title="Minimize"
-              onClick={() => window.electron?.min()}
-            >
-              <Minus size={14} />
-            </button>
-            <button
-              type="button"
-              className={windowButtonClass}
-              title="Maximize"
-              onClick={() => window.electron?.max()}
-            >
-              <Square size={12} />
-            </button>
-            <button
-              type="button"
-              className={clsx(
-                windowButtonClass,
-                "hover:bg-red-500/14 hover:text-red-200",
-              )}
-              title="Close"
-              onClick={() => window.electron?.close()}
-            >
-              <X size={14} />
-            </button>
-          </div>
+        <div className="no-drag flex items-center gap-1">
+          <button
+            ref={settingsButtonRef}
+            type="button"
+            className={clsx(
+              iconButtonClass,
+              settingsOpen && "bg-white/[0.08] text-[var(--color-primary)]",
+            )}
+            title="Open settings"
+            onClick={() => setSettingsOpen((open) => !open)}
+          >
+            <Settings size={14} />
+          </button>
+          <div className="mx-1 h-4 w-px bg-white/8" />
+          <button
+            type="button"
+            className={windowButtonClass}
+            title="Minimize"
+            onClick={() => window.electron?.min()}
+          >
+            <Minus size={14} />
+          </button>
+          <button
+            type="button"
+            className={windowButtonClass}
+            title="Maximize"
+            onClick={() => window.electron?.max()}
+          >
+            <Square size={12} />
+          </button>
+          <button
+            type="button"
+            className={clsx(windowButtonClass, "hover:bg-red-500/14 hover:text-red-200")}
+            title="Close"
+            onClick={() => window.electron?.close()}
+          >
+            <X size={14} />
+          </button>
         </div>
       </div>
 
       {settingsOpen && (
         <div
           ref={settingsPanelRef}
-          className="no-drag absolute right-3 top-[calc(100%+0.5rem)] z-40 w-[420px] rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(22,22,22,0.96),rgba(8,8,8,0.96))] p-4 shadow-[0_24px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl"
+          className="no-drag absolute right-3 top-[calc(100%+0.5rem)] z-40 w-[360px] rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(20,20,20,0.97),rgba(10,10,10,0.97))] p-3 shadow-[0_20px_50px_rgba(0,0,0,0.45)] backdrop-blur-xl"
         >
-          <div className="mb-4">
+          <div className="mb-2 flex items-center justify-between">
             <div className="text-sm font-semibold text-white">Settings</div>
-            <div className="mt-1 text-xs text-neutral-400">
-              Library, search, indexing, and window behavior.
-            </div>
+            <div className="text-[11px] text-neutral-500">{imageCountLabel}</div>
           </div>
 
-          <div className="space-y-3">
-            <SettingsSection
-              title="Library"
-              description="Choose where your local reference library is stored."
-            >
-              <div className="space-y-3">
-                <div className="rounded-2xl border border-white/8 bg-black/20 px-3 py-3 text-xs leading-5 text-neutral-400 break-all">
-                  {loadingStorageDir ? t("common.loading") : storageDir || "Unavailable"}
+          <div className="overflow-hidden rounded-xl border border-white/8 bg-black/20">
+            <div className="border-b border-white/6 px-3 py-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-xs font-medium text-neutral-200">Storage folder</div>
+                  <div className="mt-1 break-all text-[11px] leading-5 text-neutral-500">
+                    {loadingStorageDir ? t("common.loading") : storageDir || "Unavailable"}
+                  </div>
                 </div>
                 <button
                   type="button"
-                  className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-medium text-white transition-all hover:border-white/20 hover:bg-white/[0.08]"
+                  className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08]"
                   onClick={handleChooseStorageDir}
                 >
-                  <FolderOpen size={14} />
-                  Change folder
+                  <FolderOpen size={12} />
+                  Change
                 </button>
               </div>
-            </SettingsSection>
+            </div>
 
-            <SettingsSection
-              title="Search"
-              description="Control semantic retrieval and optional query translation."
-            >
-              <div className="space-y-3">
-                <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-3">
-                  <div>
-                    <div className="text-sm font-medium text-neutral-100">Semantic search</div>
-                    <div className="mt-1 text-xs text-neutral-400">
-                      Enable vector indexing and similarity search for the library.
-                    </div>
+            <div className="border-b border-white/6 px-3 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-medium text-neutral-200">Semantic search</div>
+                  <div className="mt-1 text-[11px] text-neutral-500">
+                    {snap.enableVectorSearch ? "Enabled" : "Disabled"}
                   </div>
-                  <ToggleSwitch
-                    checked={snap.enableVectorSearch}
-                    onToggle={() => {
-                      void handleToggleVectorSearch(!snap.enableVectorSearch);
-                    }}
-                  />
                 </div>
-
-                {snap.enableVectorSearch && (
-                  <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-3">
-                    <div className="mb-3 flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-medium text-neutral-100">
-                          Query translation
-                        </div>
-                        <div className="mt-1 text-xs text-neutral-400">
-                          Translate natural-language queries before semantic search.
-                        </div>
-                      </div>
-                      <ToggleSwitch
-                        checked={snap.llmSettings.enabled}
-                        onToggle={() =>
-                          globalActions.setLlmSettings({
-                            enabled: !snap.llmSettings.enabled,
-                          })
-                        }
-                      />
-                    </div>
-
-                    {snap.llmSettings.enabled && (
-                      <div className="space-y-2">
-                        <SettingInput
-                          value={snap.llmSettings.baseUrl}
-                          placeholder="Base URL"
-                          onChange={(value) => globalActions.setLlmSettings({ baseUrl: value })}
-                        />
-                        <SettingInput
-                          value={snap.llmSettings.key}
-                          placeholder="API key"
-                          type="password"
-                          onChange={(value) => globalActions.setLlmSettings({ key: value })}
-                        />
-                        <SettingInput
-                          value={snap.llmSettings.model}
-                          placeholder="Model"
-                          onChange={(value) => globalActions.setLlmSettings({ model: value })}
-                        />
-                      </div>
-                    )}
-                  </div>
-                )}
+                <ToggleSwitch
+                  checked={snap.enableVectorSearch}
+                  onToggle={() => {
+                    void handleToggleVectorSearch(!snap.enableVectorSearch);
+                  }}
+                />
               </div>
-            </SettingsSection>
 
-            <SettingsSection
-              title="Indexing"
-              description="Update missing metadata and monitor library activity."
-            >
-              <div className="space-y-3">
-                <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-3">
+              {snap.enableVectorSearch && (
+                <div className="mt-3 border-t border-white/6 pt-3">
                   <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium text-neutral-100">
-                        {statusMeta.title}
-                      </div>
-                      <div className="mt-1 truncate text-xs text-neutral-400">
-                        {statusMeta.detail}
+                    <div>
+                      <div className="text-xs font-medium text-neutral-200">Query translation</div>
+                      <div className="mt-1 text-[11px] text-neutral-500">
+                        LLM-assisted query rewrite
                       </div>
                     </div>
-                    <StatusBadge
-                      label={statusMeta.badge}
-                      tone={statusMeta.tone}
+                    <ToggleSwitch
+                      checked={snap.llmSettings.enabled}
+                      onToggle={() =>
+                        globalActions.setLlmSettings({
+                          enabled: !snap.llmSettings.enabled,
+                        })
+                      }
                     />
                   </div>
-                  <div className="mt-3 flex items-center gap-3">
-                    <div className="min-w-0 flex-1">
-                      <ProgressBar
-                        value={statusMeta.percent}
-                        active={indexingSnap.isIndexing || modelSnap.isDownloading}
+
+                  {snap.llmSettings.enabled && (
+                    <div className="mt-3 space-y-2">
+                      <SettingInput
+                        value={snap.llmSettings.baseUrl}
+                        placeholder="Base URL"
+                        onChange={(value) => globalActions.setLlmSettings({ baseUrl: value })}
+                      />
+                      <SettingInput
+                        value={snap.llmSettings.key}
+                        placeholder="API key"
+                        type="password"
+                        onChange={(value) => globalActions.setLlmSettings({ key: value })}
+                      />
+                      <SettingInput
+                        value={snap.llmSettings.model}
+                        placeholder="Model"
+                        onChange={(value) => globalActions.setLlmSettings({ model: value })}
                       />
                     </div>
-                    <div className="text-xs font-medium text-neutral-400">
-                      {indexingSnap.isIndexing || modelSnap.isDownloading
-                        ? `${statusMeta.percent}%`
-                        : "Idle"}
-                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="border-b border-white/6 px-3 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-medium text-neutral-200">Indexing</div>
+                  <div className="mt-1 truncate text-[11px] text-neutral-500">
+                    {statusMeta.title}
                   </div>
                 </div>
-
                 <button
                   type="button"
-                  className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-medium text-white transition-all hover:border-white/20 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
+                  className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
                   onClick={handleIndexMissingImages}
                   disabled={isIndexing}
                 >
-                  <RefreshCw size={14} className={clsx(isIndexing && "animate-spin")} />
-                  {isIndexing ? "Indexing..." : "Index missing images"}
+                  <span
+                    className={clsx(
+                      "inline-block h-1.5 w-1.5 rounded-full bg-current",
+                      isIndexing && "animate-pulse",
+                    )}
+                  />
+                  {isIndexing ? "Running" : "Run"}
                 </button>
               </div>
-            </SettingsSection>
 
-            <SettingsSection
-              title="Window"
-              description="Set the shortcut used to toggle the OnlyRef window."
-            >
+              {(indexingSnap.isIndexing || modelSnap.isDownloading) && (
+                <div className="mt-3 flex items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                    <ProgressBar
+                      value={statusMeta.percent}
+                      active={indexingSnap.isIndexing || modelSnap.isDownloading}
+                    />
+                  </div>
+                  <div className="text-[11px] text-neutral-500">{statusMeta.percent}%</div>
+                </div>
+              )}
+            </div>
+
+            <div className="px-3 py-3">
+              <div className="mb-2 text-xs font-medium text-neutral-200">Toggle window shortcut</div>
               <ShortcutInput
                 value={snap.toggleWindowShortcut}
                 onChange={(value) => {
@@ -583,7 +491,7 @@ export const TitleBar: React.FC = () => {
                   globalActions.pushToast({ key: "toast.shortcutInvalid" }, "error")
                 }
               />
-            </SettingsSection>
+            </div>
           </div>
         </div>
       )}

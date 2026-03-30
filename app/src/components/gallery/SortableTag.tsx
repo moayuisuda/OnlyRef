@@ -1,12 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { X } from "lucide-react";
 import { Tag } from "../Tag";
 import { THEME } from "../../theme";
 import { useSnapshot } from "valtio";
 import { globalState } from "../../store/globalStore";
-import { useT } from "../../i18n/useT";
 
 interface SortableTagProps {
   tag: string;
@@ -22,7 +20,6 @@ export const SortableTag: React.FC<SortableTagProps> = ({
   onDelete,
 }) => {
   const clickTimerRef = useRef<number | null>(null);
-  const { t } = useT();
   const {
     attributes,
     listeners,
@@ -139,7 +136,7 @@ export const SortableTag: React.FC<SortableTagProps> = ({
     <div
       ref={setNodeRef}
       style={style}
-      className="group flex flex-shrink-0 items-center gap-1"
+      className="flex-shrink-0"
     >
       <div
         id={`tag-${tag}`}
@@ -149,27 +146,13 @@ export const SortableTag: React.FC<SortableTagProps> = ({
         onDoubleClick={handleDoubleClick}
         onContextMenu={handleContextMenu}
       >
-        <Tag tag={tag} size="md" onClick={onClick} />
+        <Tag
+          tag={tag}
+          size="md"
+          isEdit={true}
+          onRemove={onDelete ? () => onDelete(tag) : undefined}
+        />
       </div>
-      {onDelete && (
-        <button
-          type="button"
-          className="flex h-4 w-0 items-center justify-center overflow-hidden rounded-full border border-transparent bg-neutral-950 text-neutral-400 opacity-0 transition-all group-hover:w-4 group-hover:opacity-100 hover:border-red-700 hover:bg-red-950/80 hover:text-red-200"
-          title={t("tag.delete")}
-          aria-label={t("tag.delete")}
-          onPointerDown={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            onDelete(tag);
-          }}
-        >
-          <X size={10} />
-        </button>
-      )}
     </div>
   );
 };

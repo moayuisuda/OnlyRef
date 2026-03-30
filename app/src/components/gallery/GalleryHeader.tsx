@@ -1,9 +1,7 @@
-import React, { useMemo, useState, useRef } from "react";
-import type { ChangeEvent } from "react";
+import React, { useState, useRef } from "react";
 import Input from "rc-input";
 import { Search, X } from "lucide-react";
 import { useSnapshot } from "valtio";
-import { debounce } from "radash";
 import { SortableContext, rectSortingStrategy } from "@dnd-kit/sortable";
 import { Tag } from "../Tag";
 import { SortableTag } from "./SortableTag";
@@ -102,21 +100,7 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
     return () => clearTimeout(timer);
   }, [loading]);
 
-  const [searchText, setSearchText] = useState(snap.searchQuery);
   const [pendingDeleteTag, setPendingDeleteTag] = useState<string | null>(null);
-
-  React.useEffect(() => {
-    if (searchText === snap.searchQuery) return;
-    setSearchText(snap.searchQuery);
-  }, [searchText, snap.searchQuery]);
-
-  const debouncedSetSearchQuery = useMemo(
-    () =>
-      debounce({ delay: 300 }, (val: string) => {
-        actions.setSearchQuery(val);
-      }),
-    []
-  );
 
   const [searchColorPicker, setSearchColorPicker] = useState<{
     x: number;
@@ -230,16 +214,14 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
               <Input
                 placeholder={t("gallery.searchPlaceholder")}
                 className="flex-1 bg-transparent text-white text-sm outline-none min-w-[80px] placeholder-neutral-500"
-                value={searchText}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const val = e.target.value;
-                  setSearchText(val);
-                  debouncedSetSearchQuery(val);
+                value={snap.searchQuery}
+                onChange={(e) => {
+                  actions.setSearchQuery(e.target.value);
                 }}
                 onKeyDown={(e) => {
                   if (
                     e.key === "Backspace" &&
-                    searchText === "" &&
+                    snap.searchQuery === "" &&
                     snap.searchTags.length > 0
                   ) {
                     const next = snap.searchTags.slice(0, -1);
@@ -309,13 +291,12 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
             />
 
             {(snap.searchTags.length > 0 ||
-              searchText.trim() ||
+              snap.searchQuery.trim() ||
               snap.searchColor ||
               snap.searchTone) && (
               <button
                 className="w-4 inline-flex items-center justify-center rounded hover:bg-neutral-700/70 text-neutral-400 hover:text-white transition-colors shrink-0"
                 onClick={() => {
-                  setSearchText("");
                   actions.setSearchQuery("");
                   actions.setSearchTags([]);
                   actions.setSearchColor(null);

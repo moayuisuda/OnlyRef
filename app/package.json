@@ -1,13 +1,13 @@
 {
   "name": "pic-captain",
-  "productName": "OnlyRef",
+  "productName": "PiCaptain",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "main": "dist-electron/main.cjs",
   "build": {
-    "appId": "com.onlyref.app",
-    "productName": "OnlyRef",
+    "appId": "com.picaptain.app",
+    "productName": "PiCaptain",
     "icon": "resources/icon.png",
     "files": [
       "dist-electron",

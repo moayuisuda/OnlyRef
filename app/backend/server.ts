@@ -27,9 +27,9 @@ export type RendererChannel =
 export type SendToRenderer = (channel: RendererChannel, data: unknown) => void;
 
 export const SERVER_PORT = 30001;
-const CONFIG_FILE = path.join(app.getPath("userData"), "onlyref_config.json");
+const CONFIG_FILE = path.join(app.getPath("userData"), "picaptain_config.json");
 
-const DEFAULT_STORAGE_DIR = path.join(app.getPath("userData"), "onlyref_storage");
+const DEFAULT_STORAGE_DIR = path.join(app.getPath("userData"), "picaptain_storage");
 
 const loadStorageRoot = async (): Promise<string> => {
   // 1. Try reading from config file in userData

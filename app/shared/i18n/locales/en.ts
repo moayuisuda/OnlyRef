@@ -65,7 +65,7 @@ export const en = {
   'toast.shortcutInvalid': 'Invalid shortcut',
   'toast.shortcutUpdateFailed': 'Failed to update shortcut: {{error}}',
 
-  'envInit.brandTitle': 'OnlyRef',
+  'envInit.brandTitle': 'PiCaptain',
   'envInit.heading': 'Setting up the Python environment...',
   'envInit.subheading':
     'First run may download tools and install dependencies. This is a one-time step.',
@@ -91,7 +91,7 @@ export const en = {
   'indexing.progress': 'Indexing {{current}}/{{total}}...',
   'indexing.completed': 'Completed',
 
-  'errors.title': 'OnlyRef encountered an error',
+  'errors.title': 'PiCaptain encountered an error',
   'errors.unexpected': 'An unexpected error occurred.',
   'errors.applicationLogTitle': 'Application Log (Last 50KB)',
   'errors.loadingLogs': 'Loading logs...',
@@ -181,7 +181,7 @@ export const en = {
   'dialog.modelDownloadFailedMessage': 'Failed to download model files.',
   'dialog.modelDownloadFailedDetail':
     'Exit code: {{code}}\nProgress: {{progress}}%\nModel dir: {{dir}}',
-  'dialog.chooseStorageFolderTitle': 'Choose OnlyRef storage folder',
+  'dialog.chooseStorageFolderTitle': 'Choose PiCaptain storage folder',
 
   'toast.globalError': 'Error: {{message}}',
   'toast.unhandledRejection': 'Unhandled Promise Rejection: {{reason}}',

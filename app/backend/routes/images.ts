@@ -293,9 +293,8 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
 
       const tagIds = imageDb.getTagIdsByNames(tags);
       const tagCount = tags.length;
-      const searchQuery = query || tags.join(" ");
       const results = imageDb.searchImagesByText({
-        query: searchQuery,
+        query,
         limit: effectiveLimit,
         tagIds,
         tagCount,
