@@ -39,7 +39,7 @@ const SettingInput: React.FC<{
       type={type}
       value={draft}
       placeholder={placeholder}
-      className="w-full rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-white outline-none transition-colors focus:border-[var(--color-primary)]"
+      className="w-full rounded-2xl border border-white/10 bg-white/[0.04] px-3.5 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-neutral-500 focus:border-[var(--color-primary)]"
       onChange={(event) => setDraft(event.target.value)}
       onBlur={() => {
         if (draft !== value) {
@@ -142,7 +142,7 @@ export const TitleBar: React.FC = () => {
     if (result && result.success !== true) {
       globalActions.setEnableVectorSearch(previous);
       globalActions.pushToast(
-        { key: "toast.ensureModelFailed", params: { error: result.error ?? "" } },
+        { key: "toast.modelCheckFailed", params: { error: result.error ?? "" } },
         "error",
       );
       return;
@@ -222,21 +222,54 @@ export const TitleBar: React.FC = () => {
         ? t(modelSnap.statusKey, modelSnap.statusParams)
         : null;
 
+  const progressPercent =
+    indexingSnap.isIndexing && indexingSnap.total > 0
+      ? Math.round((indexingSnap.current / indexingSnap.total) * 100)
+      : modelSnap.isDownloading
+        ? modelSnap.current
+        : 0;
+
   return (
-    <div className="draggable relative z-30 border-b border-neutral-800 bg-neutral-900/95 backdrop-blur">
-      <div className="flex h-10 items-center gap-3 px-3">
+    <div className="draggable relative z-30 border-b border-white/8 bg-[rgba(18,22,24,0.78)] backdrop-blur-xl">
+      <div className="flex min-h-14 items-center gap-3 px-3 py-2">
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium text-white">OnlyRef</div>
-          <div className="truncate text-[11px] text-neutral-400">
-            {gallerySnap.images.length} images
-            {progressText ? ` · ${progressText}` : " · Drop or paste images to import"}
+          <div className="flex items-center gap-2.5 text-[10px] uppercase tracking-[0.24em] text-neutral-500">
+            <span className="font-medium text-neutral-400">Studio Library</span>
+            <span className="h-px w-8 bg-white/8" />
+            <span>{gallerySnap.images.length} images</span>
+          </div>
+          <div className="mt-1 flex items-center gap-2 text-sm text-neutral-300">
+            <span className="font-[var(--font-display)] text-[1.05rem] tracking-[0.03em] text-neutral-100">
+              OnlyRef
+            </span>
+            <span className="rounded-full border border-white/8 bg-white/[0.03] px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-neutral-500">
+              Local-first
+            </span>
+          </div>
+          <div className="mt-1 truncate text-xs text-neutral-500">
+            {progressText ?? "Drop or paste images to import"}
           </div>
         </div>
 
-        <div className="no-drag flex items-center gap-2">
+        {(indexingSnap.isIndexing || modelSnap.isDownloading) && (
+          <div className="no-drag hidden min-w-[160px] rounded-2xl border border-[rgba(57,197,187,0.14)] bg-[rgba(57,197,187,0.08)] px-3 py-2 md:block">
+            <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-[0.18em] text-[#bdeee8]">
+              <span>Progress</span>
+              <span>{progressPercent}%</span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-black/20">
+              <div
+                className="h-full rounded-full bg-[var(--color-primary)] transition-all"
+                style={{ width: `${progressPercent}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        <div className="no-drag flex items-center gap-1.5">
           <button
             type="button"
-            className="flex h-7 w-7 items-center justify-center rounded border border-neutral-700 bg-neutral-900 text-neutral-300 transition-colors hover:border-neutral-500 hover:text-white"
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-white/8 bg-white/[0.03] text-neutral-400 transition-all hover:-translate-y-px hover:border-white/14 hover:bg-white/[0.06] hover:text-white"
             title="Refresh gallery"
             onClick={() => galleryActions.reload()}
           >
@@ -246,10 +279,10 @@ export const TitleBar: React.FC = () => {
             ref={settingsButtonRef}
             type="button"
             className={clsx(
-              "flex h-7 w-7 items-center justify-center rounded border bg-neutral-900 transition-colors",
+              "flex h-8 w-8 items-center justify-center rounded-full border transition-all",
               settingsOpen
-                ? "border-[var(--color-primary)] text-[var(--color-primary)]"
-                : "border-neutral-700 text-neutral-300 hover:border-neutral-500 hover:text-white",
+                ? "border-[rgba(57,197,187,0.24)] bg-[rgba(57,197,187,0.14)] text-[var(--color-primary)]"
+                : "border-white/8 bg-white/[0.03] text-neutral-400 hover:-translate-y-px hover:border-white/14 hover:bg-white/[0.06] hover:text-white",
             )}
             title="Settings"
             onClick={() => setSettingsOpen((open) => !open)}
@@ -258,7 +291,7 @@ export const TitleBar: React.FC = () => {
           </button>
           <button
             type="button"
-            className="flex h-7 w-7 items-center justify-center rounded border border-neutral-700 bg-neutral-900 text-neutral-300 transition-colors hover:border-neutral-500 hover:text-white"
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-white/8 bg-white/[0.03] text-neutral-400 transition-all hover:-translate-y-px hover:border-white/14 hover:bg-white/[0.06] hover:text-white"
             title="Minimize"
             onClick={() => window.electron?.min()}
           >
@@ -266,19 +299,19 @@ export const TitleBar: React.FC = () => {
           </button>
           <button
             type="button"
-            className="flex h-7 w-7 items-center justify-center rounded border border-neutral-700 bg-neutral-900 text-neutral-300 transition-colors hover:border-neutral-500 hover:text-white"
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-white/8 bg-white/[0.03] text-neutral-400 transition-all hover:-translate-y-px hover:border-white/14 hover:bg-white/[0.06] hover:text-white"
             title="Maximize"
             onClick={() => window.electron?.max()}
           >
-            <Square size={13} />
+            <Square size={12} />
           </button>
           <button
             type="button"
-            className="flex h-7 w-7 items-center justify-center rounded border border-red-900/60 bg-red-950/40 text-red-200 transition-colors hover:border-red-700 hover:bg-red-900/60"
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-white/8 bg-white/[0.03] text-neutral-400 transition-all hover:-translate-y-px hover:border-red-300/12 hover:bg-red-400/12 hover:text-red-100"
             title="Close"
             onClick={() => window.electron?.close()}
           >
-            <X size={15} />
+            <X size={14} />
           </button>
         </div>
       </div>
@@ -286,28 +319,35 @@ export const TitleBar: React.FC = () => {
       {settingsOpen && (
         <div
           ref={settingsPanelRef}
-          className="no-drag absolute right-3 top-[calc(100%+0.5rem)] z-40 w-[420px] rounded-lg border border-neutral-800 bg-neutral-900/95 p-3 shadow-2xl backdrop-blur"
+          className="surface-panel-strong no-drag absolute right-3 top-[calc(100%+0.75rem)] z-40 w-[440px] rounded-[1.5rem] p-4"
         >
-          <div className="mb-3">
-            <div className="text-sm font-medium text-white">Settings</div>
-            <div className="text-xs text-neutral-400">Library, search, and indexing.</div>
+          <div className="mb-4">
+            <div className="text-[10px] uppercase tracking-[0.24em] text-neutral-500">
+              Settings
+            </div>
+            <div className="mt-1 font-[var(--font-display)] text-xl text-white">
+              Workspace Controls
+            </div>
+            <div className="mt-1 text-xs text-neutral-400">
+              Library, search, indexing, and translation.
+            </div>
           </div>
 
-          <div className="space-y-3">
-            <section className="rounded-md border border-neutral-800 bg-neutral-950/70 p-3">
-              <div className="mb-2 text-xs font-medium text-neutral-500">
+          <div className="space-y-3.5">
+            <section className="rounded-[1.25rem] border border-white/8 bg-white/[0.03] p-4">
+              <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500">
                 Library
               </div>
-              <div className="space-y-2">
+              <div className="space-y-3">
                 <div>
-                  <div className="mb-1 text-sm text-neutral-300">Storage folder</div>
-                  <div className="rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-400 break-all">
+                  <div className="mb-1.5 text-sm text-neutral-300">Storage folder</div>
+                  <div className="rounded-2xl border border-white/8 bg-black/20 px-3.5 py-3 text-xs break-all text-neutral-400">
                     {loadingStorageDir ? "Loading..." : storageDir || "Unavailable"}
                   </div>
                 </div>
                 <button
                   type="button"
-                  className="inline-flex items-center gap-2 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-white transition-colors hover:border-neutral-500"
+                  className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3.5 py-2 text-sm text-white transition-all hover:-translate-y-px hover:border-white/16 hover:bg-white/[0.07]"
                   onClick={handleChooseStorageDir}
                 >
                   <FolderOpen size={14} />
@@ -316,8 +356,8 @@ export const TitleBar: React.FC = () => {
               </div>
             </section>
 
-            <section className="rounded-md border border-neutral-800 bg-neutral-950/70 p-3">
-              <div className="mb-2 text-xs font-medium text-neutral-500">
+            <section className="rounded-[1.25rem] border border-white/8 bg-white/[0.03] p-4">
+              <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500">
                 Search
               </div>
               <div className="flex items-center justify-between gap-3">
@@ -334,33 +374,23 @@ export const TitleBar: React.FC = () => {
               </div>
             </section>
 
-            <section className="rounded-md border border-neutral-800 bg-neutral-950/70 p-3">
-              <div className="mb-2 text-xs font-medium text-neutral-500">
+            <section className="rounded-[1.25rem] border border-white/8 bg-white/[0.03] p-4">
+              <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500">
                 Indexing
               </div>
               {(indexingSnap.isIndexing || modelSnap.isDownloading) && (
-                <div className="mb-3 rounded-lg border border-neutral-800 bg-neutral-950 p-3">
+                <div className="mb-3 rounded-2xl border border-[rgba(57,197,187,0.14)] bg-[rgba(57,197,187,0.08)] p-3">
                   <div className="flex items-center justify-between gap-3 text-sm text-white">
                     <span>{progressText}</span>
-                    <span className="text-xs text-neutral-400">
-                      {indexingSnap.isIndexing && indexingSnap.total > 0
-                        ? `${Math.round((indexingSnap.current / indexingSnap.total) * 100)}%`
-                        : modelSnap.isDownloading
-                          ? `${modelSnap.current}%`
-                          : ""}
+                    <span className="text-xs text-[#bdeee8]">
+                      {progressPercent}%
                     </span>
                   </div>
                   {(indexingSnap.isIndexing || modelSnap.isDownloading) && (
-                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-neutral-800">
+                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-black/20">
                       <div
                         className="h-full rounded-full bg-[var(--color-primary)] transition-all"
-                        style={{
-                          width: `${
-                            indexingSnap.isIndexing && indexingSnap.total > 0
-                              ? (indexingSnap.current / indexingSnap.total) * 100
-                              : modelSnap.current
-                          }%`,
-                        }}
+                        style={{ width: `${progressPercent}%` }}
                       />
                     </div>
                   )}
@@ -368,7 +398,7 @@ export const TitleBar: React.FC = () => {
               )}
               <button
                 type="button"
-                className="inline-flex items-center gap-2 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-white transition-colors hover:border-neutral-500 disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3.5 py-2 text-sm text-white transition-all hover:-translate-y-px hover:border-white/16 hover:bg-white/[0.07] disabled:cursor-not-allowed disabled:opacity-60"
                 onClick={handleIndexMissingImages}
                 disabled={isIndexing}
               >
@@ -377,8 +407,8 @@ export const TitleBar: React.FC = () => {
               </button>
             </section>
 
-            <section className="rounded-md border border-neutral-800 bg-neutral-950/70 p-3">
-              <div className="mb-2 text-xs font-medium text-neutral-500">
+            <section className="rounded-[1.25rem] border border-white/8 bg-white/[0.03] p-4">
+              <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500">
                 Window
               </div>
               <div className="space-y-2">
@@ -388,13 +418,16 @@ export const TitleBar: React.FC = () => {
                   onChange={(value) => {
                     void handleToggleWindowShortcut(value);
                   }}
+                  onInvalid={() => {
+                    globalActions.pushToast({ key: "toast.shortcutInvalid" }, "error");
+                  }}
                 />
               </div>
             </section>
 
             {snap.enableVectorSearch && (
-              <section className="rounded-md border border-neutral-800 bg-neutral-950/70 p-3">
-                <div className="mb-2 text-xs font-medium text-neutral-500">
+              <section className="rounded-[1.25rem] border border-white/8 bg-white/[0.03] p-4">
+                <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500">
                   Query Translation
                 </div>
                 <div className="mb-3 flex items-center justify-between gap-3">

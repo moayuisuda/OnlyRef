@@ -84,14 +84,16 @@ export const Tag: React.FC<TagProps> = ({
   const background = hexToRgba(displayColor, 1);
   const textColor = getContrastTextColor(displayColor);
 
-  // Styles
   const baseClasses =
-    "relative rounded transition-colors flex items-center group/tag whitespace-nowrap";
-  const sizeClasses = size === "sm" ? "text-[10px] px-1" : "text-xs px-2 py-1";
+    "group/tag relative inline-flex items-center whitespace-nowrap rounded-full border transition-all duration-200";
+  const sizeClasses =
+    size === "sm"
+      ? "min-h-5 gap-1 px-1.5 text-[10px]"
+      : "min-h-7 gap-1.5 px-2.5 text-[11px]";
 
-  const interactiveClasses = onClick ? "cursor-pointer hover:text-white" : "";
+  const interactiveClasses = onClick ? "cursor-pointer hover:-translate-y-px" : "";
   const editClasses = isEdit
-    ? "group hover:bg-red-900/20 hover:text-red-200"
+    ? "hover:border-red-300/20 hover:bg-red-400/10 hover:text-red-100"
     : "";
 
   return (
@@ -101,8 +103,10 @@ export const Tag: React.FC<TagProps> = ({
       }`}
       style={{
         backgroundColor:
-          background || (isEdit ? undefined : "rgba(38, 38, 38, 1)"),
+          background || "rgba(255, 255, 255, 0.045)",
+        borderColor: background ? "rgba(255, 255, 255, 0.18)" : "rgba(148, 163, 184, 0.12)",
         color: textColor,
+        boxShadow: background ? "inset 0 1px 0 rgba(255,255,255,0.12)" : undefined,
         ...style,
       }}
       onClick={(e) => {
@@ -112,11 +116,10 @@ export const Tag: React.FC<TagProps> = ({
       title={tag}
       {...props}
     >
-      <span>{tag}</span>
+      <span className="truncate max-w-[12rem]">{tag}</span>
 
-      {/* Color Indicator (Hover only) */}
       {!isEdit && shouldShowColorDot && (
-        <div className="w-0 overflow-hidden group-hover/tag:w-auto transition-all duration-0">
+        <div className="w-0 overflow-hidden transition-all duration-150 group-hover/tag:w-auto">
           <TagColorDot
             tag={tag}
             color={rawColor}
@@ -126,14 +129,13 @@ export const Tag: React.FC<TagProps> = ({
         </div>
       )}
 
-      {/* Remove Button & Color Indicator (Edit mode) */}
       {isEdit && (
-        <div className="w-0 overflow-hidden group-hover:w-auto flex items-center transition-all duration-200">
+        <div className="flex w-0 items-center overflow-hidden transition-all duration-200 group-hover:w-auto">
           {shouldShowColorDot && (
             <TagColorDot
               tag={tag}
               color={rawColor}
-              className="opacity-0 group-hover:opacity-100 transition-opacity mx-1"
+              className="mx-1 opacity-0 transition-opacity group-hover:opacity-100"
               size={size}
             />
           )}

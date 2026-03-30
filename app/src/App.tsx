@@ -93,30 +93,31 @@ function App() {
   return (
     <div
       className={clsx(
-        "relative flex h-screen flex-col overflow-hidden bg-neutral-950 text-white",
+        "app-shell relative flex h-screen flex-col overflow-hidden text-white",
         globalSnap.isAppHidden && "hidden",
       )}
     >
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-0 h-40 bg-gradient-to-b from-white/[0.03] to-transparent" />
       <WindowResizer />
       <TitleBar />
       <EnvInitModal />
       {globalSnap.toasts.length > 0 && (
-        <div className="fixed right-4 top-14 z-[9999] flex flex-col gap-2 no-drag">
+        <div className="fixed right-5 top-16 z-[9999] flex flex-col gap-2.5 no-drag">
           {globalSnap.toasts.map((toast) => {
             const tone =
               toast.type === "success"
-                ? "border-emerald-700/60 bg-emerald-950/80 text-emerald-100"
+                ? "border-emerald-300/20 bg-[rgba(21,53,47,0.92)] text-emerald-50"
                 : toast.type === "error"
-                  ? "border-red-700/60 bg-red-950/80 text-red-100"
+                  ? "border-red-300/20 bg-[rgba(62,28,28,0.92)] text-red-50"
                   : toast.type === "warning"
-                    ? "border-yellow-700/60 bg-yellow-950/80 text-yellow-100"
-                    : "border-neutral-700/70 bg-neutral-900/90 text-neutral-100";
+                    ? "border-amber-300/20 bg-[rgba(69,50,24,0.92)] text-amber-50"
+                    : "border-white/10 bg-[rgba(22,26,29,0.92)] text-neutral-100";
 
             return (
               <button
                 key={toast.id}
                 type="button"
-                className={`max-w-[320px] rounded border px-3 py-2 text-left text-xs shadow-lg backdrop-blur transition-colors hover:bg-neutral-800/90 ${tone}`}
+                className={`surface-panel max-w-[340px] rounded-2xl px-3.5 py-3 text-left text-xs leading-5 transition-transform duration-200 hover:-translate-y-0.5 ${tone}`}
                 onClick={() => globalActions.removeToast(toast.id)}
               >
                 {t(toast.message.key, toast.message.params)}
@@ -125,7 +126,7 @@ function App() {
           })}
         </div>
       )}
-      <div className="flex-1 overflow-hidden">
+      <div className="relative z-10 flex-1 overflow-hidden">
         <Gallery />
       </div>
     </div>
