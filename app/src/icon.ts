@@ -1,0 +1,1 @@
+export const TrashIconPath = "M4 7h16M6 7l1 14h10l1-14M9 7V4h6v3";

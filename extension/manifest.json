@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "LookBack Collector",
+  "version": "1.1",
+  "description": "Collect images to LookBack via Drag & Drop",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://localhost/*",
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"]
+    }
+  ]
+}

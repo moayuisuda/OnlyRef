@@ -1,0 +1,93 @@
+@import "tailwindcss";
+
+input[type="color"] {
+  border-radius: 5px;
+  padding: 0;
+}
+
+input[type="color"]::-moz-color-swatch {
+  border: none;
+}
+
+input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+  border-radius: 0;
+}
+
+input[type="color"]::-webkit-color-swatch {
+  border: none;
+}
+
+@theme {
+  --color-secondary: rgba(57, 197, 187, 0.4);
+  --color-primary: #39c5bb;
+  --color-danger: #ef4444;
+}
+
+.draggable {
+  -webkit-app-region: drag;
+  cursor: move;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+html, body, #root {
+  background-color: transparent;
+}
+
+body {
+    @apply text-white overflow-hidden;
+}
+
+/* 隐藏滚动条但保留功能 */
+.scrollbar-hide::-webkit-scrollbar {
+    display: none;
+}
+.scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+
+.minimap-viewport {
+
+}
+
+.glass-btn {
+  @apply h-7 px-2.5 rounded border text-xs font-medium flex items-center justify-center gap-1.5 transition-all duration-200 backdrop-blur-md cursor-pointer select-none;
+  /* Default State */
+  @apply bg-neutral-800/60 text-neutral-300 border-neutral-700/80;
+}
+
+.glass-btn:hover {
+  @apply bg-neutral-700/80 text-white border-neutral-600;
+}
+
+.glass-btn--active {
+  @apply bg-primary border-primary text-white;
+}
+
+.glass-btn--active:hover {
+  @apply bg-primary border-primary text-white;
+}
+
+.glass-btn--inactive {
+  @apply bg-neutral-700/80 text-white border-neutral-600/80 shadow-sm;
+}
+
+.glass-btn--inactive:hover {
+  @apply bg-neutral-600/80 border-neutral-500/80;
+}
+
+.glass-btn--danger {
+  @apply bg-red-950/30 text-red-400 border-red-900/50;
+}
+
+.glass-btn--danger:hover {
+  @apply bg-red-900/50 border-red-800 text-red-300;
+}
+
+.glass-btn--danger.glass-btn--active {
+  @apply bg-red-600 border-red-500 text-white shadow-[0_0_12px_rgba(220,38,38,0.4)];
+}
