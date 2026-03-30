@@ -4,6 +4,7 @@ export const zh: I18nDict = {
   'common.ok': '确定',
   'common.confirm': '确认',
   'common.cancel': '取消',
+  'common.delete': '删除',
   'common.close': '关闭',
   'common.loading': '加载中…',
   'common.clear': '清除',
@@ -51,6 +52,8 @@ export const zh: I18nDict = {
   'toast.logCopyFailed': '复制日志失败',
   'toast.tagRenamed': '标签已重命名',
   'toast.tagRenameFailed': '重命名标签失败',
+  'toast.tagDeleted': '标签已删除',
+  'toast.tagDeleteFailed': '删除标签失败',
   'toast.updateTagsFailed': '更新标签失败',
   'toast.updateDominantColorFailed': '更新主色失败',
   'toast.updateNameFailed': '更新名称失败',
@@ -125,6 +128,9 @@ export const zh: I18nDict = {
   'gallery.empty.dragHint': '将图片拖到这里',
 
   'tag.setColor': '设置颜色',
+  'tag.delete': '删除标签',
+  'tag.deleteConfirmTitle': '删除标签',
+  'tag.deleteConfirmMessage': '要从所有图片中删除“{{tag}}”吗？此操作不可撤销。',
 
   'canvas.toolbar.expand': '展开工具栏',
   'canvas.toolbar.collapse': '收起工具栏',

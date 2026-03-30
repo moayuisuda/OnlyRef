@@ -2,6 +2,7 @@ export const en = {
   'common.ok': 'OK',
   'common.confirm': 'Confirm',
   'common.cancel': 'Cancel',
+  'common.delete': 'Delete',
   'common.close': 'Close',
   'common.loading': 'Loading...',
   'common.clear': 'Clear',
@@ -49,6 +50,8 @@ export const en = {
   'toast.logCopyFailed': 'Failed to copy log',
   'toast.tagRenamed': 'Tag renamed',
   'toast.tagRenameFailed': 'Failed to rename tag',
+  'toast.tagDeleted': 'Tag deleted',
+  'toast.tagDeleteFailed': 'Failed to delete tag',
   'toast.updateTagsFailed': 'Failed to update tags',
   'toast.updateDominantColorFailed': 'Failed to update dominant color',
   'toast.updateNameFailed': 'Failed to update name',
@@ -124,6 +127,10 @@ export const en = {
   'gallery.empty.dragHint': 'Drag images here',
 
   'tag.setColor': 'Set Color',
+  'tag.delete': 'Delete Tag',
+  'tag.deleteConfirmTitle': 'Delete Tag',
+  'tag.deleteConfirmMessage':
+    'Delete "{{tag}}" from all images? This action cannot be undone.',
 
   'canvas.toolbar.expand': 'Expand Toolbar',
   'canvas.toolbar.collapse': 'Collapse Toolbar',

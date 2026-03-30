@@ -102,6 +102,7 @@ export type ImageDb = {
   getImageRowByFilename: (filename: string) => ImageRow | null;
   listTags: () => string[];
   renameTag: (oldName: string, newName: string) => void;
+  deleteTag: (name: string) => void;
   resolveTagIds: (names: string[]) => number[];
   getTagIdsByNames: (names: string[]) => number[];
 };
@@ -565,6 +566,20 @@ const createImageDb = (db: Database.Database): ImageDb => {
     tx();
   };
 
+  const deleteTag = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const row = db
+      .prepare(`SELECT id FROM tags WHERE name = ?`)
+      .get(trimmed) as { id?: number } | undefined;
+    if (!row?.id) return;
+    const tx = db.transaction(() => {
+      db.prepare(`DELETE FROM image_tags WHERE tagId = ?`).run(row.id);
+      db.prepare(`DELETE FROM tags WHERE id = ?`).run(row.id);
+    });
+    tx();
+  };
+
   const searchImages = (params: {
     vector?: number[] | null;
     limit?: number;
@@ -762,6 +777,7 @@ const createImageDb = (db: Database.Database): ImageDb => {
     getImageRowByFilename,
     listTags,
     renameTag,
+    deleteTag,
     resolveTagIds,
     getTagIdsByNames,
   };

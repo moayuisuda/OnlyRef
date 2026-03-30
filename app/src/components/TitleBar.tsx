@@ -3,9 +3,7 @@ import {
   FolderOpen,
   Minus,
   RefreshCw,
-  Search,
   Settings,
-  Sparkles,
   Square,
   X,
 } from "lucide-react";
@@ -32,10 +30,10 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
 const iconButtonClass =
-  "flex h-8 w-8 items-center justify-center rounded-xl border border-white/8 bg-white/[0.03] text-neutral-400 transition-all hover:border-white/15 hover:bg-white/[0.07] hover:text-white";
+  "flex h-7 w-7 items-center justify-center rounded-lg border border-white/8 bg-white/[0.03] text-neutral-400 transition-all hover:border-white/15 hover:bg-white/[0.07] hover:text-white";
 
 const windowButtonClass =
-  "flex h-8 w-8 items-center justify-center rounded-xl text-neutral-400 transition-all hover:bg-white/[0.08] hover:text-white";
+  "flex h-7 w-7 items-center justify-center rounded-lg text-neutral-400 transition-all hover:bg-white/[0.08] hover:text-white";
 
 const panelSectionClass =
   "rounded-2xl border border-white/8 bg-black/20 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
@@ -127,16 +125,6 @@ const SettingsSection: React.FC<{
     </div>
     {children}
   </section>
-);
-
-const MetricCard: React.FC<{
-  label: string;
-  value: string;
-}> = ({ label, value }) => (
-  <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-2">
-    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">{label}</div>
-    <div className="mt-1 text-sm font-medium text-neutral-100">{value}</div>
-  </div>
 );
 
 export const TitleBar: React.FC = () => {
@@ -348,69 +336,40 @@ export const TitleBar: React.FC = () => {
   const searchModeLabel = snap.enableVectorSearch ? "Semantic search" : "Keyword search";
 
   return (
-    <div className="draggable relative z-30 border-b border-white/8 bg-[radial-gradient(circle_at_top_left,rgba(57,197,187,0.18),transparent_34%),linear-gradient(180deg,rgba(20,20,20,0.98),rgba(10,10,10,0.98))]">
-      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.04),transparent_26%,transparent_74%,rgba(255,255,255,0.03))]" />
+    <div className="draggable relative z-30 border-b border-white/8 bg-[radial-gradient(circle_at_top_left,rgba(57,197,187,0.08),transparent_24%),linear-gradient(180deg,rgba(20,20,20,0.98),rgba(10,10,10,0.98))]">
+      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.03),transparent_30%,transparent_70%,rgba(255,255,255,0.02))]" />
 
-      <div className="relative flex h-14 items-center gap-3 px-3">
+      <div className="relative flex h-10 items-center gap-2 px-3">
         <div className="flex min-w-0 flex-1 items-center gap-3">
-          <div className="flex items-center gap-3 rounded-2xl border border-white/8 bg-white/[0.04] px-3 py-2 shadow-[0_10px_30px_rgba(0,0,0,0.2)]">
-            <div className="flex h-9 w-9 items-center justify-center rounded-2xl border border-white/10 bg-[radial-gradient(circle_at_top,rgba(57,197,187,0.28),rgba(255,255,255,0.03))]">
-              <div className="h-2.5 w-2.5 rounded-full bg-[var(--color-primary)] shadow-[0_0_16px_rgba(57,197,187,0.9)]" />
+          <div className="flex items-center gap-2">
+            <div className="flex h-5 w-5 items-center justify-center rounded-full bg-[var(--color-primary)]/12">
+              <div className="h-2.5 w-2.5 rounded-full bg-[var(--color-primary)] shadow-[0_0_10px_rgba(57,197,187,0.65)]" />
             </div>
-            <div className="min-w-0">
-              <div className="text-[10px] uppercase tracking-[0.28em] text-neutral-500">
-                Reference Library
-              </div>
-              <div className="text-sm font-semibold text-white">OnlyRef</div>
-            </div>
+            <div className="text-sm font-semibold leading-none text-white">OnlyRef</div>
           </div>
 
-          <div className="hidden min-w-0 flex-1 items-center gap-2 lg:flex">
-            <div className="min-w-[180px] rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-2">
-              <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-neutral-500">
-                <Search size={12} />
-                Workspace
-              </div>
-              <div className="mt-1 flex items-center gap-2 text-sm text-neutral-100">
-                <span className="font-medium">{imageCountLabel}</span>
-                <span className="h-1 w-1 rounded-full bg-neutral-700" />
-                <span className="text-neutral-400">{searchModeLabel}</span>
-              </div>
-            </div>
-
-            <div className="min-w-0 flex-1 rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-2">
-              <div className="flex min-w-0 items-center gap-2">
-                <StatusBadge label={statusMeta.badge} tone={statusMeta.tone} />
-                <div className="min-w-0 flex-1 truncate text-sm font-medium text-neutral-100">
-                  {statusMeta.title}
-                </div>
-                {(indexingSnap.isIndexing || modelSnap.isDownloading) && (
-                  <div className="text-xs font-medium text-neutral-400">
-                    {statusMeta.percent}%
+          <div className="hidden min-w-0 flex-1 items-center gap-2 md:flex">
+            <span className="text-xs text-neutral-500">{imageCountLabel}</span>
+            <span className="h-1 w-1 rounded-full bg-neutral-700" />
+            <span className="text-xs text-neutral-500">{searchModeLabel}</span>
+            <span className="h-1 w-1 rounded-full bg-neutral-700" />
+            <div className="min-w-0 flex flex-1 items-center gap-2">
+              <StatusBadge label={statusMeta.badge} tone={statusMeta.tone} />
+              <div className="min-w-0 truncate text-xs text-neutral-400">{statusMeta.title}</div>
+              {(indexingSnap.isIndexing || modelSnap.isDownloading) && (
+                <>
+                  <div className="w-20 shrink-0">
+                    <ProgressBar value={statusMeta.percent} />
                   </div>
-                )}
-              </div>
-              <div className="mt-1 truncate text-xs text-neutral-400">{statusMeta.detail}</div>
-              <div className="mt-2">
-                <ProgressBar
-                  value={statusMeta.percent}
-                  active={indexingSnap.isIndexing || modelSnap.isDownloading}
-                />
-              </div>
+                  <div className="shrink-0 text-[11px] text-neutral-500">{statusMeta.percent}%</div>
+                </>
+              )}
             </div>
           </div>
         </div>
 
         <div className="no-drag flex items-center gap-2">
-          <div className="hidden items-center gap-2 rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-2 md:flex">
-            <MetricCard label="Library" value={imageCountLabel} />
-            <MetricCard
-              label="Search"
-              value={snap.llmSettings.enabled ? "Semantic + LLM" : searchModeLabel}
-            />
-          </div>
-
-          <div className="flex items-center gap-1 rounded-2xl border border-white/8 bg-white/[0.03] p-1 shadow-[0_10px_30px_rgba(0,0,0,0.2)]">
+          <div className="flex items-center gap-1 rounded-xl border border-white/8 bg-white/[0.03] p-1">
             <button
               type="button"
               className={iconButtonClass}
@@ -434,7 +393,7 @@ export const TitleBar: React.FC = () => {
             </button>
           </div>
 
-          <div className="flex items-center gap-1 rounded-2xl border border-white/8 bg-white/[0.03] p-1 shadow-[0_10px_30px_rgba(0,0,0,0.2)]">
+          <div className="flex items-center gap-1 rounded-xl border border-white/8 bg-white/[0.03] p-1">
             <button
               type="button"
               className={windowButtonClass}
@@ -469,30 +428,12 @@ export const TitleBar: React.FC = () => {
       {settingsOpen && (
         <div
           ref={settingsPanelRef}
-          className="no-drag absolute right-3 top-[calc(100%+0.75rem)] z-40 w-[440px] rounded-[28px] border border-white/10 bg-[linear-gradient(180deg,rgba(22,22,22,0.96),rgba(8,8,8,0.96))] p-4 shadow-[0_30px_80px_rgba(0,0,0,0.45)] backdrop-blur-xl"
+          className="no-drag absolute right-3 top-[calc(100%+0.5rem)] z-40 w-[420px] rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(22,22,22,0.96),rgba(8,8,8,0.96))] p-4 shadow-[0_24px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl"
         >
-          <div className="mb-4 rounded-[24px] border border-white/8 bg-white/[0.04] p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-[10px] uppercase tracking-[0.24em] text-neutral-500">
-                  Workspace Control
-                </div>
-                <div className="mt-1 text-lg font-semibold text-white">Title bar settings</div>
-                <div className="mt-1 text-sm text-neutral-400">
-                  Manage storage, search, indexing, and window behavior.
-                </div>
-              </div>
-              <div className="rounded-2xl border border-[var(--color-primary)]/25 bg-[var(--color-primary)]/10 p-2 text-[var(--color-primary)]">
-                <Sparkles size={16} />
-              </div>
-            </div>
-
-            <div className="mt-4 grid grid-cols-2 gap-2">
-              <MetricCard label="Library" value={imageCountLabel} />
-              <MetricCard
-                label="Status"
-                value={indexingSnap.isIndexing || modelSnap.isDownloading ? "Busy" : "Ready"}
-              />
+          <div className="mb-4">
+            <div className="text-sm font-semibold text-white">Settings</div>
+            <div className="mt-1 text-xs text-neutral-400">
+              Library, search, indexing, and window behavior.
             </div>
           </div>
 

@@ -128,6 +128,11 @@ export type RequestOptions = {
   signal?: AbortSignal;
 };
 
+export type TagMeta = {
+  name: string;
+  color: string | null;
+};
+
 export async function fetchImages<T = unknown>(
   params: ImageSearchParams = {},
   options: RequestOptions = {}
@@ -232,6 +237,34 @@ export async function renameTag(oldTag: string, newTag: string): Promise<void> {
   if (!res.ok) {
     throw new Error(`Failed to rename tag: ${res.status}`);
   }
+}
+
+export async function deleteTag(tag: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/tag/${encodeURIComponent(tag)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to delete tag: ${res.status}`);
+  }
+}
+
+export async function fetchTags(): Promise<TagMeta[]> {
+  const res = await fetch(`${API_BASE_URL}/api/tags`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch tags: ${res.status}`);
+  }
+  const data = (await res.json()) as unknown;
+  if (!Array.isArray(data)) {
+    throw new Error("Invalid tags response");
+  }
+  return data.filter(
+    (item): item is TagMeta =>
+      typeof item === "object" &&
+      item !== null &&
+      typeof (item as TagMeta).name === "string" &&
+      ((item as TagMeta).color === null ||
+        typeof (item as TagMeta).color === "string")
+  );
 }
 
 export async function indexImages<T = unknown>(payload: {

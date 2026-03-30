@@ -75,5 +75,33 @@ export const createTagsRouter = (deps: TagsRouteDeps) => {
     }
   });
 
+  router.delete("/api/tag/:name", async (req, res) => {
+    try {
+      if (guardStorage(res)) return;
+      const imageDb = deps.getImageDb();
+      const rawName = req.params.name;
+      const name = typeof rawName === "string" ? rawName.trim() : "";
+      if (!name) {
+        res.status(400).json({ error: "Tag name is required" });
+        return;
+      }
+
+      imageDb.deleteTag(name);
+
+      const settings = await deps.readSettings();
+      const tagColors = (settings.tagColors || {}) as Record<string, string>;
+      if (Object.prototype.hasOwnProperty.call(tagColors, name)) {
+        const nextTagColors = { ...tagColors };
+        delete nextTagColors[name];
+        await deps.writeSettings({ ...settings, tagColors: nextTagColors });
+      }
+
+      res.json({ success: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    }
+  });
+
   return router;
 };

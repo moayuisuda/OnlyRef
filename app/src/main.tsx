@@ -47,6 +47,7 @@ const bootstrap = async () => {
     i18nActions.hydrate(),
     globalActions.hydrateSettings(),
     galleryActions.hydrateSettings(),
+    galleryActions.loadTags(),
   ]);
 };
 

@@ -9,11 +9,12 @@ import { Tag } from "../Tag";
 import { SortableTag } from "./SortableTag";
 import { ColorInput } from "./ColorInput";
 import { Swatch } from "./Swatch";
+import { ConfirmModal } from "../ConfirmModal";
 import { globalActions, globalState } from "../../store/globalStore";
 import { state, actions } from "../../store/galleryStore";
 import type { ImageMeta } from "../../store/galleryStore";
 import { THEME, hexToRgba } from "../../theme";
-import { renameTag } from "../../service";
+import { deleteTag as deleteTagService, renameTag } from "../../service";
 import { useT } from "../../i18n/useT";
 import type { I18nKey } from "../../../shared/i18n/types";
 import { useClickOutside } from "../../hooks/useClickOutside";
@@ -102,6 +103,12 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
   }, [loading]);
 
   const [searchText, setSearchText] = useState(snap.searchQuery);
+  const [pendingDeleteTag, setPendingDeleteTag] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (searchText === snap.searchQuery) return;
+    setSearchText(snap.searchQuery);
+  }, [searchText, snap.searchQuery]);
 
   const debouncedSetSearchQuery = useMemo(
     () =>
@@ -155,9 +162,44 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
       }
 
       globalActions.pushToast({ key: "toast.tagRenamed" }, "success");
+      void actions.loadTags();
     } catch (e) {
       console.error(e);
       globalActions.pushToast({ key: "toast.tagRenameFailed" }, "error");
+    }
+  };
+
+  const handleDeleteTag = async (tag: string) => {
+    try {
+      await deleteTagService(tag);
+
+      const nextImages = snap.images.map((img) => ({
+        ...img,
+        tags: img.tags.filter((item) => item !== tag),
+      }));
+      actions.setImages(nextImages as ImageMeta[]);
+
+      if (snap.searchTags.includes(tag)) {
+        actions.setSearchTags(snap.searchTags.filter((item) => item !== tag));
+      }
+
+      if (snap.tagSortOrder.includes(tag)) {
+        actions.setTagSortOrder(
+          snap.tagSortOrder.filter((item) => item !== tag)
+        );
+      }
+
+      if (Object.prototype.hasOwnProperty.call(appSnap.tagColors, tag)) {
+        globalActions.clearTagColor(tag);
+      }
+
+      globalActions.pushToast({ key: "toast.tagDeleted" }, "success");
+      void actions.loadTags();
+    } catch (e) {
+      console.error(e);
+      globalActions.pushToast({ key: "toast.tagDeleteFailed" }, "error");
+    } finally {
+      setPendingDeleteTag(null);
     }
   };
 
@@ -302,12 +344,28 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
                     actions.setSearchTags(next);
                   }}
                   onRename={handleRenameTag}
+                  onDelete={(nextTag) => setPendingDeleteTag(nextTag)}
                 />
               ))}
             </div>
           </SortableContext>
         )}
       </div>
+
+      <ConfirmModal
+        isOpen={pendingDeleteTag !== null}
+        title={t("tag.deleteConfirmTitle")}
+        message={t("tag.deleteConfirmMessage", {
+          tag: pendingDeleteTag ?? "",
+        })}
+        confirmText={t("common.delete")}
+        variant="danger"
+        onCancel={() => setPendingDeleteTag(null)}
+        onConfirm={() => {
+          if (!pendingDeleteTag) return;
+          void handleDeleteTag(pendingDeleteTag);
+        }}
+      />
 
       {searchColorPicker && (
         <>

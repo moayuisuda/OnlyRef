@@ -241,11 +241,7 @@ export const Gallery: React.FC = () => {
   }, []);
 
   const allTags = useMemo(() => {
-    const set = new Set<string>();
-    snap.images.forEach((img) => {
-      ensureTags(img.tags as string[]).forEach((t) => set.add(t));
-    });
-    const unsorted = Array.from(set.values());
+    const unsorted = [...snap.tags];
     const order = snap.tagSortOrder || [];
     const orderMap = new Map(order.map((t, i) => [t, i]));
 
@@ -255,18 +251,7 @@ export const Gallery: React.FC = () => {
       if (indexA !== indexB) return indexA - indexB;
       return a.localeCompare(b);
     });
-  }, [snap.images, snap.tagSortOrder]);
-
-  // Auto-remove cleaned up tags from search bar
-  useEffect(() => {
-    if (snap.searchTags.length === 0) return;
-
-    const validTags = snap.searchTags.filter((t) => allTags.includes(t));
-
-    if (validTags.length !== snap.searchTags.length) {
-      actions.setSearchTags(validTags);
-    }
-  }, [allTags, snap.images, snap.searchTags]);
+  }, [snap.tags, snap.tagSortOrder]);
 
   const sortedImages = useMemo(
     () =>
@@ -485,6 +470,7 @@ export const Gallery: React.FC = () => {
             });
           }
         }
+        void actions.loadTags();
       } catch (e) {
         console.error(e);
         globalActions.pushToast({ key: "toast.updateTagsFailed" }, "error");

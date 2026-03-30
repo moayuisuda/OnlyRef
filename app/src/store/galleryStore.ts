@@ -5,6 +5,7 @@ import {
   readSetting,
   saveGalleryOrder,
   fetchImages,
+  fetchTags,
   updateImage,
   deleteImage,
 } from '../service';
@@ -58,6 +59,7 @@ export type GallerySort = 'manual' | 'createdAtDesc';
 
 interface AppState {
   images: ImageMeta[];
+  tags: string[];
   searchQuery: string;
   searchTags: string[];
   searchColor: string | null;
@@ -74,6 +76,7 @@ interface AppState {
 
 export const state = proxy<AppState>({
   images: [],
+  tags: [],
   searchQuery: '',
   searchTags: [],
   searchColor: null,
@@ -263,6 +266,29 @@ export const actions = {
       Object.assign(state.images[existingIndex], image);
     } else {
       state.images.unshift(image);
+    }
+  },
+
+  loadTags: async () => {
+    try {
+      const tagMetas = await fetchTags();
+      const nextTags = tagMetas.map((item) => item.name);
+      state.tags = nextTags;
+
+      const tagSet = new Set(nextTags);
+
+      const nextSearchTags = state.searchTags.filter((tag) => tagSet.has(tag));
+      if (nextSearchTags.length !== state.searchTags.length) {
+        state.searchTags = nextSearchTags;
+      }
+
+      const nextSortOrder = state.tagSortOrder.filter((tag) => tagSet.has(tag));
+      if (nextSortOrder.length !== state.tagSortOrder.length) {
+        state.tagSortOrder = nextSortOrder;
+        void settingStorage.set('tagSortOrder', nextSortOrder);
+      }
+    } catch (error) {
+      console.error('Failed to load tags:', error);
     }
   },
   
@@ -512,6 +538,7 @@ export const actions = {
     try {
       await deleteImage(image.id);
       actions.deleteImage(image.id);
+      void actions.loadTags();
       globalActions.pushToast({ key: "toast.imageDeleted" }, "success");
       return true;
     } catch (e) {

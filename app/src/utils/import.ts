@@ -93,5 +93,9 @@ export const importFiles = async (files: File[]): Promise<ImageMeta[]> => {
     }
   }
 
+  if (importedImages.length > 0) {
+    await actions.loadTags();
+  }
+
   return importedImages;
 };
