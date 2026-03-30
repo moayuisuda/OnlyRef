@@ -5,49 +5,13 @@
   "version": "0.0.0",
   "type": "module",
   "main": "dist-electron/main.cjs",
-  "build": {
-    "appId": "com.picaptain.app",
-    "productName": "PiCaptain",
-    "icon": "resources/icon.png",
-    "files": [
-      "dist-electron",
-      "dist-renderer",
-      "package.json",
-      "backend/python",
-      "resources",
-      "!**/.uv",
-      "!**/__pycache__"
-    ],
-    "asarUnpack": [
-      "backend/python/**",
-      "node_modules/better-sqlite3/**",
-      "node_modules/sqlite-vec/**"
-    ],
-    "mac": {
-      "target": {
-        "target": "dmg",
-        "arch": [
-          "x64",
-          "arm64"
-        ]
-      }
-    },
-    "publish": [
-      {
-        "provider": "generic",
-        "url": "https://mirror.ghproxy.com/https://github.com/anhaohui/RroRef/releases/latest/download/"
-      }
-    ],
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true
-    }
-  },
   "scripts": {
     "dev": "concurrently \"tsup electron/main.ts electron/preload.ts --format cjs --out-dir dist-electron --external electron --external sqlite-vec --external sharp --watch --onSuccess \\\"electron .\\\"\" \"vite\"",
-    "build": "tsc -b && vite build && tsup electron/main.ts electron/preload.ts --format cjs --out-dir dist-electron --external electron --external sqlite-vec --external sharp && electron-builder",
+    "build": "tsc -b && vite build && tsup electron/main.ts electron/preload.ts --format cjs --out-dir dist-electron --external electron --external sqlite-vec --external sharp && electron-builder --config electron-builder.config.cjs",
     "build:mac": "npm run build -- --mac --arm64",
-    "build:win": "tsc -b && vite build && tsup electron/main.ts electron/preload.ts --format cjs --out-dir dist-electron --external electron --external sqlite-vec --external sharp && electron-builder --win",
+    "build:mac:x64": "npm run build -- --mac --x64",
+    "build:win": "npm run build -- --win --x64",
+    "build:win:arm64": "npm run build -- --win --arm64",
     "lint": "eslint .",
     "preview": "vite preview"
   },
