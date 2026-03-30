@@ -26,11 +26,6 @@ import_electron.contextBridge.exposeInMainWorld("electron", {
     import_electron.ipcRenderer.on("search-updated", handler);
     return () => import_electron.ipcRenderer.off("search-updated", handler);
   },
-  onModelDownloadProgress: (callback) => {
-    const handler = (_, data) => callback(data);
-    import_electron.ipcRenderer.on("model-download-progress", handler);
-    return () => import_electron.ipcRenderer.off("model-download-progress", handler);
-  },
   onEnvInitProgress: (callback) => {
     const handler = (_, data) => callback(data);
     import_electron.ipcRenderer.on("env-init-progress", handler);
@@ -47,6 +42,5 @@ import_electron.contextBridge.exposeInMainWorld("electron", {
     return () => import_electron.ipcRenderer.off("toast", handler);
   },
   log: (level, ...args) => import_electron.ipcRenderer.send("log-message", level, ...args),
-  getLogContent: () => import_electron.ipcRenderer.invoke("get-log-content"),
-  ensureModelReady: () => import_electron.ipcRenderer.invoke("ensure-model-ready")
+  getLogContent: () => import_electron.ipcRenderer.invoke("get-log-content")
 });

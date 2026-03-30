@@ -66,9 +66,9 @@ export const en = {
   'toast.shortcutUpdateFailed': 'Failed to update shortcut: {{error}}',
 
   'envInit.brandTitle': 'PiCaptain',
-  'envInit.heading': 'Setting up the Python environment...',
+  'envInit.heading': 'Preparing PiCaptain...',
   'envInit.subheading':
-    'First run may download tools and install dependencies. This is a one-time step.',
+    'First run may download tools, install dependencies, and fetch the local model. This is a one-time step.',
   'envInit.preparing': 'Preparing...',
   'envInit.checkingUv': 'Checking uv...',
   'envInit.downloadingUv': 'Downloading uv...',

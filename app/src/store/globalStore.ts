@@ -34,22 +34,6 @@ export const indexingState = proxy<IndexingState>({
   statusKey: null,
 });
 
-export interface ModelProgressState {
-  isDownloading: boolean;
-  current: number;
-  total: number;
-  statusKey: I18nKey | null;
-  statusParams?: I18nParams;
-  filename?: string;
-}
-
-export const modelProgressState = proxy<ModelProgressState>({
-  isDownloading: false,
-  current: 0,
-  total: 0,
-  statusKey: null,
-});
-
 export const indexingActions = {
   update: (data: Partial<IndexingState>) => {
     Object.assign(indexingState, data);
@@ -61,20 +45,6 @@ export const indexingActions = {
     indexingState.statusKey = null;
     indexingState.statusParams = undefined;
     indexingState.filename = undefined;
-  },
-};
-
-export const modelProgressActions = {
-  update: (data: Partial<ModelProgressState>) => {
-    Object.assign(modelProgressState, data);
-  },
-  reset: () => {
-    modelProgressState.isDownloading = false;
-    modelProgressState.current = 0;
-    modelProgressState.total = 0;
-    modelProgressState.statusKey = null;
-    modelProgressState.statusParams = undefined;
-    modelProgressState.filename = undefined;
   },
 };
 

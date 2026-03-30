@@ -68,8 +68,8 @@ export const zh: I18nDict = {
   'toast.shortcutUpdateFailed': '更新快捷键失败：{{error}}',
 
   'envInit.brandTitle': 'PiCaptain',
-  'envInit.heading': '正在配置 Python 环境…',
-  'envInit.subheading': '首次运行可能会下载工具并安装依赖，这是一次性步骤。',
+  'envInit.heading': '正在准备 PiCaptain…',
+  'envInit.subheading': '首次运行可能会下载工具、安装依赖并拉取本地模型，这是一次性步骤。',
   'envInit.preparing': '准备中…',
   'envInit.checkingUv': '正在检查 uv…',
   'envInit.downloadingUv': '正在下载 uv…',
