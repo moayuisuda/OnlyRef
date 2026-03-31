@@ -85,6 +85,7 @@ export interface GlobalState {
   enableVectorSearch: boolean;
   llmSettings: LLMSettings;
   isAppHidden: boolean;
+  floatingWindowMode: boolean;
 }
 
 const DEFAULT_COLOR_SWATCHES = [
@@ -141,6 +142,7 @@ export const globalState = proxy<GlobalState>({
     model: "",
   },
   isAppHidden: false,
+  floatingWindowMode: false,
 });
 
 export const globalActions = {
@@ -161,6 +163,11 @@ export const globalActions = {
         settings,
         "toggleWindowShortcut",
         DEFAULT_TOGGLE_WINDOW_SHORTCUT,
+      );
+      const rawFloatingWindowMode = readSetting<unknown>(
+        settings,
+        "floatingWindowMode",
+        false,
       );
       const rawLlmSettings = readSetting<unknown>(settings, "llmSettings", {});
 
@@ -184,6 +191,7 @@ export const globalActions = {
 
       globalState.enableVectorSearch = true;
       void settingStorage.set("enableVectorSearch", true);
+      globalState.floatingWindowMode = rawFloatingWindowMode === true;
 
       if (isRecord(rawLlmSettings)) {
         globalState.llmSettings = {
@@ -288,5 +296,27 @@ export const globalActions = {
 
   setAppHidden: (hidden: boolean) => {
     globalState.isAppHidden = hidden;
+  },
+
+  setFloatingWindowMode: async (enabled: boolean) => {
+    const previous = globalState.floatingWindowMode;
+    globalState.floatingWindowMode = enabled;
+    await settingStorage.set("floatingWindowMode", enabled);
+
+    const result = await window.electron?.setFloatingWindowMode?.(enabled);
+    if (result && result.success !== true) {
+      globalState.floatingWindowMode = previous;
+      await settingStorage.set("floatingWindowMode", previous);
+      globalActions.pushToast(
+        {
+          key: "toast.floatingWindowModeUpdateFailed",
+          params: { error: result.error ?? "" },
+        },
+        "error",
+      );
+      return false;
+    }
+
+    return true;
   },
 };

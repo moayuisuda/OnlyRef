@@ -6,6 +6,7 @@ import_electron.contextBridge.exposeInMainWorld("electron", {
   close: () => import_electron.ipcRenderer.send("window-close"),
   focus: () => import_electron.ipcRenderer.send("window-focus"),
   setWindowBounds: (bounds) => import_electron.ipcRenderer.send("set-window-bounds", bounds),
+  setFloatingWindowMode: (enabled) => import_electron.ipcRenderer.invoke("set-floating-window-mode", enabled),
   setToggleWindowShortcut: (accelerator) => import_electron.ipcRenderer.invoke("set-toggle-window-shortcut", accelerator),
   onRendererEvent: (callback) => {
     const handler = (_, event, ...args) => callback(event, ...args);
@@ -14,6 +15,7 @@ import_electron.contextBridge.exposeInMainWorld("electron", {
   },
   setSettingsOpen: (open) => import_electron.ipcRenderer.send("settings-open-changed", open),
   getStorageDir: () => import_electron.ipcRenderer.invoke("get-storage-dir"),
+  openStorageDir: () => import_electron.ipcRenderer.invoke("open-storage-dir"),
   chooseStorageDir: () => import_electron.ipcRenderer.invoke("choose-storage-dir"),
   openExternal: (url) => import_electron.ipcRenderer.invoke("open-external", url),
   onImageUpdated: (callback) => {

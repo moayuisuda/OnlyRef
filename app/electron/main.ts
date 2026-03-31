@@ -62,6 +62,19 @@ let toggleWindowShortcut = DEFAULT_TOGGLE_WINDOW_SHORTCUT;
 
 let isSettingsOpen = false;
 let hasPendingSecondInstanceRestore = false;
+let isFloatingWindowMode = false;
+
+const NORMAL_WINDOW_MIN_WIDTH = 400;
+const NORMAL_WINDOW_MIN_HEIGHT = 300;
+const FLOATING_WINDOW_SIZE = 50;
+
+type WindowMode = "normal" | "floating";
+
+type PersistedSettings = Record<string, unknown> & {
+  windowBounds?: Partial<Electron.Rectangle>;
+  floatingWindowBounds?: Partial<Electron.Rectangle>;
+  floatingWindowMode?: boolean;
+};
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
@@ -105,6 +118,190 @@ async function loadShortcuts(): Promise<void> {
   } catch {
     // ignore
   }
+}
+
+async function readPersistedSettings(): Promise<PersistedSettings> {
+  try {
+    const settingsPath = path.join(getStorageDir(), "settings.json");
+    const settings = await lockedFs.readJson(settingsPath).catch(() => null);
+    if (settings && typeof settings === "object") {
+      return settings as PersistedSettings;
+    }
+  } catch {
+    // ignore
+  }
+  return {};
+}
+
+async function writePersistedSettings(
+  patch: Partial<PersistedSettings>,
+): Promise<void> {
+  try {
+    const settingsPath = path.join(getStorageDir(), "settings.json");
+    const current = await readPersistedSettings();
+    await lockedFs.writeJson(settingsPath, {
+      ...current,
+      ...patch,
+    });
+  } catch (error) {
+    log.error("Failed to write settings", error);
+  }
+}
+
+function getWindowMode(): WindowMode {
+  return isFloatingWindowMode ? "floating" : "normal";
+}
+
+function normalizeNormalBounds(
+  bounds: Partial<Electron.Rectangle> | undefined,
+): Electron.Rectangle {
+  const workArea = screen.getPrimaryDisplay().workArea;
+  const width = Math.max(
+    NORMAL_WINDOW_MIN_WIDTH,
+    Math.min(
+      typeof bounds?.width === "number" ? bounds.width : Math.floor(workArea.width * 0.6),
+      workArea.width,
+    ),
+  );
+  const height = Math.max(
+    NORMAL_WINDOW_MIN_HEIGHT,
+    Math.min(
+      typeof bounds?.height === "number" ? bounds.height : Math.floor(workArea.height * 0.8),
+      workArea.height,
+    ),
+  );
+  const fallbackX = workArea.x + Math.floor((workArea.width - width) / 2);
+  const fallbackY = workArea.y + Math.floor((workArea.height - height) / 2);
+  const display = screen.getDisplayMatching({
+    x: typeof bounds?.x === "number" ? bounds.x : fallbackX,
+    y: typeof bounds?.y === "number" ? bounds.y : fallbackY,
+    width,
+    height,
+  });
+  const area = display.workArea;
+  const maxX = area.x + Math.max(0, area.width - width);
+  const maxY = area.y + Math.max(0, area.height - height);
+
+  return {
+    width,
+    height,
+    x: Math.min(Math.max(typeof bounds?.x === "number" ? bounds.x : fallbackX, area.x), maxX),
+    y: Math.min(Math.max(typeof bounds?.y === "number" ? bounds.y : fallbackY, area.y), maxY),
+  };
+}
+
+function normalizeFloatingBounds(
+  bounds: Partial<Electron.Rectangle> | undefined,
+  fallbackBounds?: Partial<Electron.Rectangle>,
+): Electron.Rectangle {
+  const width = FLOATING_WINDOW_SIZE;
+  const height = FLOATING_WINDOW_SIZE;
+  const fallbackX =
+    typeof fallbackBounds?.x === "number" && typeof fallbackBounds?.width === "number"
+      ? fallbackBounds.x + Math.round((fallbackBounds.width - width) / 2)
+      : undefined;
+  const fallbackY =
+    typeof fallbackBounds?.y === "number" && typeof fallbackBounds?.height === "number"
+      ? fallbackBounds.y + Math.round((fallbackBounds.height - height) / 2)
+      : undefined;
+  const display = screen.getDisplayMatching({
+    x: typeof bounds?.x === "number" ? bounds.x : fallbackX ?? screen.getPrimaryDisplay().workArea.x,
+    y: typeof bounds?.y === "number" ? bounds.y : fallbackY ?? screen.getPrimaryDisplay().workArea.y,
+    width,
+    height,
+  });
+  const area = display.workArea;
+  const defaultX = area.x + area.width - width - 24;
+  const defaultY = area.y + Math.max(24, Math.round(area.height * 0.18));
+  const maxX = area.x + Math.max(0, area.width - width);
+  const maxY = area.y + Math.max(0, area.height - height);
+
+  return {
+    width,
+    height,
+    x: Math.min(
+      Math.max(typeof bounds?.x === "number" ? bounds.x : fallbackX ?? defaultX, area.x),
+      maxX,
+    ),
+    y: Math.min(
+      Math.max(typeof bounds?.y === "number" ? bounds.y : fallbackY ?? defaultY, area.y),
+      maxY,
+    ),
+  };
+}
+
+function resolveBoundsForMode(
+  mode: WindowMode,
+  settings: PersistedSettings,
+  fallbackBounds?: Partial<Electron.Rectangle>,
+): Electron.Rectangle {
+  if (mode === "floating") {
+    return normalizeFloatingBounds(settings.floatingWindowBounds, fallbackBounds);
+  }
+  return normalizeNormalBounds(settings.windowBounds);
+}
+
+async function persistWindowBounds(
+  mode: WindowMode,
+  bounds: Electron.Rectangle,
+): Promise<void> {
+  if (mode === "normal") {
+    const nextBounds =
+      mainWindow && mainWindow.isMaximized()
+        ? mainWindow.getNormalBounds()
+        : bounds;
+    await writePersistedSettings({
+      windowBounds: normalizeNormalBounds(nextBounds),
+    });
+    return;
+  }
+
+  await writePersistedSettings({
+    floatingWindowBounds: normalizeFloatingBounds(bounds),
+  });
+}
+
+const debouncedSaveWindowBounds = debounce(
+  { delay: 1000 },
+  (mode: WindowMode, bounds: Electron.Rectangle) => {
+    void persistWindowBounds(mode, bounds);
+  },
+);
+
+function syncWindowAppearance(mode: WindowMode): void {
+  if (!mainWindow) return;
+
+  const floating = mode === "floating";
+  // Use Electron's default floating level for top-most windows.
+  // Higher levels like screen-saver can interfere with native drag/drop targeting.
+  mainWindow.setAlwaysOnTop(floating);
+  mainWindow.setVisibleOnAllWorkspaces(floating, {
+    visibleOnFullScreen: floating,
+  });
+  mainWindow.setResizable(!floating);
+  mainWindow.setMaximizable(!floating);
+  mainWindow.setFullScreenable(!floating);
+  mainWindow.setMinimizable(true);
+  mainWindow.setMinimumSize(
+    floating ? FLOATING_WINDOW_SIZE : NORMAL_WINDOW_MIN_WIDTH,
+    floating ? FLOATING_WINDOW_SIZE : NORMAL_WINDOW_MIN_HEIGHT,
+  );
+}
+
+async function applyWindowMode(mode: WindowMode): Promise<void> {
+  if (!mainWindow) return;
+
+  const previousMode = getWindowMode();
+  const currentBounds = mainWindow.getBounds();
+  await persistWindowBounds(previousMode, currentBounds);
+
+  isFloatingWindowMode = mode === "floating";
+  const settings = await readPersistedSettings();
+  const nextBounds = resolveBoundsForMode(mode, settings, currentBounds);
+
+  syncWindowAppearance(mode);
+  mainWindow.setBounds(nextBounds, true);
+  await persistWindowBounds(mode, nextBounds);
 }
 
 function loadMainWindow() {
@@ -185,53 +382,17 @@ function setupAutoUpdater() {
   }
 }
 
-async function saveWindowBounds() {
-  if (!mainWindow) return;
-  if (mainWindow.isMinimized() || mainWindow.isMaximized()) return;
-  try {
-    const bounds = mainWindow.getBounds();
-    const settingsPath = path.join(getStorageDir(), "settings.json");
-    const settings = (await lockedFs
-      .readJson(settingsPath)
-      .catch(() => ({}))) as object;
-
-    await lockedFs.writeJson(settingsPath, {
-      ...settings,
-      windowBounds: bounds,
-    });
-  } catch (e) {
-    log.error("Failed to save window bounds", e);
-  }
-}
-
-const debouncedSaveWindowBounds = debounce({ delay: 1000 }, saveWindowBounds);
-
 async function createWindow(options?: { load?: boolean }) {
   log.info("Creating main window...");
   isAppHidden = false;
-  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
-
-  let windowState: Partial<Electron.Rectangle> = {};
-  try {
-    const settingsPath = path.join(getStorageDir(), "settings.json");
-    if (await lockedFs.pathExists(settingsPath)) {
-      const settingsRaw = await lockedFs.readJson(settingsPath);
-      if (settingsRaw && typeof settingsRaw === "object") {
-        const settings = settingsRaw as {
-          windowBounds?: Electron.Rectangle;
-        };
-        if (settings.windowBounds) {
-          windowState = settings.windowBounds;
-        }
-      }
-    }
-  } catch (e) {
-    log.error("Failed to load window bounds", e);
-  }
+  const settings = await readPersistedSettings();
+  isFloatingWindowMode = settings.floatingWindowMode === true;
+  const mode = getWindowMode();
+  const windowState = resolveBoundsForMode(mode, settings);
 
   mainWindow = new BrowserWindow({
-    width: windowState.width || Math.floor(width * 0.6),
-    height: windowState.height || Math.floor(height * 0.8),
+    width: windowState.width,
+    height: windowState.height,
     x: windowState.x,
     y: windowState.y,
     icon: path.join(__dirname, "../resources/icon.svg"),
@@ -243,12 +404,23 @@ async function createWindow(options?: { load?: boolean }) {
     frame: false,
     transparent: false,
     backgroundColor: "#0a0a0a",
-    alwaysOnTop: false,
+    alwaysOnTop: isFloatingWindowMode,
     hasShadow: true,
   });
 
-  mainWindow.on("resize", debouncedSaveWindowBounds);
-  mainWindow.on("move", debouncedSaveWindowBounds);
+  syncWindowAppearance(mode);
+
+  mainWindow.on("resize", () => {
+    if (!mainWindow) return;
+    if (!isFloatingWindowMode && (mainWindow.isMinimized() || mainWindow.isMaximized())) {
+      return;
+    }
+    debouncedSaveWindowBounds(getWindowMode(), mainWindow.getBounds());
+  });
+  mainWindow.on("move", () => {
+    if (!mainWindow) return;
+    debouncedSaveWindowBounds(getWindowMode(), mainWindow.getBounds());
+  });
 
   mainWindow.webContents.on("did-finish-load", () => {
     log.info("Renderer process finished loading");
@@ -298,14 +470,35 @@ async function createWindow(options?: { load?: boolean }) {
     (_event, bounds: Partial<Electron.Rectangle>) => {
       if (!mainWindow) return;
       const current = mainWindow.getBounds();
-      mainWindow.setBounds({
+      const nextBounds = {
         x: bounds.x ?? current.x,
         y: bounds.y ?? current.y,
         width: bounds.width ?? current.width,
         height: bounds.height ?? current.height,
-      });
+      };
+
+      if (isFloatingWindowMode) {
+        const normalized = normalizeFloatingBounds(nextBounds);
+        mainWindow.setBounds(normalized);
+        return;
+      }
+
+      mainWindow.setBounds(normalizeNormalBounds(nextBounds));
     },
   );
+
+  ipcMain.handle("set-floating-window-mode", async (_event, enabled: boolean) => {
+    try {
+      await applyWindowMode(enabled ? "floating" : "normal");
+      return { success: true };
+    } catch (error) {
+      log.error("Failed to switch floating window mode", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
 
   ipcMain.on("log-message", (_event, level: string, ...args: unknown[]) => {
     if (typeof log[level as keyof typeof log] === "function") {
@@ -1256,6 +1449,15 @@ app.on("second-instance", () => {
 
 ipcMain.handle("get-storage-dir", async () => {
   return getStorageDir();
+});
+
+ipcMain.handle("open-storage-dir", async () => {
+  const target = getStorageDir();
+  const result = await shell.openPath(target);
+  if (result) {
+    return { success: false, error: result };
+  }
+  return { success: true };
 });
 
 ipcMain.handle("choose-storage-dir", async () => {

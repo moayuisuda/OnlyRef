@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('electron', {
   focus: () => ipcRenderer.send('window-focus'),
   setWindowBounds: (bounds: { x?: number; y?: number; width?: number; height?: number }) =>
     ipcRenderer.send('set-window-bounds', bounds),
+  setFloatingWindowMode: (enabled: boolean) =>
+    ipcRenderer.invoke('set-floating-window-mode', enabled),
   setToggleWindowShortcut: (accelerator: string) =>
     ipcRenderer.invoke('set-toggle-window-shortcut', accelerator),
   onRendererEvent: (callback: (event: string, ...args: unknown[]) => void) => {
@@ -16,6 +18,7 @@ contextBridge.exposeInMainWorld('electron', {
   },
   setSettingsOpen: (open: boolean) => ipcRenderer.send('settings-open-changed', open),
   getStorageDir: () => ipcRenderer.invoke('get-storage-dir'),
+  openStorageDir: () => ipcRenderer.invoke('open-storage-dir'),
   chooseStorageDir: () => ipcRenderer.invoke('choose-storage-dir'),
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
   onImageUpdated: (callback: (data: unknown) => void) => {

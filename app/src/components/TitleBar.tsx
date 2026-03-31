@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
+  Circle,
   FolderOpen,
   Minus,
   Settings,
@@ -170,6 +171,14 @@ export const TitleBar: React.FC = () => {
     }
   };
 
+  const handleOpenStorageDir = async () => {
+    if (!window.electron?.openStorageDir) return;
+    const result = await window.electron.openStorageDir();
+    if (result?.success !== true) {
+      globalActions.pushToast({ key: "toast.openFileFailed" }, "error");
+    }
+  };
+
   const handleIndexMissingImages = async () => {
     if (indexingResetTimerRef.current !== null) {
       window.clearTimeout(indexingResetTimerRef.current);
@@ -289,6 +298,20 @@ export const TitleBar: React.FC = () => {
 
         <div className="no-drag flex items-center gap-1">
           <button
+            type="button"
+            className={clsx(
+              iconButtonClass,
+              snap.floatingWindowMode && "bg-white/[0.08] text-[var(--color-primary)]",
+            )}
+            title={t("titleBar.floatingMode")}
+            onClick={() => {
+              setSettingsOpen(false);
+              void globalActions.setFloatingWindowMode(!snap.floatingWindowMode);
+            }}
+          >
+            <Circle size={14} className={clsx(snap.floatingWindowMode && "fill-current")} />
+          </button>
+          <button
             ref={settingsButtonRef}
             type="button"
             className={clsx(
@@ -349,14 +372,24 @@ export const TitleBar: React.FC = () => {
                     {loadingStorageDir ? t("common.loading") : storageDir || t("common.unavailable")}
                   </div>
                 </div>
-                <button
-                  type="button"
-                  className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08]"
-                  onClick={handleChooseStorageDir}
-                >
-                  <FolderOpen size={12} />
-                  {t("titleBar.change")}
-                </button>
+                <div className="flex shrink-0 flex-col gap-2">
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08]"
+                    onClick={handleOpenStorageDir}
+                  >
+                    <FolderOpen size={12} />
+                    {t("common.open")}
+                  </button>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08]"
+                    onClick={handleChooseStorageDir}
+                  >
+                    <FolderOpen size={12} />
+                    {t("titleBar.change")}
+                  </button>
+                </div>
               </div>
             </div>
 

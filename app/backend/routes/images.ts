@@ -9,6 +9,45 @@ import fs from "fs-extra";
 import { lockedFs, withFileLock, withFileLocks } from "../fileLock";
 
 type VectorMode = "encode-image" | "encode-text";
+type VectorBatchResult = { vector: number[] | null; error?: string };
+type ImportSourceType = "url" | "path" | "buffer";
+type ImportPayload = {
+  imageBase64?: string;
+  imageUrl?: string;
+  type?: ImportSourceType;
+  data?: string;
+  filename?: string;
+  name?: string;
+  pageUrl?: string;
+  tags?: string[];
+};
+type ImportSource = {
+  sourceType: ImportSourceType;
+  sourceData: string | Buffer;
+};
+type ImportedImageRecord = {
+  id: string;
+  rowid: number;
+  localPath: string;
+  meta: ImageMeta;
+};
+type ImagePostProcessItem = {
+  id: string;
+  rowid: number;
+  localPath: string;
+  processVector: boolean;
+  processDominantColor: boolean;
+  processTone: boolean;
+};
+type ImagePostProcessOptions = {
+  vectorContext: "import" | "batch";
+  notifyVectorFailure?: boolean;
+  onVectorProgress?: (current: number, total: number) => void;
+};
+
+const VECTOR_INDEX_BATCH_SIZE = 8;
+const IMPORT_BATCH_CONCURRENCY = 4;
+const IMAGE_POST_PROCESS_CONCURRENCY = 3;
 
 type ImagesRouteDeps = {
   getImageDb: () => ImageDb;
@@ -18,6 +57,7 @@ type ImagesRouteDeps = {
   readSettings: () => Promise<Record<string, unknown>>;
   writeSettings: (settings: Record<string, unknown>) => Promise<void>;
   runPythonVector: (mode: VectorMode, arg: string) => Promise<number[] | null>;
+  runPythonVectors: (paths: string[]) => Promise<VectorBatchResult[]>;
   runPythonDominantColor: (arg: string) => Promise<string | null>;
   runPythonTone: (arg: string) => Promise<string | null>;
   downloadImage: (url: string, targetPath: string) => Promise<void>;
@@ -214,8 +254,80 @@ const resolveOklchPayload = (raw: string): { color: string; oklch: OklchColor } 
   return { color: normalized, oklch };
 };
 
+const resolveImportSource = (payload: ImportPayload): ImportSource | null => {
+  if (payload.imageBase64) {
+    const base64Data = payload.imageBase64.replace(/^data:image\/\w+;base64,/, "");
+    return {
+      sourceType: "buffer",
+      sourceData: Buffer.from(base64Data, "base64"),
+    };
+  }
+  if (payload.type && payload.data) {
+    return {
+      sourceType: payload.type,
+      sourceData: payload.data,
+    };
+  }
+  if (payload.imageUrl) {
+    return {
+      sourceType:
+        payload.imageUrl.startsWith("file://") || payload.imageUrl.startsWith("/")
+          ? "path"
+          : "url",
+      sourceData: payload.imageUrl,
+    };
+  }
+  return null;
+};
+
+const chunkItems = <T,>(items: T[], size: number): T[][] => {
+  if (items.length === 0) return [];
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+};
+
+const runWithConcurrency = async <T,>(
+  items: T[],
+  limit: number,
+  task: (item: T, index: number) => Promise<void>
+): Promise<void> => {
+  if (items.length === 0) return;
+  let nextIndex = 0;
+  const workerCount = Math.min(limit, items.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      await task(items[currentIndex], currentIndex);
+    }
+  });
+  await Promise.all(workers);
+};
+
+const mergeImagePostProcessItems = (
+  items: ImagePostProcessItem[]
+): ImagePostProcessItem[] => {
+  const merged = new Map<string, ImagePostProcessItem>();
+  items.forEach((item) => {
+    const current = merged.get(item.id);
+    if (!current) {
+      merged.set(item.id, { ...item });
+      return;
+    }
+    current.processVector = current.processVector || item.processVector;
+    current.processDominantColor =
+      current.processDominantColor || item.processDominantColor;
+    current.processTone = current.processTone || item.processTone;
+  });
+  return Array.from(merged.values());
+};
+
 export const createImagesRouter = (deps: ImagesRouteDeps) => {
   const router = express.Router();
+  const reservedImportFilenames = new Set<string>();
 
   const guardStorage = (res: express.Response): boolean => {
     const incompatibleError = deps.getIncompatibleError();
@@ -226,6 +338,431 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
       code: "STORAGE_INCOMPATIBLE",
     });
     return true;
+  };
+
+  const indexImageVector = async (
+    imageDb: ImageDb,
+    params: {
+      id: string;
+      rowid: number;
+      localPath: string;
+      context: "import" | "single" | "batch";
+      current?: number;
+      total?: number;
+    }
+  ): Promise<boolean> => {
+    const { id, rowid, localPath, context, current, total } = params;
+    console.log(`[VectorIndex] start ${context}`, {
+      id,
+      rowid,
+      ...(typeof current === "number" ? { current } : {}),
+      ...(typeof total === "number" ? { total } : {}),
+      imagePath: localPath,
+    });
+
+    const vector = await deps.runPythonVector("encode-image", localPath);
+    if (!vector) {
+      console.error(`[VectorIndex] vector missing ${context}`, {
+        id,
+        rowid,
+        ...(typeof current === "number" ? { current } : {}),
+        ...(typeof total === "number" ? { total } : {}),
+      });
+      return false;
+    }
+
+    imageDb.setImageVector(rowid, vector);
+    deps.sendToRenderer?.("image-updated", { id, hasVector: true });
+    console.log(`[VectorIndex] stored ${context}`, {
+      id,
+      rowid,
+      ...(typeof current === "number" ? { current } : {}),
+      ...(typeof total === "number" ? { total } : {}),
+      length: vector.length,
+    });
+    return true;
+  };
+
+  const indexImageVectorBatch = async (
+    imageDb: ImageDb,
+    items: {
+      id: string;
+      rowid: number;
+      localPath: string;
+      current: number;
+      total: number;
+    }[]
+  ): Promise<number> => {
+    if (items.length === 0) return 0;
+
+    console.log("[VectorIndex] start batch-chunk", {
+      size: items.length,
+      firstCurrent: items[0].current,
+      lastCurrent: items[items.length - 1].current,
+      total: items[0].total,
+    });
+
+    const results = await deps.runPythonVectors(items.map((item) => item.localPath));
+    if (results.length !== items.length) {
+      throw new Error("Vector batch result length mismatch");
+    }
+
+    const successfulEntries: { item: (typeof items)[0]; vector: number[] }[] = [];
+
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      const result = results[index];
+      if (result?.vector && result.vector.length > 0) {
+        successfulEntries.push({ item, vector: result.vector });
+        continue;
+      }
+
+      console.error("[VectorIndex] vector missing batch", {
+        id: item.id,
+        rowid: item.rowid,
+        current: item.current,
+        total: item.total,
+        error: result?.error ?? "vector-missing",
+      });
+    }
+
+    const writtenRowids = new Set(
+      imageDb.setImageVectors(
+        successfulEntries.map(({ item, vector }) => ({ rowid: item.rowid, vector }))
+      )
+    );
+
+    successfulEntries.forEach(({ item, vector }) => {
+      if (!writtenRowids.has(item.rowid)) {
+        console.error("[VectorIndex] vector write missing batch", {
+          id: item.id,
+          rowid: item.rowid,
+          current: item.current,
+          total: item.total,
+        });
+        return;
+      }
+      deps.sendToRenderer?.("image-updated", { id: item.id, hasVector: true });
+      console.log("[VectorIndex] stored batch", {
+        id: item.id,
+        rowid: item.rowid,
+        current: item.current,
+        total: item.total,
+        length: vector.length,
+      });
+    });
+
+    return writtenRowids.size;
+  };
+
+  const updateImageDominantColor = async (
+    imageDb: ImageDb,
+    item: ImagePostProcessItem
+  ): Promise<void> => {
+    try {
+      const dominantColor = await deps.runPythonDominantColor(item.localPath);
+      if (!dominantColor) return;
+      const resolved = resolveOklchPayload(dominantColor);
+      if (!resolved) return;
+      imageDb.updateImage({
+        id: item.id,
+        dominantColor: resolved.color,
+        dominantL: resolved.oklch.L,
+        dominantC: resolved.oklch.C,
+        dominantH: resolved.oklch.h,
+      });
+      deps.sendToRenderer?.("image-updated", {
+        id: item.id,
+        dominantColor: resolved.color,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("Async dominant color update failed:", message);
+    }
+  };
+
+  const updateImageTone = async (
+    imageDb: ImageDb,
+    item: ImagePostProcessItem
+  ): Promise<void> => {
+    try {
+      const tone = await deps.runPythonTone(item.localPath);
+      if (!tone) return;
+      imageDb.updateImage({ id: item.id, tone });
+      deps.sendToRenderer?.("image-updated", { id: item.id, tone });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("Async tone update failed:", message);
+    }
+  };
+
+  const runImagePostProcessing = async (
+    imageDb: ImageDb,
+    items: ImagePostProcessItem[],
+    options: ImagePostProcessOptions
+  ): Promise<{ updatedVectors: number; totalVectors: number }> => {
+    if (items.length === 0) {
+      return { updatedVectors: 0, totalVectors: 0 };
+    }
+
+    const vectorCandidates = items.filter((item) => item.processVector);
+    let vectorItems: ImagePostProcessItem[] = [];
+    if (vectorCandidates.length > 0) {
+      const settings = await deps.readSettings();
+      if (settings.enableVectorSearch === true) {
+        vectorItems = vectorCandidates;
+      }
+    }
+
+    let updatedVectors = 0;
+    let vectorFailures = 0;
+    let completedVectors = 0;
+    const jobs: Array<() => Promise<void>> = [];
+    const vectorScheduledIds = new Set<string>();
+
+    const appendDerivativeJobs = (item: ImagePostProcessItem) => {
+      if (item.processDominantColor) {
+        jobs.push(() => updateImageDominantColor(imageDb, item));
+      }
+      if (item.processTone) {
+        jobs.push(() => updateImageTone(imageDb, item));
+      }
+    };
+
+    let vectorBaseIndex = 0;
+    for (const chunk of chunkItems(vectorItems, VECTOR_INDEX_BATCH_SIZE)) {
+      const batchItems = chunk.map((item, index) => ({
+        id: item.id,
+        rowid: item.rowid,
+        localPath: item.localPath,
+        current: vectorBaseIndex + index + 1,
+        total: vectorItems.length,
+      }));
+
+      jobs.push(async () => {
+        try {
+          if (batchItems.length === 1) {
+            const indexed = await indexImageVector(imageDb, {
+              id: batchItems[0].id,
+              rowid: batchItems[0].rowid,
+              localPath: batchItems[0].localPath,
+              context: options.vectorContext,
+              current: batchItems[0].current,
+              total: batchItems[0].total,
+            });
+            updatedVectors += indexed ? 1 : 0;
+            vectorFailures += indexed ? 0 : 1;
+          } else {
+            const updated = await indexImageVectorBatch(imageDb, batchItems);
+            updatedVectors += updated;
+            vectorFailures += batchItems.length - updated;
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error("Async vector image processing failed:", message);
+          vectorFailures += batchItems.length;
+        } finally {
+          completedVectors += batchItems.length;
+          options.onVectorProgress?.(completedVectors, vectorItems.length);
+        }
+      });
+
+      chunk.forEach((item) => {
+        vectorScheduledIds.add(item.id);
+        appendDerivativeJobs(item);
+      });
+      vectorBaseIndex += chunk.length;
+    }
+
+    items.forEach((item) => {
+      if (!vectorScheduledIds.has(item.id)) {
+        appendDerivativeJobs(item);
+      }
+    });
+
+    await runWithConcurrency(jobs, IMAGE_POST_PROCESS_CONCURRENCY, async (job) => {
+      await job();
+    });
+
+    if (vectorFailures > 0 && options.notifyVectorFailure) {
+      deps.sendToRenderer?.("toast", {
+        key: "toast.vectorIndexFailed",
+        type: "error",
+      });
+    }
+
+    return { updatedVectors, totalVectors: vectorItems.length };
+  };
+
+  const scheduleImagePostProcessing = (
+    imageDb: ImageDb,
+    items: ImagePostProcessItem[],
+    options: ImagePostProcessOptions
+  ) => {
+    if (items.length === 0) return;
+    void runImagePostProcessing(imageDb, items, options).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("Async image post processing failed:", message);
+      if (options.notifyVectorFailure) {
+        deps.sendToRenderer?.("toast", {
+          key: "toast.vectorIndexFailed",
+          type: "error",
+        });
+      }
+    });
+  };
+
+  const reserveImportTarget = async (
+    imageDb: ImageDb,
+    payload: ImportPayload,
+    source: ImportSource,
+    timestamp: number
+  ): Promise<{
+    filename: string;
+    imagePath: string;
+    localPath: string;
+    existedBefore: boolean;
+  }> => {
+    const { sourceType, sourceData } = source;
+    const sourceFilename =
+      sourceType === "path"
+        ? (path.basename(sourceData as string).split("?")[0] as string)
+        : "";
+    const metaFilename =
+      typeof payload.filename === "string" ? payload.filename.trim() : "";
+    const metaName = typeof payload.name === "string" ? payload.name.trim() : "";
+
+    const extFromMetaFilename = normalizeExt(path.extname(metaFilename));
+    const extFromSource = normalizeExt(path.extname(sourceFilename));
+    const extFromMetaName = normalizeExt(path.extname(metaName));
+    const ext =
+      extFromMetaFilename ||
+      extFromSource ||
+      extFromMetaName ||
+      (sourceType === "buffer" ? ".png" : ".jpg");
+
+    const baseNameFromMetaFilename = metaFilename
+      ? path.basename(metaFilename, path.extname(metaFilename))
+      : "";
+    const baseNameFromMetaName = metaName
+      ? path.basename(metaName, path.extname(metaName))
+      : "";
+    const baseNameFromSource = sourceFilename
+      ? path.basename(sourceFilename, path.extname(sourceFilename))
+      : "";
+
+    const rawBase =
+      baseNameFromMetaFilename ||
+      baseNameFromMetaName ||
+      baseNameFromSource ||
+      `EMPTY_NAME_${timestamp}`;
+    const safeName = sanitizeBase(rawBase);
+
+    return withFileLock(deps.getImageDir(), async () => {
+      let filename = `${safeName}${ext}`;
+      let counter = 1;
+
+      while (true) {
+        if (
+          reservedImportFilenames.has(filename) ||
+          imageDb.getImageRowByFilename(filename)
+        ) {
+          filename = `${safeName}_${counter}${ext}`;
+          counter += 1;
+          continue;
+        }
+
+        const imagePath = path.join("images", filename);
+        const localPath = path.join(deps.getStorageDir(), imagePath);
+        const existedBefore = await lockedFs.pathExists(localPath);
+        reservedImportFilenames.add(filename);
+        return { filename, imagePath, localPath, existedBefore };
+      }
+    });
+  };
+
+  const importSingleImage = async (
+    imageDb: ImageDb,
+    payload: ImportPayload,
+    timestamp: number
+  ): Promise<ImportedImageRecord> => {
+    const source = resolveImportSource(payload);
+    if (!source) {
+      throw new Error("No image data");
+    }
+
+    const tags = ensureTags(payload.tags);
+    const { sourceType, sourceData } = source;
+    const target = await reserveImportTarget(imageDb, payload, source, timestamp);
+
+    try {
+      if (sourceType === "buffer") {
+        await withFileLock(target.localPath, async () => {
+          await fs.writeFile(target.localPath, sourceData as Buffer);
+        });
+      } else if (sourceType === "path") {
+        let srcPath = sourceData as string;
+        if (srcPath.startsWith("file://")) {
+          srcPath = new URL(srcPath).pathname;
+          if (
+            process.platform === "win32" &&
+            srcPath.startsWith("/") &&
+            srcPath.includes(":")
+          ) {
+            srcPath = srcPath.substring(1);
+          }
+        }
+        srcPath = decodeURIComponent(srcPath);
+        await withFileLocks([srcPath, target.localPath], async () => {
+          await fs.copy(srcPath, target.localPath);
+        });
+      } else {
+        await deps.downloadImage(sourceData as string, target.localPath);
+      }
+
+      const id = uuidv4();
+      const createdAt = timestamp;
+      const pageUrl = typeof payload.pageUrl === "string" ? payload.pageUrl : null;
+      const { rowid } = imageDb.insertImage({
+        id,
+        filename: target.filename,
+        imagePath: target.imagePath,
+        createdAt,
+        pageUrl,
+      });
+      imageDb.setImageTags(id, tags);
+
+      return {
+        id,
+        rowid,
+        localPath: target.localPath,
+        meta: {
+          id,
+          rowid,
+          filename: target.filename,
+          imagePath: target.imagePath,
+          pageUrl,
+          tags,
+          createdAt,
+          dominantColor: null,
+          tone: null,
+          hasVector: false,
+        },
+      };
+    } catch (error) {
+      if (!target.existedBefore) {
+        await withFileLock(target.localPath, async () => {
+          if (await fs.pathExists(target.localPath)) {
+            await fs.remove(target.localPath);
+          }
+        });
+      }
+      throw error;
+    } finally {
+      await withFileLock(deps.getImageDir(), async () => {
+        reservedImportFilenames.delete(target.filename);
+      });
+    }
   };
 
   router.get("/api/images", async (req, res) => {
@@ -538,207 +1075,93 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
     try {
       if (guardStorage(res)) return;
       const imageDb = deps.getImageDb();
-      const payload = req.body as {
-        imageBase64?: string;
-        imageUrl?: string;
-        type?: "url" | "path" | "buffer";
-        data?: string;
-        filename?: string;
-        name?: string;
-        pageUrl?: string;
-        tags?: string[];
-      };
+      const payload = req.body as ImportPayload;
+      const imported = await importSingleImage(imageDb, payload, Date.now());
 
-      const tags = ensureTags(payload.tags);
-      const timestamp = Date.now();
+      res.json({ success: true, meta: imported.meta });
 
-      let sourceType: "url" | "path" | "buffer" | null = null;
-      let sourceData: string | Buffer | null = null;
+      scheduleImagePostProcessing(
+        imageDb,
+        [
+          {
+            id: imported.id,
+            rowid: imported.rowid,
+            localPath: imported.localPath,
+            processVector: true,
+            processDominantColor: true,
+            processTone: true,
+          },
+        ],
+        {
+          vectorContext: "import",
+          notifyVectorFailure: true,
+        }
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    }
+  });
 
-      if (payload.imageBase64) {
-        const base64Data = payload.imageBase64.replace(/^data:image\/\w+;base64,/, "");
-        sourceType = "buffer";
-        sourceData = Buffer.from(base64Data, "base64");
-      } else if (payload.type && payload.data) {
-        sourceType = payload.type;
-        sourceData = payload.data;
-      } else if (payload.imageUrl) {
-        const imageUrl = payload.imageUrl;
-        sourceType =
-          imageUrl.startsWith("file://") || imageUrl.startsWith("/")
-            ? "path"
-            : "url";
-        sourceData = imageUrl;
-      }
-
-      if (!sourceType || sourceData === null) {
-        res.status(400).json({ error: "No image data" });
+  router.post("/api/import-batch", async (req, res) => {
+    try {
+      if (guardStorage(res)) return;
+      const imageDb = deps.getImageDb();
+      const body = req.body as { items?: unknown };
+      if (!Array.isArray(body.items) || body.items.length === 0) {
+        res.status(400).json({ error: "No import items" });
         return;
       }
 
-      const sourceFilename =
-        sourceType === "path"
-          ? (path.basename(sourceData as string).split("?")[0] as string)
-          : "";
-      const metaFilename =
-        typeof payload.filename === "string" ? payload.filename.trim() : "";
-      const metaName = typeof payload.name === "string" ? payload.name.trim() : "";
+      const importedResults: Array<ImportedImageRecord | null> = new Array(
+        body.items.length
+      ).fill(null);
+      const failedItems: { index: number; error: string }[] = [];
+      const startedAt = Date.now();
 
-      const extFromMetaFilename = normalizeExt(path.extname(metaFilename));
-      const extFromSource = normalizeExt(path.extname(sourceFilename));
-      const extFromMetaName = normalizeExt(path.extname(metaName));
-      const ext =
-        extFromMetaFilename ||
-        extFromSource ||
-        extFromMetaName ||
-        (sourceType === "buffer" ? ".png" : ".jpg");
-
-      const baseNameFromMetaFilename = metaFilename
-        ? path.basename(metaFilename, path.extname(metaFilename))
-        : "";
-      const baseNameFromMetaName = metaName
-        ? path.basename(metaName, path.extname(metaName))
-        : "";
-      const baseNameFromSource = sourceFilename
-        ? path.basename(sourceFilename, path.extname(sourceFilename))
-        : "";
-
-      const rawBase =
-        baseNameFromMetaFilename ||
-        baseNameFromMetaName ||
-        baseNameFromSource ||
-        `EMPTY_NAME_${timestamp}`;
-
-      const safeName = sanitizeBase(rawBase);
-
-      let filename = `${safeName}${ext}`;
-      let counter = 1;
-      while (await lockedFs.pathExists(path.join(deps.getImageDir(), filename))) {
-        if (imageDb.getImageRowByFilename(filename)) {
-          filename = `${safeName}_${counter}${ext}`;
-          counter += 1;
-          continue;
+      await runWithConcurrency(
+        body.items as ImportPayload[],
+        IMPORT_BATCH_CONCURRENCY,
+        async (payload, index) => {
+        try {
+            importedResults[index] = await importSingleImage(
+              imageDb,
+              payload,
+              startedAt + index
+            );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error("Batch import item failed:", message);
+          failedItems.push({ index, error: message });
         }
-        break;
-      }
-
-      const imagePath = path.join("images", filename);
-      const localPath = path.join(deps.getStorageDir(), imagePath);
-
-      if (sourceType === "buffer") {
-        await withFileLock(localPath, async () => {
-          await fs.writeFile(localPath, sourceData as Buffer);
-        });
-      } else if (sourceType === "path") {
-        let srcPath = sourceData as string;
-        if (srcPath.startsWith("file://")) {
-          srcPath = new URL(srcPath).pathname;
-          if (
-            process.platform === "win32" &&
-            srcPath.startsWith("/") &&
-            srcPath.includes(":")
-          ) {
-            srcPath = srcPath.substring(1);
-          }
         }
-        srcPath = decodeURIComponent(srcPath);
-        await withFileLocks([srcPath, localPath], async () => {
-          await fs.copy(srcPath, localPath);
-        });
-      } else {
-        await deps.downloadImage(sourceData as string, localPath);
-      }
+      );
 
-      const id = uuidv4();
-      const createdAt = timestamp;
-      const pageUrl = typeof payload.pageUrl === "string" ? payload.pageUrl : null;
-      const { rowid } = imageDb.insertImage({
-        id,
-        filename,
-        imagePath,
-        createdAt,
-        pageUrl,
+      const importedItems = importedResults.filter(
+        (item): item is ImportedImageRecord => item !== null
+      );
+
+      res.json({
+        success: true,
+        items: importedItems.map((item) => item.meta),
+        failedCount: failedItems.length,
       });
-      imageDb.setImageTags(id, tags);
 
-      const meta: ImageMeta = {
-        id,
-        filename,
-        imagePath,
-        pageUrl,
-        tags,
-        createdAt,
-        dominantColor: null,
-        tone: null,
-        hasVector: false,
-      };
-
-      res.json({ success: true, meta });
-
-      void (async () => {
-        try {
-          const settings = await deps.readSettings();
-          const enableVectorSearch = Boolean(settings.enableVectorSearch);
-          console.log("[VectorIndex] start import", {
-            id,
-            rowid,
-            enableVectorSearch,
-            imagePath: localPath,
-          });
-          if (enableVectorSearch) {
-            const vector = await deps.runPythonVector("encode-image", localPath);
-            if (vector) {
-              imageDb.setImageVector(rowid, vector);
-              console.log("[VectorIndex] stored import", {
-                id,
-                rowid,
-                length: vector.length,
-              });
-              deps.sendToRenderer?.("image-updated", { id, hasVector: true });
-            } else {
-              console.error("[VectorIndex] vector missing import", { id, rowid });
-            }
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.error("Async vector import failed:", message);
+      scheduleImagePostProcessing(
+        imageDb,
+        importedItems.map((item) => ({
+          id: item.id,
+          rowid: item.rowid,
+          localPath: item.localPath,
+          processVector: true,
+          processDominantColor: true,
+          processTone: true,
+        })),
+        {
+          vectorContext: "batch",
+          notifyVectorFailure: true,
         }
-      })();
-
-      void (async () => {
-        try {
-          const dominantColor = await deps.runPythonDominantColor(localPath);
-          if (dominantColor) {
-            const resolved = resolveOklchPayload(dominantColor);
-            if (resolved) {
-              imageDb.updateImage({
-                id,
-                dominantColor: resolved.color,
-                dominantL: resolved.oklch.L,
-                dominantC: resolved.oklch.C,
-                dominantH: resolved.oklch.h,
-              });
-              deps.sendToRenderer?.("image-updated", { id, dominantColor: resolved.color });
-            }
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.error("Async dominant color update failed:", message);
-        }
-      })();
-
-      void (async () => {
-        try {
-          const tone = await deps.runPythonTone(localPath);
-          if (tone) {
-            imageDb.updateImage({ id, tone });
-            deps.sendToRenderer?.("image-updated", { id, tone });
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.error("Async tone update failed:", message);
-        }
-      })();
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       res.status(500).json({ error: message });
@@ -767,28 +1190,17 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
           return;
         }
         const localPath = path.join(deps.getStorageDir(), row.imagePath);
-        console.log("[VectorIndex] start single", {
+        const indexed = await indexImageVector(imageDb, {
           id: imageId,
           rowid: row.rowid,
-          imagePath: localPath,
+          localPath,
+          context: "single",
         });
-        const vector = await deps.runPythonVector("encode-image", localPath);
-        if (vector) {
-          imageDb.setImageVector(row.rowid, vector);
-          console.log("[VectorIndex] stored single", {
-            id: imageId,
-            rowid: row.rowid,
-            length: vector.length,
-          });
-          deps.sendToRenderer?.("image-updated", { id: imageId, hasVector: true });
+        if (indexed) {
           const meta = imageDb.getImageById(imageId);
           res.json({ success: true, meta });
           return;
         }
-        console.error("[VectorIndex] vector missing single", {
-          id: imageId,
-          rowid: row.rowid,
-        });
         res.json({ success: true });
         return;
       }
@@ -798,7 +1210,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
         const existingNames = new Set(items.map((item) => item.filename));
         const files = await listImageFiles(deps.getImageDir());
         let created = 0;
-        const newItems: ImageMeta[] = [];
+        const newItems: ImportedImageRecord[] = [];
         for (const filename of files) {
           if (existingNames.has(filename)) continue;
           const imagePath = path.join("images", filename);
@@ -811,7 +1223,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
               ? Math.floor(stat.mtimeMs)
               : Date.now();
           const id = uuidv4();
-          imageDb.insertImage({
+          const { rowid } = imageDb.insertImage({
             id,
             filename,
             imagePath,
@@ -821,6 +1233,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
           imageDb.setImageTags(id, []);
           const meta: ImageMeta = {
             id,
+            rowid,
             filename,
             imagePath,
             pageUrl: null,
@@ -830,52 +1243,48 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
             tone: null,
             hasVector: false,
           };
-          newItems.push(meta);
+          newItems.push({
+            id,
+            rowid,
+            localPath,
+            meta,
+          });
           existingNames.add(filename);
           created += 1;
-
-          void (async () => {
-            try {
-              const dominantColor = await deps.runPythonDominantColor(localPath);
-              if (dominantColor) {
-                const resolved = resolveOklchPayload(dominantColor);
-                if (resolved) {
-                  imageDb.updateImage({
-                    id,
-                    dominantColor: resolved.color,
-                    dominantL: resolved.oklch.L,
-                    dominantC: resolved.oklch.C,
-                    dominantH: resolved.oklch.h,
-                  });
-                  deps.sendToRenderer?.("image-updated", { id, dominantColor: resolved.color });
-                }
-              }
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              console.error("Async dominant color update failed:", message);
-            }
-          })();
-
-          void (async () => {
-            try {
-              const tone = await deps.runPythonTone(localPath);
-              if (tone) {
-                imageDb.updateImage({ id, tone });
-                deps.sendToRenderer?.("image-updated", { id, tone });
-              }
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              console.error("Async tone update failed:", message);
-            }
-          })();
         }
 
-        const candidates = [...items, ...newItems].filter(
-          (item) => !item.hasVector
+        const newMetas = newItems.map((item) => item.meta);
+        const candidates = [...items, ...newMetas].filter((item) => !item.hasVector);
+        const indexedCandidates = candidates.filter(
+          (
+            item
+          ): item is ImageMeta & {
+            rowid: number;
+          } => typeof item.rowid === "number"
         );
-        let current = 0;
-        const total = candidates.length;
+        const rowidMissingItems = candidates.filter(
+          (item) => typeof item.rowid !== "number"
+        );
+        rowidMissingItems.forEach((item) => {
+          console.error("[VectorIndex] rowid missing batch", { id: item.id });
+        });
+
+        const total = indexedCandidates.length;
         if (!enableVectorSearch) {
+          scheduleImagePostProcessing(
+            imageDb,
+            newItems.map((item) => ({
+              id: item.id,
+              rowid: item.rowid,
+              localPath: item.localPath,
+              processVector: false,
+              processDominantColor: true,
+              processTone: true,
+            })),
+            {
+              vectorContext: "batch",
+            }
+          );
           res.json({ success: true, created, updated: 0, total });
           return;
         }
@@ -884,53 +1293,48 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
           total,
           statusKey: "indexing.starting" as I18nKey,
         });
-        let updated = 0;
-        for (const item of candidates) {
-          current += 1;
-          if (current % 2 === 0 || current === total || current === 1) {
-            deps.sendToRenderer?.("indexing-progress", {
-              current,
-              total,
-              statusKey: "indexing.progress" as I18nKey,
-              statusParams: { current, total } satisfies I18nParams,
-            });
-          }
-          const rowid = imageDb.getImageRowidById(item.id);
-          if (!rowid) {
-            console.error("[VectorIndex] rowid missing batch", { id: item.id });
-            continue;
-          }
-          const localPath = path.join(deps.getStorageDir(), item.imagePath);
-          console.log("[VectorIndex] start batch", {
+        const postProcessItems = mergeImagePostProcessItems([
+          ...newItems.map((item) => ({
             id: item.id,
-            rowid,
-            current,
-            total,
-            imagePath: localPath,
-          });
-          const vector = await deps.runPythonVector("encode-image", localPath);
-          if (vector) {
-            imageDb.setImageVector(rowid, vector);
-            updated += 1;
-            deps.sendToRenderer?.("image-updated", { id: item.id, hasVector: true });
-            console.log("[VectorIndex] stored batch", {
-              id: item.id,
-              rowid,
-              length: vector.length,
-            });
-          } else {
-            console.error("[VectorIndex] vector missing batch", {
-              id: item.id,
-              rowid,
-            });
+            rowid: item.rowid,
+            localPath: item.localPath,
+            processVector: true,
+            processDominantColor: true,
+            processTone: true,
+          })),
+          ...indexedCandidates.map((item) => ({
+            id: item.id,
+            rowid: item.rowid,
+            localPath: path.join(deps.getStorageDir(), item.imagePath),
+            processVector: true,
+            processDominantColor: false,
+            processTone: false,
+          })),
+        ]);
+        const { updatedVectors } = await runImagePostProcessing(
+          imageDb,
+          postProcessItems,
+          {
+            vectorContext: "batch",
+            onVectorProgress: (nextCurrent, nextTotal) => {
+              deps.sendToRenderer?.("indexing-progress", {
+                current: nextCurrent,
+                total: nextTotal,
+                statusKey: "indexing.progress" as I18nKey,
+                statusParams: {
+                  current: nextCurrent,
+                  total: nextTotal,
+                } satisfies I18nParams,
+              });
+            },
           }
-        }
+        );
         deps.sendToRenderer?.("indexing-progress", {
           current: total,
           total,
           statusKey: "indexing.completed" as I18nKey,
         });
-        res.json({ success: true, created, updated, total });
+        res.json({ success: true, created, updated: updatedVectors, total });
         return;
       }
 

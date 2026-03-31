@@ -5,6 +5,7 @@ export const zh: I18nDict = {
   'common.confirm': '确认',
   'common.cancel': '取消',
   'common.delete': '删除',
+  'common.open': '打开',
   'common.close': '关闭',
   'common.loading': '加载中…',
   'common.clear': '清除',
@@ -17,6 +18,7 @@ export const zh: I18nDict = {
   'common.reset': '重置',
 
   'titleBar.settings': '设置',
+  'titleBar.floatingMode': '浮窗模式',
   'titleBar.alwaysOnTop': '置顶',
   'titleBar.dataFolder': '数据文件夹',
   'titleBar.dataFolder.default': '未配置，将使用默认目录',
@@ -67,6 +69,7 @@ export const zh: I18nDict = {
   'toast.openFileFailed': '打开文件失败',
   'toast.shortcutInvalid': '快捷键无效',
   'toast.shortcutUpdateFailed': '更新快捷键失败：{{error}}',
+  'toast.floatingWindowModeUpdateFailed': '切换浮窗模式失败：{{error}}',
 
   'envInit.brandTitle': 'PiCaptain',
   'envInit.heading': '正在准备 PiCaptain…',
@@ -127,6 +130,9 @@ export const zh: I18nDict = {
   'gallery.empty.bodyLine1': '旅程从这里开始。',
   'gallery.empty.bodyLine2': '拖放图片来开始你的旅程。',
   'gallery.empty.dragHint': '将图片拖到这里',
+  'floating.restore': '退出浮窗',
+  'floating.dropHint': '拖入',
+  'floating.dropNow': '松手导入',
 
   'tag.setColor': '设置颜色',
   'tag.delete': '删除标签',

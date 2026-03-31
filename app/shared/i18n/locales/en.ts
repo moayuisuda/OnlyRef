@@ -3,6 +3,7 @@ export const en = {
   'common.confirm': 'Confirm',
   'common.cancel': 'Cancel',
   'common.delete': 'Delete',
+  'common.open': 'Open',
   'common.close': 'Close',
   'common.loading': 'Loading...',
   'common.unavailable': 'Unavailable',
@@ -16,6 +17,7 @@ export const en = {
   'common.reset': 'Reset',
 
   'titleBar.settings': 'Settings',
+  'titleBar.floatingMode': 'Floating mode',
   'titleBar.minimize': 'Minimize',
   'titleBar.maximize': 'Maximize',
   'titleBar.alwaysOnTop': 'Always on Top',
@@ -68,6 +70,7 @@ export const en = {
   'toast.openFileFailed': 'Failed to open file',
   'toast.shortcutInvalid': 'Invalid shortcut',
   'toast.shortcutUpdateFailed': 'Failed to update shortcut: {{error}}',
+  'toast.floatingWindowModeUpdateFailed': 'Failed to switch floating mode: {{error}}',
 
   'envInit.brandTitle': 'PiCaptain',
   'envInit.heading': 'Preparing PiCaptain...',
@@ -129,6 +132,9 @@ export const en = {
   'gallery.empty.bodyLine1': 'Your image collection starts here.',
   'gallery.empty.bodyLine2': 'Drop or paste images to build your reference library.',
   'gallery.empty.dragHint': 'Drag images here',
+  'floating.restore': 'Exit floating mode',
+  'floating.dropHint': 'Drop here',
+  'floating.dropNow': 'Release to import',
 
   'tag.setColor': 'Set Color',
   'tag.delete': 'Delete Tag',

@@ -396,6 +396,39 @@ var createImageDb = (db) => {
       console.error("Failed to set image vector:", error);
     }
   };
+  const setImageVectors = (items) => {
+    if (items.length === 0) return [];
+    const normalizedItems = items.map((item) => {
+      const normalizedRowid = Number(item.rowid);
+      if (!Number.isFinite(normalizedRowid) || !Number.isInteger(normalizedRowid)) {
+        console.error("Failed to set image vectors: invalid rowid", item.rowid);
+        return null;
+      }
+      return {
+        rowid: normalizedRowid,
+        rowidValue: BigInt(normalizedRowid),
+        vector: new Float32Array(item.vector)
+      };
+    }).filter(
+      (item) => item !== null
+    );
+    if (normalizedItems.length === 0) return [];
+    const deleteStmt = db.prepare(`DELETE FROM images_vec WHERE rowid = ?`);
+    const insertStmt = db.prepare(
+      `INSERT INTO images_vec (rowid, vector) VALUES (@rowid, @vector)`
+    );
+    const tx = db.transaction(() => {
+      normalizedItems.forEach((item) => {
+        deleteStmt.run(item.rowidValue);
+        insertStmt.run({
+          rowid: item.rowidValue,
+          vector: item.vector
+        });
+      });
+    });
+    tx();
+    return normalizedItems.map((item) => item.rowid);
+  };
   const setGalleryOrder = (order) => {
     const resetStmt = db.prepare(`UPDATE images SET galleryOrder = NULL WHERE galleryOrder IS NOT NULL`);
     const updateStmt = db.prepare(`UPDATE images SET galleryOrder = ? WHERE id = ?`);
@@ -630,6 +663,7 @@ var createImageDb = (db) => {
     deleteImage,
     setImageTags,
     setImageVector,
+    setImageVectors,
     getImageRowById,
     getImageRowidById,
     getImageRowByFilename,
@@ -701,6 +735,9 @@ var import_express = __toESM(require("express"), 1);
 var import_electron = require("electron");
 var import_uuid = require("uuid");
 var import_fs_extra2 = __toESM(require("fs-extra"), 1);
+var VECTOR_INDEX_BATCH_SIZE = 8;
+var IMPORT_BATCH_CONCURRENCY = 4;
+var IMAGE_POST_PROCESS_CONCURRENCY = 3;
 var ensureTags = (tags) => {
   if (!Array.isArray(tags)) return [];
   return tags.filter((tag) => typeof tag === "string");
@@ -851,8 +888,66 @@ var resolveOklchPayload = (raw) => {
   if (!oklch) return null;
   return { color: normalized, oklch };
 };
+var resolveImportSource = (payload) => {
+  if (payload.imageBase64) {
+    const base64Data = payload.imageBase64.replace(/^data:image\/\w+;base64,/, "");
+    return {
+      sourceType: "buffer",
+      sourceData: Buffer.from(base64Data, "base64")
+    };
+  }
+  if (payload.type && payload.data) {
+    return {
+      sourceType: payload.type,
+      sourceData: payload.data
+    };
+  }
+  if (payload.imageUrl) {
+    return {
+      sourceType: payload.imageUrl.startsWith("file://") || payload.imageUrl.startsWith("/") ? "path" : "url",
+      sourceData: payload.imageUrl
+    };
+  }
+  return null;
+};
+var chunkItems = (items, size) => {
+  if (items.length === 0) return [];
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+};
+var runWithConcurrency = async (items, limit, task) => {
+  if (items.length === 0) return;
+  let nextIndex = 0;
+  const workerCount = Math.min(limit, items.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      await task(items[currentIndex], currentIndex);
+    }
+  });
+  await Promise.all(workers);
+};
+var mergeImagePostProcessItems = (items) => {
+  const merged = /* @__PURE__ */ new Map();
+  items.forEach((item) => {
+    const current = merged.get(item.id);
+    if (!current) {
+      merged.set(item.id, { ...item });
+      return;
+    }
+    current.processVector = current.processVector || item.processVector;
+    current.processDominantColor = current.processDominantColor || item.processDominantColor;
+    current.processTone = current.processTone || item.processTone;
+  });
+  return Array.from(merged.values());
+};
 var createImagesRouter = (deps) => {
   const router = import_express.default.Router();
+  const reservedImportFilenames = /* @__PURE__ */ new Set();
   const guardStorage = (res) => {
     const incompatibleError2 = deps.getIncompatibleError();
     if (!incompatibleError2) return false;
@@ -862,6 +957,328 @@ var createImagesRouter = (deps) => {
       code: "STORAGE_INCOMPATIBLE"
     });
     return true;
+  };
+  const indexImageVector = async (imageDb2, params) => {
+    var _a;
+    const { id, rowid, localPath, context, current, total } = params;
+    console.log(`[VectorIndex] start ${context}`, {
+      id,
+      rowid,
+      ...typeof current === "number" ? { current } : {},
+      ...typeof total === "number" ? { total } : {},
+      imagePath: localPath
+    });
+    const vector = await deps.runPythonVector("encode-image", localPath);
+    if (!vector) {
+      console.error(`[VectorIndex] vector missing ${context}`, {
+        id,
+        rowid,
+        ...typeof current === "number" ? { current } : {},
+        ...typeof total === "number" ? { total } : {}
+      });
+      return false;
+    }
+    imageDb2.setImageVector(rowid, vector);
+    (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "image-updated", { id, hasVector: true });
+    console.log(`[VectorIndex] stored ${context}`, {
+      id,
+      rowid,
+      ...typeof current === "number" ? { current } : {},
+      ...typeof total === "number" ? { total } : {},
+      length: vector.length
+    });
+    return true;
+  };
+  const indexImageVectorBatch = async (imageDb2, items) => {
+    if (items.length === 0) return 0;
+    console.log("[VectorIndex] start batch-chunk", {
+      size: items.length,
+      firstCurrent: items[0].current,
+      lastCurrent: items[items.length - 1].current,
+      total: items[0].total
+    });
+    const results = await deps.runPythonVectors(items.map((item) => item.localPath));
+    if (results.length !== items.length) {
+      throw new Error("Vector batch result length mismatch");
+    }
+    const successfulEntries = [];
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      const result = results[index];
+      if ((result == null ? void 0 : result.vector) && result.vector.length > 0) {
+        successfulEntries.push({ item, vector: result.vector });
+        continue;
+      }
+      console.error("[VectorIndex] vector missing batch", {
+        id: item.id,
+        rowid: item.rowid,
+        current: item.current,
+        total: item.total,
+        error: (result == null ? void 0 : result.error) ?? "vector-missing"
+      });
+    }
+    const writtenRowids = new Set(
+      imageDb2.setImageVectors(
+        successfulEntries.map(({ item, vector }) => ({ rowid: item.rowid, vector }))
+      )
+    );
+    successfulEntries.forEach(({ item, vector }) => {
+      var _a;
+      if (!writtenRowids.has(item.rowid)) {
+        console.error("[VectorIndex] vector write missing batch", {
+          id: item.id,
+          rowid: item.rowid,
+          current: item.current,
+          total: item.total
+        });
+        return;
+      }
+      (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "image-updated", { id: item.id, hasVector: true });
+      console.log("[VectorIndex] stored batch", {
+        id: item.id,
+        rowid: item.rowid,
+        current: item.current,
+        total: item.total,
+        length: vector.length
+      });
+    });
+    return writtenRowids.size;
+  };
+  const updateImageDominantColor = async (imageDb2, item) => {
+    var _a;
+    try {
+      const dominantColor = await deps.runPythonDominantColor(item.localPath);
+      if (!dominantColor) return;
+      const resolved = resolveOklchPayload(dominantColor);
+      if (!resolved) return;
+      imageDb2.updateImage({
+        id: item.id,
+        dominantColor: resolved.color,
+        dominantL: resolved.oklch.L,
+        dominantC: resolved.oklch.C,
+        dominantH: resolved.oklch.h
+      });
+      (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "image-updated", {
+        id: item.id,
+        dominantColor: resolved.color
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("Async dominant color update failed:", message);
+    }
+  };
+  const updateImageTone = async (imageDb2, item) => {
+    var _a;
+    try {
+      const tone = await deps.runPythonTone(item.localPath);
+      if (!tone) return;
+      imageDb2.updateImage({ id: item.id, tone });
+      (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "image-updated", { id: item.id, tone });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("Async tone update failed:", message);
+    }
+  };
+  const runImagePostProcessing = async (imageDb2, items, options) => {
+    var _a;
+    if (items.length === 0) {
+      return { updatedVectors: 0, totalVectors: 0 };
+    }
+    const vectorCandidates = items.filter((item) => item.processVector);
+    let vectorItems = [];
+    if (vectorCandidates.length > 0) {
+      const settings = await deps.readSettings();
+      if (settings.enableVectorSearch === true) {
+        vectorItems = vectorCandidates;
+      }
+    }
+    let updatedVectors = 0;
+    let vectorFailures = 0;
+    let completedVectors = 0;
+    const jobs = [];
+    const vectorScheduledIds = /* @__PURE__ */ new Set();
+    const appendDerivativeJobs = (item) => {
+      if (item.processDominantColor) {
+        jobs.push(() => updateImageDominantColor(imageDb2, item));
+      }
+      if (item.processTone) {
+        jobs.push(() => updateImageTone(imageDb2, item));
+      }
+    };
+    let vectorBaseIndex = 0;
+    for (const chunk of chunkItems(vectorItems, VECTOR_INDEX_BATCH_SIZE)) {
+      const batchItems = chunk.map((item, index) => ({
+        id: item.id,
+        rowid: item.rowid,
+        localPath: item.localPath,
+        current: vectorBaseIndex + index + 1,
+        total: vectorItems.length
+      }));
+      jobs.push(async () => {
+        var _a2;
+        try {
+          if (batchItems.length === 1) {
+            const indexed = await indexImageVector(imageDb2, {
+              id: batchItems[0].id,
+              rowid: batchItems[0].rowid,
+              localPath: batchItems[0].localPath,
+              context: options.vectorContext,
+              current: batchItems[0].current,
+              total: batchItems[0].total
+            });
+            updatedVectors += indexed ? 1 : 0;
+            vectorFailures += indexed ? 0 : 1;
+          } else {
+            const updated = await indexImageVectorBatch(imageDb2, batchItems);
+            updatedVectors += updated;
+            vectorFailures += batchItems.length - updated;
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error("Async vector image processing failed:", message);
+          vectorFailures += batchItems.length;
+        } finally {
+          completedVectors += batchItems.length;
+          (_a2 = options.onVectorProgress) == null ? void 0 : _a2.call(options, completedVectors, vectorItems.length);
+        }
+      });
+      chunk.forEach((item) => {
+        vectorScheduledIds.add(item.id);
+        appendDerivativeJobs(item);
+      });
+      vectorBaseIndex += chunk.length;
+    }
+    items.forEach((item) => {
+      if (!vectorScheduledIds.has(item.id)) {
+        appendDerivativeJobs(item);
+      }
+    });
+    await runWithConcurrency(jobs, IMAGE_POST_PROCESS_CONCURRENCY, async (job) => {
+      await job();
+    });
+    if (vectorFailures > 0 && options.notifyVectorFailure) {
+      (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "toast", {
+        key: "toast.vectorIndexFailed",
+        type: "error"
+      });
+    }
+    return { updatedVectors, totalVectors: vectorItems.length };
+  };
+  const scheduleImagePostProcessing = (imageDb2, items, options) => {
+    if (items.length === 0) return;
+    void runImagePostProcessing(imageDb2, items, options).catch((error) => {
+      var _a;
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("Async image post processing failed:", message);
+      if (options.notifyVectorFailure) {
+        (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "toast", {
+          key: "toast.vectorIndexFailed",
+          type: "error"
+        });
+      }
+    });
+  };
+  const reserveImportTarget = async (imageDb2, payload, source, timestamp) => {
+    const { sourceType, sourceData } = source;
+    const sourceFilename = sourceType === "path" ? import_path3.default.basename(sourceData).split("?")[0] : "";
+    const metaFilename = typeof payload.filename === "string" ? payload.filename.trim() : "";
+    const metaName = typeof payload.name === "string" ? payload.name.trim() : "";
+    const extFromMetaFilename = normalizeExt(import_path3.default.extname(metaFilename));
+    const extFromSource = normalizeExt(import_path3.default.extname(sourceFilename));
+    const extFromMetaName = normalizeExt(import_path3.default.extname(metaName));
+    const ext = extFromMetaFilename || extFromSource || extFromMetaName || (sourceType === "buffer" ? ".png" : ".jpg");
+    const baseNameFromMetaFilename = metaFilename ? import_path3.default.basename(metaFilename, import_path3.default.extname(metaFilename)) : "";
+    const baseNameFromMetaName = metaName ? import_path3.default.basename(metaName, import_path3.default.extname(metaName)) : "";
+    const baseNameFromSource = sourceFilename ? import_path3.default.basename(sourceFilename, import_path3.default.extname(sourceFilename)) : "";
+    const rawBase = baseNameFromMetaFilename || baseNameFromMetaName || baseNameFromSource || `EMPTY_NAME_${timestamp}`;
+    const safeName = sanitizeBase(rawBase);
+    return withFileLock(deps.getImageDir(), async () => {
+      let filename = `${safeName}${ext}`;
+      let counter = 1;
+      while (true) {
+        if (reservedImportFilenames.has(filename) || imageDb2.getImageRowByFilename(filename)) {
+          filename = `${safeName}_${counter}${ext}`;
+          counter += 1;
+          continue;
+        }
+        const imagePath = import_path3.default.join("images", filename);
+        const localPath = import_path3.default.join(deps.getStorageDir(), imagePath);
+        const existedBefore = await lockedFs.pathExists(localPath);
+        reservedImportFilenames.add(filename);
+        return { filename, imagePath, localPath, existedBefore };
+      }
+    });
+  };
+  const importSingleImage = async (imageDb2, payload, timestamp) => {
+    const source = resolveImportSource(payload);
+    if (!source) {
+      throw new Error("No image data");
+    }
+    const tags = ensureTags(payload.tags);
+    const { sourceType, sourceData } = source;
+    const target = await reserveImportTarget(imageDb2, payload, source, timestamp);
+    try {
+      if (sourceType === "buffer") {
+        await withFileLock(target.localPath, async () => {
+          await import_fs_extra2.default.writeFile(target.localPath, sourceData);
+        });
+      } else if (sourceType === "path") {
+        let srcPath = sourceData;
+        if (srcPath.startsWith("file://")) {
+          srcPath = new URL(srcPath).pathname;
+          if (process.platform === "win32" && srcPath.startsWith("/") && srcPath.includes(":")) {
+            srcPath = srcPath.substring(1);
+          }
+        }
+        srcPath = decodeURIComponent(srcPath);
+        await withFileLocks([srcPath, target.localPath], async () => {
+          await import_fs_extra2.default.copy(srcPath, target.localPath);
+        });
+      } else {
+        await deps.downloadImage(sourceData, target.localPath);
+      }
+      const id = (0, import_uuid.v4)();
+      const createdAt = timestamp;
+      const pageUrl = typeof payload.pageUrl === "string" ? payload.pageUrl : null;
+      const { rowid } = imageDb2.insertImage({
+        id,
+        filename: target.filename,
+        imagePath: target.imagePath,
+        createdAt,
+        pageUrl
+      });
+      imageDb2.setImageTags(id, tags);
+      return {
+        id,
+        rowid,
+        localPath: target.localPath,
+        meta: {
+          id,
+          rowid,
+          filename: target.filename,
+          imagePath: target.imagePath,
+          pageUrl,
+          tags,
+          createdAt,
+          dominantColor: null,
+          tone: null,
+          hasVector: false
+        }
+      };
+    } catch (error) {
+      if (!target.existedBefore) {
+        await withFileLock(target.localPath, async () => {
+          if (await import_fs_extra2.default.pathExists(target.localPath)) {
+            await import_fs_extra2.default.remove(target.localPath);
+          }
+        });
+      }
+      throw error;
+    } finally {
+      await withFileLock(deps.getImageDir(), async () => {
+        reservedImportFilenames.delete(target.filename);
+      });
+    }
   };
   router.get("/api/images", async (req, res) => {
     try {
@@ -1145,164 +1562,91 @@ var createImagesRouter = (deps) => {
       if (guardStorage(res)) return;
       const imageDb2 = deps.getImageDb();
       const payload = req.body;
-      const tags = ensureTags(payload.tags);
-      const timestamp = Date.now();
-      let sourceType = null;
-      let sourceData = null;
-      if (payload.imageBase64) {
-        const base64Data = payload.imageBase64.replace(/^data:image\/\w+;base64,/, "");
-        sourceType = "buffer";
-        sourceData = Buffer.from(base64Data, "base64");
-      } else if (payload.type && payload.data) {
-        sourceType = payload.type;
-        sourceData = payload.data;
-      } else if (payload.imageUrl) {
-        const imageUrl = payload.imageUrl;
-        sourceType = imageUrl.startsWith("file://") || imageUrl.startsWith("/") ? "path" : "url";
-        sourceData = imageUrl;
-      }
-      if (!sourceType || sourceData === null) {
-        res.status(400).json({ error: "No image data" });
+      const imported = await importSingleImage(imageDb2, payload, Date.now());
+      res.json({ success: true, meta: imported.meta });
+      scheduleImagePostProcessing(
+        imageDb2,
+        [
+          {
+            id: imported.id,
+            rowid: imported.rowid,
+            localPath: imported.localPath,
+            processVector: true,
+            processDominantColor: true,
+            processTone: true
+          }
+        ],
+        {
+          vectorContext: "import",
+          notifyVectorFailure: true
+        }
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    }
+  });
+  router.post("/api/import-batch", async (req, res) => {
+    try {
+      if (guardStorage(res)) return;
+      const imageDb2 = deps.getImageDb();
+      const body = req.body;
+      if (!Array.isArray(body.items) || body.items.length === 0) {
+        res.status(400).json({ error: "No import items" });
         return;
       }
-      const sourceFilename = sourceType === "path" ? import_path3.default.basename(sourceData).split("?")[0] : "";
-      const metaFilename = typeof payload.filename === "string" ? payload.filename.trim() : "";
-      const metaName = typeof payload.name === "string" ? payload.name.trim() : "";
-      const extFromMetaFilename = normalizeExt(import_path3.default.extname(metaFilename));
-      const extFromSource = normalizeExt(import_path3.default.extname(sourceFilename));
-      const extFromMetaName = normalizeExt(import_path3.default.extname(metaName));
-      const ext = extFromMetaFilename || extFromSource || extFromMetaName || (sourceType === "buffer" ? ".png" : ".jpg");
-      const baseNameFromMetaFilename = metaFilename ? import_path3.default.basename(metaFilename, import_path3.default.extname(metaFilename)) : "";
-      const baseNameFromMetaName = metaName ? import_path3.default.basename(metaName, import_path3.default.extname(metaName)) : "";
-      const baseNameFromSource = sourceFilename ? import_path3.default.basename(sourceFilename, import_path3.default.extname(sourceFilename)) : "";
-      const rawBase = baseNameFromMetaFilename || baseNameFromMetaName || baseNameFromSource || `EMPTY_NAME_${timestamp}`;
-      const safeName = sanitizeBase(rawBase);
-      let filename = `${safeName}${ext}`;
-      let counter = 1;
-      while (await lockedFs.pathExists(import_path3.default.join(deps.getImageDir(), filename))) {
-        if (imageDb2.getImageRowByFilename(filename)) {
-          filename = `${safeName}_${counter}${ext}`;
-          counter += 1;
-          continue;
-        }
-        break;
-      }
-      const imagePath = import_path3.default.join("images", filename);
-      const localPath = import_path3.default.join(deps.getStorageDir(), imagePath);
-      if (sourceType === "buffer") {
-        await withFileLock(localPath, async () => {
-          await import_fs_extra2.default.writeFile(localPath, sourceData);
-        });
-      } else if (sourceType === "path") {
-        let srcPath = sourceData;
-        if (srcPath.startsWith("file://")) {
-          srcPath = new URL(srcPath).pathname;
-          if (process.platform === "win32" && srcPath.startsWith("/") && srcPath.includes(":")) {
-            srcPath = srcPath.substring(1);
+      const importedResults = new Array(
+        body.items.length
+      ).fill(null);
+      const failedItems = [];
+      const startedAt = Date.now();
+      await runWithConcurrency(
+        body.items,
+        IMPORT_BATCH_CONCURRENCY,
+        async (payload, index) => {
+          try {
+            importedResults[index] = await importSingleImage(
+              imageDb2,
+              payload,
+              startedAt + index
+            );
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error("Batch import item failed:", message);
+            failedItems.push({ index, error: message });
           }
         }
-        srcPath = decodeURIComponent(srcPath);
-        await withFileLocks([srcPath, localPath], async () => {
-          await import_fs_extra2.default.copy(srcPath, localPath);
-        });
-      } else {
-        await deps.downloadImage(sourceData, localPath);
-      }
-      const id = (0, import_uuid.v4)();
-      const createdAt = timestamp;
-      const pageUrl = typeof payload.pageUrl === "string" ? payload.pageUrl : null;
-      const { rowid } = imageDb2.insertImage({
-        id,
-        filename,
-        imagePath,
-        createdAt,
-        pageUrl
+      );
+      const importedItems = importedResults.filter(
+        (item) => item !== null
+      );
+      res.json({
+        success: true,
+        items: importedItems.map((item) => item.meta),
+        failedCount: failedItems.length
       });
-      imageDb2.setImageTags(id, tags);
-      const meta = {
-        id,
-        filename,
-        imagePath,
-        pageUrl,
-        tags,
-        createdAt,
-        dominantColor: null,
-        tone: null,
-        hasVector: false
-      };
-      res.json({ success: true, meta });
-      void (async () => {
-        var _a;
-        try {
-          const settings = await deps.readSettings();
-          const enableVectorSearch = Boolean(settings.enableVectorSearch);
-          console.log("[VectorIndex] start import", {
-            id,
-            rowid,
-            enableVectorSearch,
-            imagePath: localPath
-          });
-          if (enableVectorSearch) {
-            const vector = await deps.runPythonVector("encode-image", localPath);
-            if (vector) {
-              imageDb2.setImageVector(rowid, vector);
-              console.log("[VectorIndex] stored import", {
-                id,
-                rowid,
-                length: vector.length
-              });
-              (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "image-updated", { id, hasVector: true });
-            } else {
-              console.error("[VectorIndex] vector missing import", { id, rowid });
-            }
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.error("Async vector import failed:", message);
+      scheduleImagePostProcessing(
+        imageDb2,
+        importedItems.map((item) => ({
+          id: item.id,
+          rowid: item.rowid,
+          localPath: item.localPath,
+          processVector: true,
+          processDominantColor: true,
+          processTone: true
+        })),
+        {
+          vectorContext: "batch",
+          notifyVectorFailure: true
         }
-      })();
-      void (async () => {
-        var _a;
-        try {
-          const dominantColor = await deps.runPythonDominantColor(localPath);
-          if (dominantColor) {
-            const resolved = resolveOklchPayload(dominantColor);
-            if (resolved) {
-              imageDb2.updateImage({
-                id,
-                dominantColor: resolved.color,
-                dominantL: resolved.oklch.L,
-                dominantC: resolved.oklch.C,
-                dominantH: resolved.oklch.h
-              });
-              (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "image-updated", { id, dominantColor: resolved.color });
-            }
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.error("Async dominant color update failed:", message);
-        }
-      })();
-      void (async () => {
-        var _a;
-        try {
-          const tone = await deps.runPythonTone(localPath);
-          if (tone) {
-            imageDb2.updateImage({ id, tone });
-            (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "image-updated", { id, tone });
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.error("Async tone update failed:", message);
-        }
-      })();
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       res.status(500).json({ error: message });
     }
   });
   router.post("/api/index", async (req, res) => {
-    var _a, _b, _c, _d, _e;
+    var _a, _b;
     try {
       if (guardStorage(res)) return;
       const imageDb2 = deps.getImageDb();
@@ -1320,28 +1664,17 @@ var createImagesRouter = (deps) => {
           return;
         }
         const localPath = import_path3.default.join(deps.getStorageDir(), row.imagePath);
-        console.log("[VectorIndex] start single", {
+        const indexed = await indexImageVector(imageDb2, {
           id: imageId,
           rowid: row.rowid,
-          imagePath: localPath
+          localPath,
+          context: "single"
         });
-        const vector = await deps.runPythonVector("encode-image", localPath);
-        if (vector) {
-          imageDb2.setImageVector(row.rowid, vector);
-          console.log("[VectorIndex] stored single", {
-            id: imageId,
-            rowid: row.rowid,
-            length: vector.length
-          });
-          (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "image-updated", { id: imageId, hasVector: true });
+        if (indexed) {
           const meta = imageDb2.getImageById(imageId);
           res.json({ success: true, meta });
           return;
         }
-        console.error("[VectorIndex] vector missing single", {
-          id: imageId,
-          rowid: row.rowid
-        });
         res.json({ success: true });
         return;
       }
@@ -1361,7 +1694,7 @@ var createImagesRouter = (deps) => {
           );
           const createdAt = stat && typeof stat.mtimeMs === "number" ? Math.floor(stat.mtimeMs) : Date.now();
           const id = (0, import_uuid.v4)();
-          imageDb2.insertImage({
+          const { rowid } = imageDb2.insertImage({
             id,
             filename,
             imagePath,
@@ -1371,6 +1704,7 @@ var createImagesRouter = (deps) => {
           imageDb2.setImageTags(id, []);
           const meta = {
             id,
+            rowid,
             filename,
             imagePath,
             pageUrl: null,
@@ -1380,106 +1714,93 @@ var createImagesRouter = (deps) => {
             tone: null,
             hasVector: false
           };
-          newItems.push(meta);
+          newItems.push({
+            id,
+            rowid,
+            localPath,
+            meta
+          });
           existingNames.add(filename);
           created += 1;
-          void (async () => {
-            var _a2;
-            try {
-              const dominantColor = await deps.runPythonDominantColor(localPath);
-              if (dominantColor) {
-                const resolved = resolveOklchPayload(dominantColor);
-                if (resolved) {
-                  imageDb2.updateImage({
-                    id,
-                    dominantColor: resolved.color,
-                    dominantL: resolved.oklch.L,
-                    dominantC: resolved.oklch.C,
-                    dominantH: resolved.oklch.h
-                  });
-                  (_a2 = deps.sendToRenderer) == null ? void 0 : _a2.call(deps, "image-updated", { id, dominantColor: resolved.color });
-                }
-              }
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              console.error("Async dominant color update failed:", message);
-            }
-          })();
-          void (async () => {
-            var _a2;
-            try {
-              const tone = await deps.runPythonTone(localPath);
-              if (tone) {
-                imageDb2.updateImage({ id, tone });
-                (_a2 = deps.sendToRenderer) == null ? void 0 : _a2.call(deps, "image-updated", { id, tone });
-              }
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              console.error("Async tone update failed:", message);
-            }
-          })();
         }
-        const candidates = [...items, ...newItems].filter(
-          (item) => !item.hasVector
+        const newMetas = newItems.map((item) => item.meta);
+        const candidates = [...items, ...newMetas].filter((item) => !item.hasVector);
+        const indexedCandidates = candidates.filter(
+          (item) => typeof item.rowid === "number"
         );
-        let current = 0;
-        const total = candidates.length;
+        const rowidMissingItems = candidates.filter(
+          (item) => typeof item.rowid !== "number"
+        );
+        rowidMissingItems.forEach((item) => {
+          console.error("[VectorIndex] rowid missing batch", { id: item.id });
+        });
+        const total = indexedCandidates.length;
         if (!enableVectorSearch) {
+          scheduleImagePostProcessing(
+            imageDb2,
+            newItems.map((item) => ({
+              id: item.id,
+              rowid: item.rowid,
+              localPath: item.localPath,
+              processVector: false,
+              processDominantColor: true,
+              processTone: true
+            })),
+            {
+              vectorContext: "batch"
+            }
+          );
           res.json({ success: true, created, updated: 0, total });
           return;
         }
-        (_b = deps.sendToRenderer) == null ? void 0 : _b.call(deps, "indexing-progress", {
+        (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "indexing-progress", {
           current: 0,
           total,
           statusKey: "indexing.starting"
         });
-        let updated = 0;
-        for (const item of candidates) {
-          current += 1;
-          if (current % 2 === 0 || current === total || current === 1) {
-            (_c = deps.sendToRenderer) == null ? void 0 : _c.call(deps, "indexing-progress", {
-              current,
-              total,
-              statusKey: "indexing.progress",
-              statusParams: { current, total }
-            });
-          }
-          const rowid = imageDb2.getImageRowidById(item.id);
-          if (!rowid) {
-            console.error("[VectorIndex] rowid missing batch", { id: item.id });
-            continue;
-          }
-          const localPath = import_path3.default.join(deps.getStorageDir(), item.imagePath);
-          console.log("[VectorIndex] start batch", {
+        const postProcessItems = mergeImagePostProcessItems([
+          ...newItems.map((item) => ({
             id: item.id,
-            rowid,
-            current,
-            total,
-            imagePath: localPath
-          });
-          const vector = await deps.runPythonVector("encode-image", localPath);
-          if (vector) {
-            imageDb2.setImageVector(rowid, vector);
-            updated += 1;
-            (_d = deps.sendToRenderer) == null ? void 0 : _d.call(deps, "image-updated", { id: item.id, hasVector: true });
-            console.log("[VectorIndex] stored batch", {
-              id: item.id,
-              rowid,
-              length: vector.length
-            });
-          } else {
-            console.error("[VectorIndex] vector missing batch", {
-              id: item.id,
-              rowid
-            });
+            rowid: item.rowid,
+            localPath: item.localPath,
+            processVector: true,
+            processDominantColor: true,
+            processTone: true
+          })),
+          ...indexedCandidates.map((item) => ({
+            id: item.id,
+            rowid: item.rowid,
+            localPath: import_path3.default.join(deps.getStorageDir(), item.imagePath),
+            processVector: true,
+            processDominantColor: false,
+            processTone: false
+          }))
+        ]);
+        const { updatedVectors } = await runImagePostProcessing(
+          imageDb2,
+          postProcessItems,
+          {
+            vectorContext: "batch",
+            onVectorProgress: (nextCurrent, nextTotal) => {
+              var _a2;
+              (_a2 = deps.sendToRenderer) == null ? void 0 : _a2.call(deps, "indexing-progress", {
+                current: nextCurrent,
+                total: nextTotal,
+                statusKey: "indexing.progress",
+                statusParams: {
+                  current: nextCurrent,
+                  total: nextTotal
+                }
+              });
+            }
           }
-        }
-        (_e = deps.sendToRenderer) == null ? void 0 : _e.call(deps, "indexing-progress", {
+        );
+        (_b = deps.sendToRenderer) == null ? void 0 : _b.call(deps, "indexing-progress", {
           current: total,
           total,
           statusKey: "indexing.completed"
         });
-        res.json({ success: true, created, updated, total });
+        res.json({ success: true, created, updated: updatedVectors, total });
         return;
       }
       res.status(400).json({ error: "Invalid request" });
@@ -2237,6 +2558,36 @@ var PythonVectorService = class extends BasePythonService {
     }
     throw new Error("Vector missing");
   }
+  async runBatchImages(paths) {
+    if (paths.length === 0) return [];
+    const raw = await this.sendRequest({ mode: "encode-images", arg: paths });
+    if (!raw || typeof raw !== "object") {
+      throw new Error("Invalid vector batch response");
+    }
+    const res = raw;
+    if (res.error) {
+      throw new Error(`Python error: ${String(res.error)}`);
+    }
+    if (!Array.isArray(res.items)) {
+      throw new Error("Vector batch items missing");
+    }
+    if (res.items.length !== paths.length) {
+      throw new Error("Vector batch item count mismatch");
+    }
+    return res.items.map((item) => {
+      if (!item || typeof item !== "object") {
+        return { vector: null, error: "invalid-batch-item" };
+      }
+      const record = item;
+      if (Array.isArray(record.vector)) {
+        return { vector: record.vector };
+      }
+      return {
+        vector: null,
+        error: typeof record.error === "string" ? record.error : "vector-missing"
+      };
+    });
+  }
 };
 var mapModelDownloadProgress = (data) => {
   if (!data || typeof data !== "object") return data;
@@ -2385,6 +2736,9 @@ async function startServer(sendToRenderer) {
   const runPythonVector = async (mode, arg) => {
     return vectorService.run(mode, arg);
   };
+  const runPythonVectors = async (paths) => {
+    return vectorService.runBatchImages(paths);
+  };
   const runPythonDominantColor = async (arg) => {
     return getDominantColor(arg);
   };
@@ -2444,6 +2798,7 @@ async function startServer(sendToRenderer) {
       readSettings,
       writeSettings,
       runPythonVector,
+      runPythonVectors,
       runPythonDominantColor,
       runPythonTone,
       downloadImage,
@@ -2470,6 +2825,7 @@ var en = {
   "common.confirm": "Confirm",
   "common.cancel": "Cancel",
   "common.delete": "Delete",
+  "common.open": "Open",
   "common.close": "Close",
   "common.loading": "Loading...",
   "common.unavailable": "Unavailable",
@@ -2482,6 +2838,7 @@ var en = {
   "common.language.zh": "\u4E2D\u6587",
   "common.reset": "Reset",
   "titleBar.settings": "Settings",
+  "titleBar.floatingMode": "Floating mode",
   "titleBar.minimize": "Minimize",
   "titleBar.maximize": "Maximize",
   "titleBar.alwaysOnTop": "Always on Top",
@@ -2533,6 +2890,7 @@ var en = {
   "toast.openFileFailed": "Failed to open file",
   "toast.shortcutInvalid": "Invalid shortcut",
   "toast.shortcutUpdateFailed": "Failed to update shortcut: {{error}}",
+  "toast.floatingWindowModeUpdateFailed": "Failed to switch floating mode: {{error}}",
   "envInit.brandTitle": "PiCaptain",
   "envInit.heading": "Preparing PiCaptain...",
   "envInit.subheading": "First run may download tools, install dependencies, and fetch the local model. This is a one-time step.",
@@ -2588,6 +2946,9 @@ var en = {
   "gallery.empty.bodyLine1": "Your image collection starts here.",
   "gallery.empty.bodyLine2": "Drop or paste images to build your reference library.",
   "gallery.empty.dragHint": "Drag images here",
+  "floating.restore": "Exit floating mode",
+  "floating.dropHint": "Drop here",
+  "floating.dropNow": "Release to import",
   "tag.setColor": "Set Color",
   "tag.delete": "Delete Tag",
   "tag.deleteConfirmTitle": "Delete Tag",
@@ -2681,6 +3042,7 @@ var zh = {
   "common.confirm": "\u786E\u8BA4",
   "common.cancel": "\u53D6\u6D88",
   "common.delete": "\u5220\u9664",
+  "common.open": "\u6253\u5F00",
   "common.close": "\u5173\u95ED",
   "common.loading": "\u52A0\u8F7D\u4E2D\u2026",
   "common.clear": "\u6E05\u9664",
@@ -2692,6 +3054,7 @@ var zh = {
   "common.language.zh": "\u4E2D\u6587",
   "common.reset": "\u91CD\u7F6E",
   "titleBar.settings": "\u8BBE\u7F6E",
+  "titleBar.floatingMode": "\u6D6E\u7A97\u6A21\u5F0F",
   "titleBar.alwaysOnTop": "\u7F6E\u9876",
   "titleBar.dataFolder": "\u6570\u636E\u6587\u4EF6\u5939",
   "titleBar.dataFolder.default": "\u672A\u914D\u7F6E\uFF0C\u5C06\u4F7F\u7528\u9ED8\u8BA4\u76EE\u5F55",
@@ -2741,6 +3104,7 @@ var zh = {
   "toast.openFileFailed": "\u6253\u5F00\u6587\u4EF6\u5931\u8D25",
   "toast.shortcutInvalid": "\u5FEB\u6377\u952E\u65E0\u6548",
   "toast.shortcutUpdateFailed": "\u66F4\u65B0\u5FEB\u6377\u952E\u5931\u8D25\uFF1A{{error}}",
+  "toast.floatingWindowModeUpdateFailed": "\u5207\u6362\u6D6E\u7A97\u6A21\u5F0F\u5931\u8D25\uFF1A{{error}}",
   "envInit.brandTitle": "PiCaptain",
   "envInit.heading": "\u6B63\u5728\u51C6\u5907 PiCaptain\u2026",
   "envInit.subheading": "\u9996\u6B21\u8FD0\u884C\u53EF\u80FD\u4F1A\u4E0B\u8F7D\u5DE5\u5177\u3001\u5B89\u88C5\u4F9D\u8D56\u5E76\u62C9\u53D6\u672C\u5730\u6A21\u578B\uFF0C\u8FD9\u662F\u4E00\u6B21\u6027\u6B65\u9AA4\u3002",
@@ -2796,6 +3160,9 @@ var zh = {
   "gallery.empty.bodyLine1": "\u65C5\u7A0B\u4ECE\u8FD9\u91CC\u5F00\u59CB\u3002",
   "gallery.empty.bodyLine2": "\u62D6\u653E\u56FE\u7247\u6765\u5F00\u59CB\u4F60\u7684\u65C5\u7A0B\u3002",
   "gallery.empty.dragHint": "\u5C06\u56FE\u7247\u62D6\u5230\u8FD9\u91CC",
+  "floating.restore": "\u9000\u51FA\u6D6E\u7A97",
+  "floating.dropHint": "\u62D6\u5165",
+  "floating.dropNow": "\u677E\u624B\u5BFC\u5165",
   "tag.setColor": "\u8BBE\u7F6E\u989C\u8272",
   "tag.delete": "\u5220\u9664\u6807\u7B7E",
   "tag.deleteConfirmTitle": "\u5220\u9664\u6807\u7B7E",
@@ -2926,6 +3293,10 @@ var DEFAULT_TOGGLE_WINDOW_SHORTCUT = process.platform === "darwin" ? "Command+L"
 var toggleWindowShortcut = DEFAULT_TOGGLE_WINDOW_SHORTCUT;
 var isSettingsOpen = false;
 var hasPendingSecondInstanceRestore = false;
+var isFloatingWindowMode = false;
+var NORMAL_WINDOW_MIN_WIDTH = 400;
+var NORMAL_WINDOW_MIN_HEIGHT = 300;
+var FLOATING_WINDOW_SIZE = 50;
 var hasSingleInstanceLock = import_electron3.app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   import_electron3.app.quit();
@@ -2958,6 +3329,147 @@ async function loadShortcuts() {
     }
   } catch {
   }
+}
+async function readPersistedSettings() {
+  try {
+    const settingsPath = import_path5.default.join(getStorageDir(), "settings.json");
+    const settings = await lockedFs.readJson(settingsPath).catch(() => null);
+    if (settings && typeof settings === "object") {
+      return settings;
+    }
+  } catch {
+  }
+  return {};
+}
+async function writePersistedSettings(patch) {
+  try {
+    const settingsPath = import_path5.default.join(getStorageDir(), "settings.json");
+    const current = await readPersistedSettings();
+    await lockedFs.writeJson(settingsPath, {
+      ...current,
+      ...patch
+    });
+  } catch (error) {
+    import_electron_log.default.error("Failed to write settings", error);
+  }
+}
+function getWindowMode() {
+  return isFloatingWindowMode ? "floating" : "normal";
+}
+function normalizeNormalBounds(bounds) {
+  const workArea = import_electron3.screen.getPrimaryDisplay().workArea;
+  const width = Math.max(
+    NORMAL_WINDOW_MIN_WIDTH,
+    Math.min(
+      typeof (bounds == null ? void 0 : bounds.width) === "number" ? bounds.width : Math.floor(workArea.width * 0.6),
+      workArea.width
+    )
+  );
+  const height = Math.max(
+    NORMAL_WINDOW_MIN_HEIGHT,
+    Math.min(
+      typeof (bounds == null ? void 0 : bounds.height) === "number" ? bounds.height : Math.floor(workArea.height * 0.8),
+      workArea.height
+    )
+  );
+  const fallbackX = workArea.x + Math.floor((workArea.width - width) / 2);
+  const fallbackY = workArea.y + Math.floor((workArea.height - height) / 2);
+  const display = import_electron3.screen.getDisplayMatching({
+    x: typeof (bounds == null ? void 0 : bounds.x) === "number" ? bounds.x : fallbackX,
+    y: typeof (bounds == null ? void 0 : bounds.y) === "number" ? bounds.y : fallbackY,
+    width,
+    height
+  });
+  const area = display.workArea;
+  const maxX = area.x + Math.max(0, area.width - width);
+  const maxY = area.y + Math.max(0, area.height - height);
+  return {
+    width,
+    height,
+    x: Math.min(Math.max(typeof (bounds == null ? void 0 : bounds.x) === "number" ? bounds.x : fallbackX, area.x), maxX),
+    y: Math.min(Math.max(typeof (bounds == null ? void 0 : bounds.y) === "number" ? bounds.y : fallbackY, area.y), maxY)
+  };
+}
+function normalizeFloatingBounds(bounds, fallbackBounds) {
+  const width = FLOATING_WINDOW_SIZE;
+  const height = FLOATING_WINDOW_SIZE;
+  const fallbackX = typeof (fallbackBounds == null ? void 0 : fallbackBounds.x) === "number" && typeof (fallbackBounds == null ? void 0 : fallbackBounds.width) === "number" ? fallbackBounds.x + Math.round((fallbackBounds.width - width) / 2) : void 0;
+  const fallbackY = typeof (fallbackBounds == null ? void 0 : fallbackBounds.y) === "number" && typeof (fallbackBounds == null ? void 0 : fallbackBounds.height) === "number" ? fallbackBounds.y + Math.round((fallbackBounds.height - height) / 2) : void 0;
+  const display = import_electron3.screen.getDisplayMatching({
+    x: typeof (bounds == null ? void 0 : bounds.x) === "number" ? bounds.x : fallbackX ?? import_electron3.screen.getPrimaryDisplay().workArea.x,
+    y: typeof (bounds == null ? void 0 : bounds.y) === "number" ? bounds.y : fallbackY ?? import_electron3.screen.getPrimaryDisplay().workArea.y,
+    width,
+    height
+  });
+  const area = display.workArea;
+  const defaultX = area.x + area.width - width - 24;
+  const defaultY = area.y + Math.max(24, Math.round(area.height * 0.18));
+  const maxX = area.x + Math.max(0, area.width - width);
+  const maxY = area.y + Math.max(0, area.height - height);
+  return {
+    width,
+    height,
+    x: Math.min(
+      Math.max(typeof (bounds == null ? void 0 : bounds.x) === "number" ? bounds.x : fallbackX ?? defaultX, area.x),
+      maxX
+    ),
+    y: Math.min(
+      Math.max(typeof (bounds == null ? void 0 : bounds.y) === "number" ? bounds.y : fallbackY ?? defaultY, area.y),
+      maxY
+    )
+  };
+}
+function resolveBoundsForMode(mode, settings, fallbackBounds) {
+  if (mode === "floating") {
+    return normalizeFloatingBounds(settings.floatingWindowBounds, fallbackBounds);
+  }
+  return normalizeNormalBounds(settings.windowBounds);
+}
+async function persistWindowBounds(mode, bounds) {
+  if (mode === "normal") {
+    const nextBounds = mainWindow && mainWindow.isMaximized() ? mainWindow.getNormalBounds() : bounds;
+    await writePersistedSettings({
+      windowBounds: normalizeNormalBounds(nextBounds)
+    });
+    return;
+  }
+  await writePersistedSettings({
+    floatingWindowBounds: normalizeFloatingBounds(bounds)
+  });
+}
+var debouncedSaveWindowBounds = (0, import_radash2.debounce)(
+  { delay: 1e3 },
+  (mode, bounds) => {
+    void persistWindowBounds(mode, bounds);
+  }
+);
+function syncWindowAppearance(mode) {
+  if (!mainWindow) return;
+  const floating = mode === "floating";
+  mainWindow.setAlwaysOnTop(floating);
+  mainWindow.setVisibleOnAllWorkspaces(floating, {
+    visibleOnFullScreen: floating
+  });
+  mainWindow.setResizable(!floating);
+  mainWindow.setMaximizable(!floating);
+  mainWindow.setFullScreenable(!floating);
+  mainWindow.setMinimizable(true);
+  mainWindow.setMinimumSize(
+    floating ? FLOATING_WINDOW_SIZE : NORMAL_WINDOW_MIN_WIDTH,
+    floating ? FLOATING_WINDOW_SIZE : NORMAL_WINDOW_MIN_HEIGHT
+  );
+}
+async function applyWindowMode(mode) {
+  if (!mainWindow) return;
+  const previousMode = getWindowMode();
+  const currentBounds = mainWindow.getBounds();
+  await persistWindowBounds(previousMode, currentBounds);
+  isFloatingWindowMode = mode === "floating";
+  const settings = await readPersistedSettings();
+  const nextBounds = resolveBoundsForMode(mode, settings, currentBounds);
+  syncWindowAppearance(mode);
+  mainWindow.setBounds(nextBounds, true);
+  await persistWindowBounds(mode, nextBounds);
 }
 function loadMainWindow() {
   if (!mainWindow) return;
@@ -3014,44 +3526,16 @@ function setupAutoUpdater() {
     import_electron_updater.autoUpdater.checkForUpdatesAndNotify();
   }
 }
-async function saveWindowBounds() {
-  if (!mainWindow) return;
-  if (mainWindow.isMinimized() || mainWindow.isMaximized()) return;
-  try {
-    const bounds = mainWindow.getBounds();
-    const settingsPath = import_path5.default.join(getStorageDir(), "settings.json");
-    const settings = await lockedFs.readJson(settingsPath).catch(() => ({}));
-    await lockedFs.writeJson(settingsPath, {
-      ...settings,
-      windowBounds: bounds
-    });
-  } catch (e) {
-    import_electron_log.default.error("Failed to save window bounds", e);
-  }
-}
-var debouncedSaveWindowBounds = (0, import_radash2.debounce)({ delay: 1e3 }, saveWindowBounds);
 async function createWindow(options) {
   import_electron_log.default.info("Creating main window...");
   isAppHidden = false;
-  const { width, height } = import_electron3.screen.getPrimaryDisplay().workAreaSize;
-  let windowState = {};
-  try {
-    const settingsPath = import_path5.default.join(getStorageDir(), "settings.json");
-    if (await lockedFs.pathExists(settingsPath)) {
-      const settingsRaw = await lockedFs.readJson(settingsPath);
-      if (settingsRaw && typeof settingsRaw === "object") {
-        const settings = settingsRaw;
-        if (settings.windowBounds) {
-          windowState = settings.windowBounds;
-        }
-      }
-    }
-  } catch (e) {
-    import_electron_log.default.error("Failed to load window bounds", e);
-  }
+  const settings = await readPersistedSettings();
+  isFloatingWindowMode = settings.floatingWindowMode === true;
+  const mode = getWindowMode();
+  const windowState = resolveBoundsForMode(mode, settings);
   mainWindow = new import_electron3.BrowserWindow({
-    width: windowState.width || Math.floor(width * 0.6),
-    height: windowState.height || Math.floor(height * 0.8),
+    width: windowState.width,
+    height: windowState.height,
     x: windowState.x,
     y: windowState.y,
     icon: import_path5.default.join(__dirname, "../resources/icon.svg"),
@@ -3063,11 +3547,21 @@ async function createWindow(options) {
     frame: false,
     transparent: false,
     backgroundColor: "#0a0a0a",
-    alwaysOnTop: false,
+    alwaysOnTop: isFloatingWindowMode,
     hasShadow: true
   });
-  mainWindow.on("resize", debouncedSaveWindowBounds);
-  mainWindow.on("move", debouncedSaveWindowBounds);
+  syncWindowAppearance(mode);
+  mainWindow.on("resize", () => {
+    if (!mainWindow) return;
+    if (!isFloatingWindowMode && (mainWindow.isMinimized() || mainWindow.isMaximized())) {
+      return;
+    }
+    debouncedSaveWindowBounds(getWindowMode(), mainWindow.getBounds());
+  });
+  mainWindow.on("move", () => {
+    if (!mainWindow) return;
+    debouncedSaveWindowBounds(getWindowMode(), mainWindow.getBounds());
+  });
   mainWindow.webContents.on("did-finish-load", () => {
     import_electron_log.default.info("Renderer process finished loading");
   });
@@ -3107,14 +3601,32 @@ async function createWindow(options) {
     (_event, bounds) => {
       if (!mainWindow) return;
       const current = mainWindow.getBounds();
-      mainWindow.setBounds({
+      const nextBounds = {
         x: bounds.x ?? current.x,
         y: bounds.y ?? current.y,
         width: bounds.width ?? current.width,
         height: bounds.height ?? current.height
-      });
+      };
+      if (isFloatingWindowMode) {
+        const normalized = normalizeFloatingBounds(nextBounds);
+        mainWindow.setBounds(normalized);
+        return;
+      }
+      mainWindow.setBounds(normalizeNormalBounds(nextBounds));
     }
   );
+  import_electron3.ipcMain.handle("set-floating-window-mode", async (_event, enabled) => {
+    try {
+      await applyWindowMode(enabled ? "floating" : "normal");
+      return { success: true };
+    } catch (error) {
+      import_electron_log.default.error("Failed to switch floating window mode", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  });
   import_electron3.ipcMain.on("log-message", (_event, level, ...args) => {
     if (typeof import_electron_log.default[level] === "function") {
       import_electron_log.default[level](...args);
@@ -3847,6 +4359,14 @@ import_electron3.app.on("second-instance", () => {
 });
 import_electron3.ipcMain.handle("get-storage-dir", async () => {
   return getStorageDir();
+});
+import_electron3.ipcMain.handle("open-storage-dir", async () => {
+  const target = getStorageDir();
+  const result = await import_electron3.shell.openPath(target);
+  if (result) {
+    return { success: false, error: result };
+  }
+  return { success: true };
 });
 import_electron3.ipcMain.handle("choose-storage-dir", async () => {
   const locale = await getLocale();

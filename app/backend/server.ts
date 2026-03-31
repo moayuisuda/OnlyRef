@@ -507,6 +507,45 @@ class PythonVectorService extends BasePythonService {
     }
     throw new Error("Vector missing");
   }
+
+  async runBatchImages(
+    paths: string[],
+  ): Promise<{ vector: number[] | null; error?: string }[]> {
+    if (paths.length === 0) return [];
+    const raw = await this.sendRequest({ mode: "encode-images", arg: paths });
+
+    if (!raw || typeof raw !== "object") {
+      throw new Error("Invalid vector batch response");
+    }
+
+    const res = raw as { items?: unknown; error?: unknown };
+    if (res.error) {
+      throw new Error(`Python error: ${String(res.error)}`);
+    }
+    if (!Array.isArray(res.items)) {
+      throw new Error("Vector batch items missing");
+    }
+    if (res.items.length !== paths.length) {
+      throw new Error("Vector batch item count mismatch");
+    }
+
+    return res.items.map((item) => {
+      if (!item || typeof item !== "object") {
+        return { vector: null, error: "invalid-batch-item" };
+      }
+      const record = item as { vector?: unknown; error?: unknown };
+      if (Array.isArray(record.vector)) {
+        return { vector: record.vector as number[] };
+      }
+      return {
+        vector: null,
+        error:
+          typeof record.error === "string"
+            ? record.error
+            : "vector-missing",
+      };
+    });
+  }
 }
 
 const mapModelDownloadProgress = (data: unknown): unknown => {
@@ -708,6 +747,10 @@ export async function startServer(
     return vectorService.run(mode, arg);
   };
 
+  const runPythonVectors = async (paths: string[]) => {
+    return vectorService.runBatchImages(paths);
+  };
+
   const runPythonDominantColor = async (arg: string) => {
     return getDominantColor(arg);
   };
@@ -772,6 +815,7 @@ export async function startServer(
       readSettings,
       writeSettings,
       runPythonVector,
+      runPythonVectors,
       runPythonDominantColor,
       runPythonTone,
       downloadImage,

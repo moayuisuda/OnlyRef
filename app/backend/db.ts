@@ -97,6 +97,7 @@ export type ImageDb = {
   deleteImage: (id: string) => { imagePath: string } | null;
   setImageTags: (id: string, tags: string[]) => void;
   setImageVector: (rowid: number, vector: number[]) => void;
+  setImageVectors: (items: { rowid: number; vector: number[] }[]) => number[];
   getImageRowById: (id: string) => ImageRow | null;
   getImageRowidById: (id: string) => number | null;
   getImageRowByFilename: (filename: string) => ImageRow | null;
@@ -486,6 +487,51 @@ const createImageDb = (db: Database.Database): ImageDb => {
     }
   };
 
+  const setImageVectors = (items: { rowid: number; vector: number[] }[]): number[] => {
+    if (items.length === 0) return [];
+
+    const normalizedItems = items
+      .map((item) => {
+        const normalizedRowid = Number(item.rowid);
+        if (!Number.isFinite(normalizedRowid) || !Number.isInteger(normalizedRowid)) {
+          console.error("Failed to set image vectors: invalid rowid", item.rowid);
+          return null;
+        }
+        return {
+          rowid: normalizedRowid,
+          rowidValue: BigInt(normalizedRowid),
+          vector: new Float32Array(item.vector),
+        };
+      })
+      .filter(
+        (
+          item
+        ): item is {
+          rowid: number;
+          rowidValue: bigint;
+          vector: Float32Array;
+        } => item !== null
+      );
+
+    if (normalizedItems.length === 0) return [];
+
+    const deleteStmt = db.prepare(`DELETE FROM images_vec WHERE rowid = ?`);
+    const insertStmt = db.prepare(
+      `INSERT INTO images_vec (rowid, vector) VALUES (@rowid, @vector)`
+    );
+    const tx = db.transaction(() => {
+      normalizedItems.forEach((item) => {
+        deleteStmt.run(item.rowidValue);
+        insertStmt.run({
+          rowid: item.rowidValue,
+          vector: item.vector,
+        });
+      });
+    });
+    tx();
+    return normalizedItems.map((item) => item.rowid);
+  };
+
   const setGalleryOrder = (order: string[]) => {
     const resetStmt = db.prepare(`UPDATE images SET galleryOrder = NULL WHERE galleryOrder IS NOT NULL`);
     const updateStmt = db.prepare(`UPDATE images SET galleryOrder = ? WHERE id = ?`);
@@ -773,6 +819,7 @@ const createImageDb = (db: Database.Database): ImageDb => {
     deleteImage,
     setImageTags,
     setImageVector,
+    setImageVectors,
     getImageRowById,
     getImageRowidById,
     getImageRowByFilename,

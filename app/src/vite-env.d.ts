@@ -7,6 +7,9 @@ interface Window {
     close: () => void;
     focus: () => void;
     setWindowBounds: (bounds: { x?: number; y?: number; width?: number; height?: number }) => void;
+    setFloatingWindowMode: (
+      enabled: boolean,
+    ) => Promise<{ success: boolean; error?: string }>;
     setToggleWindowShortcut: (
       accelerator: string,
     ) => Promise<{ success: boolean; error?: string; accelerator?: string }>;
@@ -18,6 +21,7 @@ interface Window {
     onToast: (callback: (data: unknown) => void) => () => void;
     onRendererEvent: (callback: (channel: string, data: unknown) => void) => () => void;
     getStorageDir: () => Promise<string>;
+    openStorageDir: () => Promise<{ success: boolean; error?: string }>;
     chooseStorageDir: () => Promise<string | null>;
     openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
     log: (level: string, ...args: unknown[]) => void;

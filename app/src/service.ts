@@ -228,6 +228,20 @@ export async function importImage<T = unknown>(
   return (await res.json()) as T;
 }
 
+export async function importImagesBatch<T = unknown>(payload: {
+  items: ImportImagePayload[];
+}): Promise<T> {
+  const res = await fetch(`${API_BASE_URL}/api/import-batch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to import images: ${res.status}`);
+  }
+  return (await res.json()) as T;
+}
+
 export async function renameTag(oldTag: string, newTag: string): Promise<void> {
   const res = await fetch(`${API_BASE_URL}/api/tag/${encodeURIComponent(oldTag)}`, {
     method: "PATCH",

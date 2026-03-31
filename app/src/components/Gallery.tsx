@@ -8,12 +8,7 @@ import { debounce } from "radash";
 import { Tag } from "./Tag";
 import { THEME } from "../theme";
 import { SortableGalleryItem } from "./gallery/GalleryItem";
-import { extractDroppedImageUrl } from "../utils/droppedImageUrl";
-import {
-  importFiles,
-  importImageUrl,
-  scanDroppedItems,
-} from "../utils/import";
+import { importDroppedData } from "../utils/import";
 import { indexImages, localApi, updateImage, moveGalleryOrder } from "../service";
 import {
   DndContext,
@@ -523,22 +518,7 @@ export const Gallery: React.FC = () => {
     e.preventDefault();
     e.stopPropagation();
     try {
-      let files = await scanDroppedItems(e.dataTransfer);
-      if (files.length === 0) {
-        files = Array.from(e.dataTransfer.files || []);
-      }
-
-      if (files.length > 0) {
-        await importFiles(files);
-        return;
-      }
-
-      const imageUrl = extractDroppedImageUrl(e.dataTransfer);
-      if (!imageUrl) {
-        return;
-      }
-
-      await importImageUrl(imageUrl);
+      await importDroppedData(e.dataTransfer);
     } catch (error) {
       console.error("Error importing dropped image", error);
       globalActions.pushToast({ key: "toast.importImageFailed" }, "error");

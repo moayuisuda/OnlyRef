@@ -392,6 +392,35 @@ def encode_image(path: str) -> List[float]:
     return image_features[0].cpu().tolist()
 
 
+def encode_images(paths: List[str]) -> List[dict]:
+    model, processor, device = _get_clip()
+    results: List[dict] = [{"vector": None} for _ in paths]
+    valid_items: List[Tuple[int, Image.Image]] = []
+
+    for index, image_path in enumerate(paths):
+        try:
+            valid_items.append((index, _load_image(image_path)))
+        except Exception as e:
+            results[index] = {"vector": None, "error": str(e)}
+
+    if not valid_items:
+        return results
+
+    inputs = processor(
+        images=[image for _, image in valid_items],
+        return_tensors="pt",
+    )
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    with torch.no_grad():
+        image_features = model.get_image_features(**inputs)
+        image_features = _to_normalized_vector_tensor(image_features)
+
+    vectors = image_features.cpu().tolist()
+    for (index, _), vector in zip(valid_items, vectors):
+        results[index] = {"vector": vector}
+    return results
+
+
 def encode_text(text: str) -> List[float]:
     model, processor, device = _get_clip()
     inputs = processor(text=[text], return_tensors="pt", padding=True)
@@ -437,6 +466,12 @@ def main() -> None:
             if mode == "encode-image":
                 vector = encode_image(arg)
                 result = {"vector": vector}
+            elif mode == "encode-images":
+                paths = arg if isinstance(arg, list) else []
+                if not all(isinstance(path, str) for path in paths):
+                    result = {"error": "encode-images requires a string array"}
+                else:
+                    result = {"items": encode_images(paths)}
             elif mode == "encode-text":
                 vector = encode_text(arg)
                 result = {"vector": vector}
