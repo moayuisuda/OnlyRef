@@ -14,22 +14,7 @@ export const THEME = {
   // Gallery Specific
   gallery: {
     selectionRingOpacity: 0.7,
-  },
-  
-  // Default Color Swatches for Color Picker
-  swatches: [
-    '#a855f7',
-    '#3b82f6',
-    '#06b6d4',
-    '#22c55e',
-    '#eab308',
-    '#f97316',
-    '#ef4444',
-    '#ec4899',
-    '#94a3b8',
-    '#ffffff',
-    '#0f172a',
-  ]
+  }
 } as const;
 
 // Helper to get hex color with alpha

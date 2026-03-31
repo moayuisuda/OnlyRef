@@ -8,17 +8,12 @@ import warnings
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
 os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "30")
-os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 warnings.filterwarnings("ignore", category=UserWarning, module="transformers")
 
 import torch
 from PIL import Image, ImageStat
 from transformers import CLIPModel, CLIPProcessor
-from transformers.utils import logging as transformers_logging
-
-transformers_logging.set_verbosity_error()
 
 
 _MODEL: Optional[CLIPModel] = None
@@ -169,6 +164,7 @@ def _download_model_with_progress(model_dir: str) -> None:
 
         max_attempts = 5
         attempt = 1
+        flush_interval_bytes = 8 * 1024 * 1024
         while True:
             temp_path = ""
             try:
@@ -196,8 +192,6 @@ def _download_model_with_progress(model_dir: str) -> None:
                     )
                     return True
                 
-                # If temp file exists (from interrupted download), remove it to restart fresh
-                # or we could implement resume, but for now let's ensure we don't get stuck
                 resume_bytes = 0
                 headers = {}
                 mode = 'wb'
@@ -210,6 +204,7 @@ def _download_model_with_progress(model_dir: str) -> None:
                 req = urllib.request.Request(url, headers=headers)
                 current_bytes = resume_bytes
                 last_emit = 0.0
+                pending_flush_bytes = 0
                 
                 try:
                     resp = urllib.request.urlopen(req)
@@ -234,6 +229,7 @@ def _download_model_with_progress(model_dir: str) -> None:
                     resume_bytes = 0
                     mode = 'wb'
                     current_bytes = 0
+                    pending_flush_bytes = 0
 
                 with resp, open(temp_path, mode) as f:
                     if total_bytes is None:
@@ -249,9 +245,16 @@ def _download_model_with_progress(model_dir: str) -> None:
                             break
                         f.write(chunk)
                         current_bytes += len(chunk)
+                        pending_flush_bytes += len(chunk)
                         if total_bytes:
                             now = time.time()
                             if now - last_emit >= 0.2:
+                                f.flush()
+                                try:
+                                    os.fsync(f.fileno())
+                                except OSError:
+                                    pass
+                                pending_flush_bytes = 0
                                 _emit(
                                     {
                                         "type": "file-progress",
@@ -263,6 +266,18 @@ def _download_model_with_progress(model_dir: str) -> None:
                                     }
                                 )
                                 last_emit = now
+                        if pending_flush_bytes >= flush_interval_bytes:
+                            f.flush()
+                            try:
+                                os.fsync(f.fileno())
+                            except OSError:
+                                pass
+                            pending_flush_bytes = 0
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except OSError:
+                        pass
                 if total_bytes:
                     _emit(
                         {
@@ -287,11 +302,6 @@ def _download_model_with_progress(model_dir: str) -> None:
                 )
                 return True
             except Exception as e:
-                if temp_path and os.path.isfile(temp_path):
-                    try:
-                        os.remove(temp_path)
-                    except Exception:
-                        pass
                 if _is_not_found(e):
                     _emit({"type": "weight-missing", "filename": filename, "message": str(e)})
                     return False
@@ -377,7 +387,8 @@ def encode_image(path: str) -> List[float]:
     inputs = processor(images=image, return_tensors="pt")
     inputs = {k: v.to(device) for k, v in inputs.items()}
     with torch.no_grad():
-        image_features = _to_normalized_vector_tensor(model.get_image_features(**inputs))
+        image_features = model.get_image_features(**inputs)
+        image_features = _to_normalized_vector_tensor(image_features)
     return image_features[0].cpu().tolist()
 
 
@@ -386,7 +397,8 @@ def encode_text(text: str) -> List[float]:
     inputs = processor(text=[text], return_tensors="pt", padding=True)
     inputs = {k: v.to(device) for k, v in inputs.items()}
     with torch.no_grad():
-        text_features = _to_normalized_vector_tensor(model.get_text_features(**inputs))
+        text_features = model.get_text_features(**inputs)
+        text_features = _to_normalized_vector_tensor(text_features)
     return text_features[0].cpu().tolist()
 
 

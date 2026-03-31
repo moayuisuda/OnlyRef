@@ -1,4 +1,4 @@
-import React, { useRef } from "react";
+import React, { useEffect, useRef } from "react";
 import { useT } from "../../i18n/useT";
 
 interface SwatchProps {
@@ -23,6 +23,12 @@ export const Swatch: React.FC<SwatchProps> = ({
     window.clearTimeout(timerRef.current);
     timerRef.current = null;
   };
+
+  useEffect(() => {
+    return () => {
+      clearTimer();
+    };
+  }, []);
 
   return (
     <button

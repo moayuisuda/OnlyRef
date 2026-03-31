@@ -1,5 +1,9 @@
 import { actions, type ImageMeta } from '../store/galleryStore';
 import { importImage } from '../service';
+import {
+  isHttpUrl,
+  normalizeDroppedImageUrl,
+} from './droppedImageUrl';
 
 export const scanDroppedItems = async (dataTransfer: DataTransfer): Promise<File[]> => {
   const items = Array.from(dataTransfer.items);
@@ -98,4 +102,23 @@ export const importFiles = async (files: File[]): Promise<ImageMeta[]> => {
   }
 
   return importedImages;
+};
+
+export const importImageUrl = async (imageUrl: string): Promise<ImageMeta> => {
+  const trimmedUrl = normalizeDroppedImageUrl(imageUrl.trim());
+  if (!isHttpUrl(trimmedUrl)) {
+    throw new Error('Invalid image url');
+  }
+
+  const data = await importImage<{ success?: boolean; meta?: ImageMeta }>({
+    imageUrl: trimmedUrl,
+  });
+
+  if (!data.success || !data.meta) {
+    throw new Error('Failed to import image');
+  }
+
+  actions.addImage(data.meta);
+  await actions.loadTags();
+  return data.meta;
 };

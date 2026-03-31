@@ -41,6 +41,7 @@ import https from "https";
 import zlib from "zlib";
 import {
   startServer as startApiServer,
+  DEFAULT_SERVER_PORT,
   getStorageDir,
   setStorageRoot,
   type RendererChannel,
@@ -52,12 +53,20 @@ import { debounce } from "radash";
 let mainWindow: BrowserWindow | null = null;
 let isAppHidden = false;
 let localeCache: { locale: Locale; mtimeMs: number } | null = null;
+let localServerApiBaseUrl = `http://localhost:${DEFAULT_SERVER_PORT}`;
+let isLocalServerReady = false;
 const DEFAULT_TOGGLE_WINDOW_SHORTCUT =
   process.platform === "darwin" ? "Command+L" : "Ctrl+L";
 
 let toggleWindowShortcut = DEFAULT_TOGGLE_WINDOW_SHORTCUT;
 
 let isSettingsOpen = false;
+let hasPendingSecondInstanceRestore = false;
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+}
 
 const isLocale = (value: unknown): value is Locale =>
   value === "en" || value === "zh";
@@ -100,13 +109,20 @@ async function loadShortcuts(): Promise<void> {
 
 function loadMainWindow() {
   if (!mainWindow) return;
+  const query = new URLSearchParams({
+    apiBaseUrl: localServerApiBaseUrl,
+  }).toString();
   if (!app.isPackaged) {
     log.info("Loading renderer from localhost");
-    void mainWindow.loadURL("http://localhost:5173");
+    void mainWindow.loadURL(`http://localhost:5173/?${query}`);
   } else {
     const filePath = path.join(__dirname, "../dist-renderer/index.html");
     log.info("Loading renderer from file:", filePath);
-    void mainWindow.loadFile(filePath);
+    void mainWindow.loadFile(filePath, {
+      query: {
+        apiBaseUrl: localServerApiBaseUrl,
+      },
+    });
   }
 }
 
@@ -353,26 +369,30 @@ async function createWindow(options?: { load?: boolean }) {
 function toggleMainWindowVisibility() {
   if (!mainWindow) return;
 
-  if (mainWindow.isMinimized()) {
-    mainWindow.restore();
-    isAppHidden = false;
-    mainWindow.setIgnoreMouseEvents(false);
-    mainWindow.webContents.send("renderer-event", "app-visibility", true);
-    mainWindow.focus();
+  if (mainWindow.isMinimized() || isAppHidden) {
+    restoreMainWindowVisibility();
     return;
   }
 
-  if (isAppHidden) {
-    isAppHidden = false;
-    mainWindow.setIgnoreMouseEvents(false);
-    mainWindow.webContents.send("renderer-event", "app-visibility", true);
-    mainWindow.show();
-    mainWindow.focus();
-  } else {
-    isAppHidden = true;
-    mainWindow.setIgnoreMouseEvents(true, { forward: false });
-    mainWindow.webContents.send("renderer-event", "app-visibility", false);
+  isAppHidden = true;
+  mainWindow.setIgnoreMouseEvents(true, { forward: false });
+  mainWindow.webContents.send("renderer-event", "app-visibility", false);
+}
+
+function restoreMainWindowVisibility() {
+  if (!mainWindow) return;
+
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
   }
+
+  isAppHidden = false;
+  mainWindow.setIgnoreMouseEvents(false);
+  mainWindow.webContents.send("renderer-event", "app-visibility", true);
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
+  }
+  mainWindow.focus();
 }
 
 function registerShortcut(
@@ -931,7 +951,6 @@ async function preparePythonRuntime(
 }
 
 type EnsureModelReadyOptions = {
-  force?: boolean;
   reportProgress?: (
     statusKey: I18nKey,
     progress: number,
@@ -943,43 +962,13 @@ async function ensureModelReady(
   parent: BrowserWindow,
   options: EnsureModelReadyOptions = {},
 ): Promise<void> {
-  const { force = false, reportProgress } = options;
+  const { reportProgress } = options;
   const modelDir = getModelDir();
   process.env.PROREF_MODEL_DIR = modelDir;
   const debug = process.env.PROREF_DEBUG_MODEL === "1";
   if (debug) console.log("[model] dir:", modelDir);
 
   const modelMissing = !(await hasRequiredModelFiles(modelDir));
-
-  // Check if vector search is enabled
-  if (!force) {
-    try {
-      const settingsPath = path.join(getStorageDir(), "settings.json");
-      if (await lockedFs.pathExists(settingsPath)) {
-        const settingsRaw = await lockedFs.readJson(settingsPath);
-        if (settingsRaw && typeof settingsRaw === "object") {
-          const settings = settingsRaw as {
-            enableVectorSearch?: boolean;
-          };
-          if (!settings.enableVectorSearch) {
-            if (debug)
-              console.log(
-                "[model] Vector search disabled, skipping model check",
-              );
-            return;
-          }
-        }
-      } else {
-        // Default is disabled if no settings file
-        if (debug)
-          console.log("[model] No settings file, skipping model check");
-        return;
-      }
-    } catch (e) {
-      console.error("[model] Failed to read settings:", e);
-      if (!modelMissing) return;
-    }
-  }
 
   if (!modelMissing) {
     if (debug) console.log("[model] ok");
@@ -1222,7 +1211,6 @@ async function ensureStartupInitialization(parent: BrowserWindow): Promise<void>
   try {
     await preparePythonRuntime(parent, reportPythonInit);
     await ensureModelReady(parent, {
-      force: true,
       reportProgress: reportModelInit,
     });
     await delay(250);
@@ -1232,10 +1220,39 @@ async function ensureStartupInitialization(parent: BrowserWindow): Promise<void>
 }
 
 async function startServer() {
-  return startApiServer((channel: RendererChannel, data: unknown) => {
+  const port = await startApiServer((channel: RendererChannel, data: unknown) => {
     mainWindow?.webContents.send(channel, data);
   });
+  localServerApiBaseUrl = `http://localhost:${port}`;
+  isLocalServerReady = true;
+  return port;
 }
+
+app.on("second-instance", () => {
+  const restoreOrCreateWindow = () => {
+    if (!mainWindow) {
+      if (!isLocalServerReady) {
+        hasPendingSecondInstanceRestore = true;
+        return;
+      }
+      void createWindow();
+      return;
+    }
+    restoreMainWindowVisibility();
+  };
+
+  if (!app.isReady()) {
+    if (hasPendingSecondInstanceRestore) return;
+    hasPendingSecondInstanceRestore = true;
+    app.once("ready", () => {
+      hasPendingSecondInstanceRestore = false;
+      restoreOrCreateWindow();
+    });
+    return;
+  }
+
+  restoreOrCreateWindow();
+});
 
 ipcMain.handle("get-storage-dir", async () => {
   return getStorageDir();
@@ -1265,33 +1282,37 @@ app.whenReady().then(async () => {
   log.info("User data:", app.getPath("userData"));
 
   const taskLoadShortcuts = loadShortcuts();
-  const taskCreateWindow = createWindow();
   // Start server early, but handle errors later
   const taskStartServer = startServer();
+  try {
+    await Promise.all([taskLoadShortcuts, taskStartServer]);
+    await createWindow();
+    registerToggleWindowShortcut(toggleWindowShortcut);
 
-  await Promise.all([taskLoadShortcuts, taskCreateWindow]);
-
-  registerToggleWindowShortcut(toggleWindowShortcut);
-
-  if (mainWindow) {
-    try {
-      await taskStartServer;
+    if (mainWindow) {
       log.info("Ensuring startup initialization...");
       await ensureStartupInitialization(mainWindow);
       log.info("Startup initialization ready.");
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      console.error("[startup] initialization failed:", message);
-      log.error("[startup] initialization failed:", message);
-      app.quit();
-      return;
     }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error("[startup] initialization failed:", message);
+    log.error("[startup] initialization failed:", message);
+    app.quit();
+    return;
+  }
+
+  if (hasPendingSecondInstanceRestore) {
+    hasPendingSecondInstanceRestore = false;
+    restoreMainWindowVisibility();
   }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      void createWindow();
+      return;
     }
+    restoreMainWindowVisibility();
   });
 });
 

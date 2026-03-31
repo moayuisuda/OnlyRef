@@ -12,15 +12,20 @@ export const ErrorDisplay = ({ error }: { error: Error | null }) => {
   >({ state: 'loading' });
 
   useEffect(() => {
+    let cancelled = false;
+
     const fetchLogs = async () => {
       try {
         if (window.electron?.getLogContent) {
           const content = await window.electron.getLogContent();
+          if (cancelled) return;
           setLogState({ state: 'ready', content });
         } else {
+          if (cancelled) return;
           setLogState({ state: 'unavailable' });
         }
       } catch (err) {
+        if (cancelled) return;
         setLogState({
           state: 'error',
           message: err instanceof Error ? err.message : String(err),
@@ -28,6 +33,10 @@ export const ErrorDisplay = ({ error }: { error: Error | null }) => {
       }
     };
     void fetchLogs();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const logContent = logState.state === 'ready' ? logState.content : '';

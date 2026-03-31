@@ -95,10 +95,10 @@ export const SortableGalleryItem: React.FC<SortableGalleryItemProps> = ({
 
         {image.isVectorResult && (
           <div
-            className="absolute top-2 right-2 p-1 rounded bg-purple-500/80 backdrop-blur-sm text-white shadow-sm"
+            className="absolute top-2 right-2 text-[var(--color-primary)] drop-shadow-[0_0_6px_rgba(57,197,187,0.55)]"
             title={t("gallery.vectorResult")}
           >
-            <Sparkles size={10} strokeWidth={3} />
+            <Sparkles size={12} strokeWidth={2.5} color="currentColor" />
           </div>
         )}
 

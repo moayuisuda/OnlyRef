@@ -1,4 +1,4 @@
-import { API_BASE_URL } from "./config";
+import { API_BASE_URL } from "../config";
 import type { Locale } from "../shared/i18n/types";
 
 export interface settingStorageGetOptions<T> {

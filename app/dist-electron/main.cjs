@@ -96,7 +96,7 @@ var lockedFs = {
 
 // electron/main.ts
 var import_readline2 = __toESM(require("readline"), 1);
-var import_https2 = __toESM(require("https"), 1);
+var import_https = __toESM(require("https"), 1);
 var import_zlib = __toESM(require("zlib"), 1);
 
 // backend/server.ts
@@ -106,8 +106,6 @@ var import_express5 = __toESM(require("express"), 1);
 var import_cors = __toESM(require("cors"), 1);
 var import_body_parser = __toESM(require("body-parser"), 1);
 var import_fs_extra3 = __toESM(require("fs-extra"), 1);
-var import_https = __toESM(require("https"), 1);
-var import_http = __toESM(require("http"), 1);
 var import_child_process = require("child_process");
 var import_readline = __toESM(require("readline"), 1);
 
@@ -1851,9 +1849,14 @@ async function calculateTone(filePath) {
 }
 
 // backend/server.ts
-var SERVER_PORT = 30001;
+var DEFAULT_SERVER_PORT = 30003;
+var MAX_SERVER_PORT = 65535;
+var API_HOSTNAME = "localhost";
 var CONFIG_FILE = import_path4.default.join(import_electron2.app.getPath("userData"), "picaptain_config.json");
-var DEFAULT_STORAGE_DIR = import_path4.default.join(import_electron2.app.getPath("userData"), "picaptain_storage");
+var DEFAULT_STORAGE_DIR = import_path4.default.join(
+  import_electron2.app.getPath("userData"),
+  "picaptain_storage"
+);
 var loadStorageRoot = async () => {
   try {
     if (await lockedFs.pathExists(CONFIG_FILE)) {
@@ -1937,15 +1940,18 @@ var readSettings = async () => {
     return settingsCache;
   });
 };
-var persistSettings = (0, import_radash.debounce)({ delay: 500 }, async (settings) => {
-  await withFileLock(SETTINGS_FILE, async () => {
-    try {
-      await import_fs_extra3.default.writeJson(SETTINGS_FILE, settings);
-    } catch (error) {
-      console.error("Failed to write settings file", error);
-    }
-  });
-});
+var persistSettings = (0, import_radash.debounce)(
+  { delay: 500 },
+  async (settings) => {
+    await withFileLock(SETTINGS_FILE, async () => {
+      try {
+        await import_fs_extra3.default.writeJson(SETTINGS_FILE, settings);
+      } catch (error) {
+        console.error("Failed to write settings file", error);
+      }
+    });
+  }
+);
 var writeSettings = async (settings) => {
   settingsCache = settings;
   persistSettings(settings);
@@ -2028,7 +2034,10 @@ var BasePythonService = class {
       for (const line of lines) {
         const normalized = line.trim();
         const lower = normalized.toLowerCase();
-        const cleaned = normalized.replace(/^\[(info|warn|warning|error)\]\s*/i, "");
+        const cleaned = normalized.replace(
+          /^\[(info|warn|warning|error)\]\s*/i,
+          ""
+        );
         const cleanedWarning = cleaned.replace(/^warning:\s*/i, "");
         const isInfo = normalized.startsWith("[INFO]") || normalized.includes("Python vector service started") || normalized.includes("Model loaded");
         const isWarning = normalized.startsWith("[WARN]") || normalized.startsWith("[WARNING]") || lower.startsWith("warning:") || lower.includes("warning:");
@@ -2234,7 +2243,10 @@ var mapModelDownloadProgress = (data) => {
   const d = data;
   const type = d.type;
   if (type === "error") {
-    return { type: "error", reason: typeof d.message === "string" ? d.message : String(d.message ?? "") };
+    return {
+      type: "error",
+      reason: typeof d.message === "string" ? d.message : String(d.message ?? "")
+    };
   }
   if (type === "weight-failed") {
     return {
@@ -2255,55 +2267,114 @@ var mapModelDownloadProgress = (data) => {
   return data;
 };
 function downloadImage(url, dest) {
-  return withFileLock(dest, () => new Promise((resolve, reject) => {
-    if (url.startsWith("file://") || url.startsWith("/")) {
-      let srcPath = url;
-      if (url.startsWith("file://")) {
-        srcPath = new URL(url).pathname;
-        if (process.platform === "win32" && srcPath.startsWith("/") && srcPath.includes(":")) {
-          srcPath = srcPath.substring(1);
-        }
+  const REQUEST_TIMEOUT_MS = 15e3;
+  const MAX_RETRY_ATTEMPTS = 3;
+  const copyFromLocalPath = async (targetUrl) => {
+    let srcPath = targetUrl;
+    if (targetUrl.startsWith("file://")) {
+      srcPath = new URL(targetUrl).pathname;
+      if (process.platform === "win32" && srcPath.startsWith("/") && srcPath.includes(":")) {
+        srcPath = srcPath.substring(1);
       }
-      srcPath = decodeURIComponent(srcPath);
-      import_fs_extra3.default.copy(srcPath, dest).then(() => resolve()).catch((err) => {
-        import_fs_extra3.default.unlink(dest, () => {
-        });
-        reject(err);
-      });
-      return;
     }
-    const file = import_fs_extra3.default.createWriteStream(dest);
-    const client = url.startsWith("https") ? import_https.default : import_http.default;
-    const request = client.get(url, (response) => {
-      if (response.statusCode === 200) {
-        response.pipe(file);
-        file.on("finish", () => {
-          file.close();
-          resolve();
-        });
-      } else {
-        file.close();
-        import_fs_extra3.default.unlink(dest, () => {
-        });
-        reject(
-          new Error(
-            `Server responded with ${response.statusCode}: ${response.statusMessage}`
-          )
+    await import_fs_extra3.default.copy(decodeURIComponent(srcPath), dest);
+  };
+  const isRetryableDownloadError = (error) => {
+    const code = error.code;
+    if (code === "ECONNRESET" || code === "ETIMEDOUT" || code === "ECONNABORTED" || code === "EAI_AGAIN" || code === "EPIPE" || code === "ENETUNREACH") {
+      return true;
+    }
+    return /socket hang up|timeout|network/i.test(error.message);
+  };
+  const requestRemoteOnce = async (targetUrl) => {
+    const referer = (() => {
+      try {
+        return new URL(targetUrl).origin;
+      } catch {
+        return "";
+      }
+    })();
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => {
+      abortController.abort();
+    }, REQUEST_TIMEOUT_MS);
+    try {
+      const response = await import_electron2.net.fetch(targetUrl, {
+        method: "GET",
+        redirect: "follow",
+        signal: abortController.signal,
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 LookBack/1.0",
+          Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9",
+          ...referer ? { Referer: `${referer}/` } : {},
+          Connection: "close"
+        }
+      });
+      if (!response.ok) {
+        throw new Error(
+          `Server responded with ${response.status}: ${response.statusText}`
         );
       }
-    });
-    request.on("error", (err) => {
-      import_fs_extra3.default.unlink(dest, () => {
-      });
-      reject(err);
-    });
-    file.on("error", (err) => {
-      import_fs_extra3.default.unlink(dest, () => {
-      });
-      reject(err);
-    });
-  }));
+      const buffer = Buffer.from(await response.arrayBuffer());
+      await import_fs_extra3.default.writeFile(dest, buffer);
+    } catch (error) {
+      await import_fs_extra3.default.remove(dest).catch(() => void 0);
+      if (error instanceof Error && (error.name === "AbortError" || /aborted/i.test(error.message))) {
+        throw new Error("Download timeout");
+      }
+      throw error instanceof Error ? error : new Error(String(error));
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
+  const requestRemote = async (targetUrl) => {
+    let lastError = null;
+    for (let attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt += 1) {
+      try {
+        await requestRemoteOnce(targetUrl);
+        return;
+      } catch (error) {
+        const normalized = error instanceof Error ? error : new Error(String(error));
+        lastError = normalized;
+        const shouldRetry = attempt < MAX_RETRY_ATTEMPTS && isRetryableDownloadError(normalized);
+        if (!shouldRetry) {
+          break;
+        }
+        await new Promise((resolve) => {
+          setTimeout(resolve, attempt * 250);
+        });
+      }
+    }
+    throw lastError ?? new Error("Download failed");
+  };
+  return withFileLock(dest, async () => {
+    if (url.startsWith("file://") || url.startsWith("/")) {
+      await copyFromLocalPath(url);
+      return;
+    }
+    await requestRemote(url);
+  });
 }
+var listenOnAvailablePort = (appServer, startPort) => new Promise((resolve, reject) => {
+  const tryListen = (port) => {
+    if (port > MAX_SERVER_PORT) {
+      reject(new Error("No available localhost port for local server"));
+      return;
+    }
+    const httpServer = appServer.listen(port, API_HOSTNAME, () => {
+      resolve(port);
+    });
+    httpServer.once("error", (error) => {
+      if (error.code === "EADDRINUSE") {
+        tryListen(port + 1);
+        return;
+      }
+      reject(error);
+    });
+  };
+  tryListen(startPort);
+});
 async function startServer(sendToRenderer) {
   await initializeStorage();
   const server = (0, import_express5.default)();
@@ -2388,10 +2459,9 @@ async function startServer(sendToRenderer) {
       res.status(500).json({ error: "Unexpected error", details: message });
     }
   );
-  server.listen(SERVER_PORT, () => {
-    console.log(`Local server running on port ${SERVER_PORT}`);
-  });
-  return;
+  const port = await listenOnAvailablePort(server, DEFAULT_SERVER_PORT);
+  console.log(`Local server running at http://${API_HOSTNAME}:${port}`);
+  return port;
 }
 
 // shared/i18n/locales/en.ts
@@ -2402,6 +2472,7 @@ var en = {
   "common.delete": "Delete",
   "common.close": "Close",
   "common.loading": "Loading...",
+  "common.unavailable": "Unavailable",
   "common.clear": "Clear",
   "common.none": "None",
   "common.notSet": "Not set",
@@ -2410,7 +2481,9 @@ var en = {
   "common.language.en": "EN",
   "common.language.zh": "\u4E2D\u6587",
   "common.reset": "Reset",
-  "titleBar.settings": "Setting",
+  "titleBar.settings": "Settings",
+  "titleBar.minimize": "Minimize",
+  "titleBar.maximize": "Maximize",
   "titleBar.alwaysOnTop": "Always on Top",
   "titleBar.dataFolder": "Data Folder",
   "titleBar.dataFolder.default": "Not configured, using default directory",
@@ -2447,6 +2520,7 @@ var en = {
   "toast.tagRenameFailed": "Failed to rename tag",
   "toast.tagDeleted": "Tag deleted",
   "toast.tagDeleteFailed": "Failed to delete tag",
+  "toast.importImageFailed": "Failed to import image",
   "toast.updateTagsFailed": "Failed to update tags",
   "toast.updateDominantColorFailed": "Failed to update dominant color",
   "toast.updateNameFailed": "Failed to update name",
@@ -2583,7 +2657,22 @@ var en = {
   "settings.llm.enable": "Enable LLM Translation",
   "settings.llm.baseUrl": "Base URL",
   "settings.llm.key": "API Key",
-  "settings.llm.model": "Model"
+  "settings.llm.model": "Model",
+  "settings.open": "Open settings",
+  "settings.storageFolder": "Storage folder",
+  "settings.queryTranslation": "Query translation",
+  "settings.queryTranslation.desc": "LLM-assisted query rewrite",
+  "settings.indexing": "Indexing",
+  "settings.toggleWindowShortcut": "Toggle window shortcut",
+  "settings.run": "Run",
+  "settings.running": "Running",
+  "settings.imageCount.one": "{{count}} image",
+  "settings.imageCount.other": "{{count}} images",
+  "settings.status.indexingTitleFallback": "Preparing library update",
+  "settings.status.indexingDetailFallback": "Refreshing your local reference library and metadata.",
+  "settings.status.ready.semanticAndTranslation": "Semantic search and query translation are active.",
+  "settings.status.ready.semantic": "Semantic search is active for your local library.",
+  "settings.status.ready.basic": "Search, color filtering, and local library management are ready."
 };
 
 // shared/i18n/locales/zh.ts
@@ -2639,6 +2728,7 @@ var zh = {
   "toast.tagRenameFailed": "\u91CD\u547D\u540D\u6807\u7B7E\u5931\u8D25",
   "toast.tagDeleted": "\u6807\u7B7E\u5DF2\u5220\u9664",
   "toast.tagDeleteFailed": "\u5220\u9664\u6807\u7B7E\u5931\u8D25",
+  "toast.importImageFailed": "\u5BFC\u5165\u56FE\u7247\u5931\u8D25",
   "toast.updateTagsFailed": "\u66F4\u65B0\u6807\u7B7E\u5931\u8D25",
   "toast.updateDominantColorFailed": "\u66F4\u65B0\u4E3B\u8272\u5931\u8D25",
   "toast.updateNameFailed": "\u66F4\u65B0\u540D\u79F0\u5931\u8D25",
@@ -2704,7 +2794,7 @@ var zh = {
   "gallery.contextMenu.deleteImage": "\u5220\u9664\u56FE\u7247",
   "gallery.dominantColor.title": "\u4E3B\u8272",
   "gallery.empty.bodyLine1": "\u65C5\u7A0B\u4ECE\u8FD9\u91CC\u5F00\u59CB\u3002",
-  "gallery.empty.bodyLine2": "\u62D6\u653E\u56FE\u7247\u6765\u6307\u6325\u4F60\u7684\u5185\u5BB9\u3002",
+  "gallery.empty.bodyLine2": "\u62D6\u653E\u56FE\u7247\u6765\u5F00\u59CB\u4F60\u7684\u65C5\u7A0B\u3002",
   "gallery.empty.dragHint": "\u5C06\u56FE\u7247\u62D6\u5230\u8FD9\u91CC",
   "tag.setColor": "\u8BBE\u7F6E\u989C\u8272",
   "tag.delete": "\u5220\u9664\u6807\u7B7E",
@@ -2775,7 +2865,25 @@ var zh = {
   "settings.llm.enable": "\u542F\u7528 LLM \u7FFB\u8BD1",
   "settings.llm.baseUrl": "\u57FA\u7840\u5730\u5740 (Base URL)",
   "settings.llm.key": "API \u5BC6\u94A5",
-  "settings.llm.model": "\u6A21\u578B\u540D\u79F0"
+  "settings.llm.model": "\u6A21\u578B\u540D\u79F0",
+  "common.unavailable": "\u4E0D\u53EF\u7528",
+  "titleBar.minimize": "\u6700\u5C0F\u5316",
+  "titleBar.maximize": "\u6700\u5927\u5316",
+  "settings.open": "\u6253\u5F00\u8BBE\u7F6E",
+  "settings.storageFolder": "\u5B58\u50A8\u6587\u4EF6\u5939",
+  "settings.queryTranslation": "\u67E5\u8BE2\u7FFB\u8BD1",
+  "settings.queryTranslation.desc": "LLM \u8F85\u52A9\u7684\u67E5\u8BE2\u6539\u5199",
+  "settings.indexing": "\u7D22\u5F15",
+  "settings.toggleWindowShortcut": "\u5207\u6362\u7A97\u53E3\u5FEB\u6377\u952E",
+  "settings.run": "\u8FD0\u884C",
+  "settings.running": "\u8FD0\u884C\u4E2D",
+  "settings.imageCount.one": "{{count}} \u5F20\u56FE\u7247",
+  "settings.imageCount.other": "{{count}} \u5F20\u56FE\u7247",
+  "settings.status.indexingTitleFallback": "\u6B63\u5728\u51C6\u5907\u66F4\u65B0\u7D22\u5F15",
+  "settings.status.indexingDetailFallback": "\u6B63\u5728\u5237\u65B0\u672C\u5730\u7D20\u6750\u5E93\u4E0E\u5143\u6570\u636E",
+  "settings.status.ready.semanticAndTranslation": "\u8BED\u4E49\u641C\u7D22\u548C\u67E5\u8BE2\u7FFB\u8BD1\u5DF2\u542F\u7528",
+  "settings.status.ready.semantic": "\u672C\u5730\u7D20\u6750\u5E93\u7684\u8BED\u4E49\u641C\u7D22\u5DF2\u542F\u7528",
+  "settings.status.ready.basic": "\u641C\u7D22\u3001\u989C\u8272\u7B5B\u9009\u548C\u672C\u5730\u7D20\u6750\u7BA1\u7406\u5DF2\u5C31\u7EEA"
 };
 
 // shared/i18n/t.ts
@@ -2812,9 +2920,16 @@ import_electron_log.default.transports.file.archiveLog = (file) => {
 var mainWindow = null;
 var isAppHidden = false;
 var localeCache = null;
+var localServerApiBaseUrl = `http://localhost:${DEFAULT_SERVER_PORT}`;
+var isLocalServerReady = false;
 var DEFAULT_TOGGLE_WINDOW_SHORTCUT = process.platform === "darwin" ? "Command+L" : "Ctrl+L";
 var toggleWindowShortcut = DEFAULT_TOGGLE_WINDOW_SHORTCUT;
 var isSettingsOpen = false;
+var hasPendingSecondInstanceRestore = false;
+var hasSingleInstanceLock = import_electron3.app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  import_electron3.app.quit();
+}
 var isLocale = (value) => value === "en" || value === "zh";
 async function getLocale() {
   try {
@@ -2846,13 +2961,20 @@ async function loadShortcuts() {
 }
 function loadMainWindow() {
   if (!mainWindow) return;
+  const query = new URLSearchParams({
+    apiBaseUrl: localServerApiBaseUrl
+  }).toString();
   if (!import_electron3.app.isPackaged) {
     import_electron_log.default.info("Loading renderer from localhost");
-    void mainWindow.loadURL("http://localhost:5173");
+    void mainWindow.loadURL(`http://localhost:5173/?${query}`);
   } else {
     const filePath = import_path5.default.join(__dirname, "../dist-renderer/index.html");
     import_electron_log.default.info("Loading renderer from file:", filePath);
-    void mainWindow.loadFile(filePath);
+    void mainWindow.loadFile(filePath, {
+      query: {
+        apiBaseUrl: localServerApiBaseUrl
+      }
+    });
   }
 }
 function setupAutoUpdater() {
@@ -3048,25 +3170,26 @@ async function createWindow(options) {
 }
 function toggleMainWindowVisibility() {
   if (!mainWindow) return;
-  if (mainWindow.isMinimized()) {
-    mainWindow.restore();
-    isAppHidden = false;
-    mainWindow.setIgnoreMouseEvents(false);
-    mainWindow.webContents.send("renderer-event", "app-visibility", true);
-    mainWindow.focus();
+  if (mainWindow.isMinimized() || isAppHidden) {
+    restoreMainWindowVisibility();
     return;
   }
-  if (isAppHidden) {
-    isAppHidden = false;
-    mainWindow.setIgnoreMouseEvents(false);
-    mainWindow.webContents.send("renderer-event", "app-visibility", true);
-    mainWindow.show();
-    mainWindow.focus();
-  } else {
-    isAppHidden = true;
-    mainWindow.setIgnoreMouseEvents(true, { forward: false });
-    mainWindow.webContents.send("renderer-event", "app-visibility", false);
+  isAppHidden = true;
+  mainWindow.setIgnoreMouseEvents(true, { forward: false });
+  mainWindow.webContents.send("renderer-event", "app-visibility", false);
+}
+function restoreMainWindowVisibility() {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
   }
+  isAppHidden = false;
+  mainWindow.setIgnoreMouseEvents(false);
+  mainWindow.webContents.send("renderer-event", "app-visibility", true);
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
+  }
+  mainWindow.focus();
 }
 function registerShortcut(accelerator, currentVar, updateVar, action, checkSettingsOpen = false) {
   const next = typeof accelerator === "string" ? accelerator.trim() : "";
@@ -3316,7 +3439,7 @@ function downloadBuffer(url, onProgress) {
         return;
       }
       visited.add(u);
-      const req = import_https2.default.get(u, (res) => {
+      const req = import_https.default.get(u, (res) => {
         const status = res.statusCode || 0;
         const loc = res.headers.location;
         if ([301, 302, 303, 307, 308].includes(status) && loc) {
@@ -3497,37 +3620,12 @@ async function preparePythonRuntime(parent, reportEnvInit) {
   reportEnvInit("envInit.pythonEnvReady", 1);
 }
 async function ensureModelReady(parent, options = {}) {
-  const { force = false, reportProgress } = options;
+  const { reportProgress } = options;
   const modelDir = getModelDir();
   process.env.PROREF_MODEL_DIR = modelDir;
   const debug = process.env.PROREF_DEBUG_MODEL === "1";
   if (debug) console.log("[model] dir:", modelDir);
   const modelMissing = !await hasRequiredModelFiles(modelDir);
-  if (!force) {
-    try {
-      const settingsPath = import_path5.default.join(getStorageDir(), "settings.json");
-      if (await lockedFs.pathExists(settingsPath)) {
-        const settingsRaw = await lockedFs.readJson(settingsPath);
-        if (settingsRaw && typeof settingsRaw === "object") {
-          const settings = settingsRaw;
-          if (!settings.enableVectorSearch) {
-            if (debug)
-              console.log(
-                "[model] Vector search disabled, skipping model check"
-              );
-            return;
-          }
-        }
-      } else {
-        if (debug)
-          console.log("[model] No settings file, skipping model check");
-        return;
-      }
-    } catch (e) {
-      console.error("[model] Failed to read settings:", e);
-      if (!modelMissing) return;
-    }
-  }
   if (!modelMissing) {
     if (debug) console.log("[model] ok");
     reportProgress == null ? void 0 : reportProgress("model.ready", 1);
@@ -3709,7 +3807,6 @@ async function ensureStartupInitialization(parent) {
   try {
     await preparePythonRuntime(parent, reportPythonInit);
     await ensureModelReady(parent, {
-      force: true,
       reportProgress: reportModelInit
     });
     await delay(250);
@@ -3718,10 +3815,36 @@ async function ensureStartupInitialization(parent) {
   }
 }
 async function startServer2() {
-  return startServer((channel, data) => {
+  const port = await startServer((channel, data) => {
     mainWindow == null ? void 0 : mainWindow.webContents.send(channel, data);
   });
+  localServerApiBaseUrl = `http://localhost:${port}`;
+  isLocalServerReady = true;
+  return port;
 }
+import_electron3.app.on("second-instance", () => {
+  const restoreOrCreateWindow = () => {
+    if (!mainWindow) {
+      if (!isLocalServerReady) {
+        hasPendingSecondInstanceRestore = true;
+        return;
+      }
+      void createWindow();
+      return;
+    }
+    restoreMainWindowVisibility();
+  };
+  if (!import_electron3.app.isReady()) {
+    if (hasPendingSecondInstanceRestore) return;
+    hasPendingSecondInstanceRestore = true;
+    import_electron3.app.once("ready", () => {
+      hasPendingSecondInstanceRestore = false;
+      restoreOrCreateWindow();
+    });
+    return;
+  }
+  restoreOrCreateWindow();
+});
 import_electron3.ipcMain.handle("get-storage-dir", async () => {
   return getStorageDir();
 });
@@ -3745,28 +3868,33 @@ import_electron3.app.whenReady().then(async () => {
   import_electron_log.default.info("App path:", import_electron3.app.getAppPath());
   import_electron_log.default.info("User data:", import_electron3.app.getPath("userData"));
   const taskLoadShortcuts = loadShortcuts();
-  const taskCreateWindow = createWindow();
   const taskStartServer = startServer2();
-  await Promise.all([taskLoadShortcuts, taskCreateWindow]);
-  registerToggleWindowShortcut(toggleWindowShortcut);
-  if (mainWindow) {
-    try {
-      await taskStartServer;
+  try {
+    await Promise.all([taskLoadShortcuts, taskStartServer]);
+    await createWindow();
+    registerToggleWindowShortcut(toggleWindowShortcut);
+    if (mainWindow) {
       import_electron_log.default.info("Ensuring startup initialization...");
       await ensureStartupInitialization(mainWindow);
       import_electron_log.default.info("Startup initialization ready.");
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      console.error("[startup] initialization failed:", message);
-      import_electron_log.default.error("[startup] initialization failed:", message);
-      import_electron3.app.quit();
-      return;
     }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error("[startup] initialization failed:", message);
+    import_electron_log.default.error("[startup] initialization failed:", message);
+    import_electron3.app.quit();
+    return;
+  }
+  if (hasPendingSecondInstanceRestore) {
+    hasPendingSecondInstanceRestore = false;
+    restoreMainWindowVisibility();
   }
   import_electron3.app.on("activate", () => {
     if (import_electron3.BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      void createWindow();
+      return;
     }
+    restoreMainWindowVisibility();
   });
 });
 import_electron3.ipcMain.handle(

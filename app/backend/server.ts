@@ -1,11 +1,9 @@
-import { app } from "electron";
+import { app, net } from "electron";
 import path from "path";
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import fs from "fs-extra";
-import https from "https";
-import http from "http";
 import { spawn, ChildProcess } from "child_process";
 import readline from "readline";
 import { createDatabase, StorageIncompatibleError, type ImageDb } from "./db";
@@ -26,10 +24,16 @@ export type RendererChannel =
   | "toast";
 export type SendToRenderer = (channel: RendererChannel, data: unknown) => void;
 
-export const SERVER_PORT = 30001;
+export const DEFAULT_SERVER_PORT = 30003;
+const MAX_SERVER_PORT = 65535;
+const API_HOSTNAME = "localhost";
+
 const CONFIG_FILE = path.join(app.getPath("userData"), "picaptain_config.json");
 
-const DEFAULT_STORAGE_DIR = path.join(app.getPath("userData"), "picaptain_storage");
+const DEFAULT_STORAGE_DIR = path.join(
+  app.getPath("userData"),
+  "picaptain_storage",
+);
 
 const loadStorageRoot = async (): Promise<string> => {
   // 1. Try reading from config file in userData
@@ -53,7 +57,7 @@ const loadStorageRoot = async (): Promise<string> => {
     try {
       const exeDir = path.dirname(app.getPath("exe"));
       const portableDataDir = path.join(exeDir, "data");
-      
+
       // If it already exists, use it
       if (await lockedFs.pathExists(portableDataDir)) {
         return portableDataDir;
@@ -140,17 +144,22 @@ const readSettings = async (): Promise<Record<string, unknown>> => {
   });
 };
 
-const persistSettings = debounce({ delay: 500 }, async (settings: Record<string, unknown>) => {
-  await withFileLock(SETTINGS_FILE, async () => {
-    try {
-      await fs.writeJson(SETTINGS_FILE, settings);
-    } catch (error) {
-      console.error("Failed to write settings file", error);
-    }
-  });
-});
+const persistSettings = debounce(
+  { delay: 500 },
+  async (settings: Record<string, unknown>) => {
+    await withFileLock(SETTINGS_FILE, async () => {
+      try {
+        await fs.writeJson(SETTINGS_FILE, settings);
+      } catch (error) {
+        console.error("Failed to write settings file", error);
+      }
+    });
+  },
+);
 
-const writeSettings = async (settings: Record<string, unknown>): Promise<void> => {
+const writeSettings = async (
+  settings: Record<string, unknown>,
+): Promise<void> => {
   settingsCache = settings;
   persistSettings(settings);
 };
@@ -251,7 +260,10 @@ class BasePythonService {
       for (const line of lines) {
         const normalized = line.trim();
         const lower = normalized.toLowerCase();
-        const cleaned = normalized.replace(/^\[(info|warn|warning|error)\]\s*/i, "");
+        const cleaned = normalized.replace(
+          /^\[(info|warn|warning|error)\]\s*/i,
+          "",
+        );
         const cleanedWarning = cleaned.replace(/^warning:\s*/i, "");
 
         const isInfo =
@@ -298,7 +310,7 @@ class BasePythonService {
   protected spawnProcess(
     command: string,
     args: string[],
-    cwd: string
+    cwd: string,
   ): ChildProcess {
     const env = {
       ...process.env,
@@ -449,7 +461,7 @@ class PythonVectorService extends BasePythonService {
             }
           });
         }
-        
+
         proc.stderr?.on("data", (data: Buffer) => {
           console.log("[Python Download]", data.toString());
         });
@@ -478,7 +490,7 @@ class PythonVectorService extends BasePythonService {
 
   async run(
     mode: "encode-image" | "encode-text",
-    arg: string
+    arg: string,
   ): Promise<number[] | null> {
     const raw = await this.sendRequest({ mode, arg });
 
@@ -502,87 +514,184 @@ const mapModelDownloadProgress = (data: unknown): unknown => {
   const d = data as Record<string, unknown>;
   const type = d.type;
   if (type === "error") {
-    return { type: "error", reason: typeof d.message === "string" ? d.message : String(d.message ?? "") };
+    return {
+      type: "error",
+      reason:
+        typeof d.message === "string" ? d.message : String(d.message ?? ""),
+    };
   }
   if (type === "weight-failed") {
     return {
       type: "weight-failed",
       filename: typeof d.filename === "string" ? d.filename : undefined,
-      reason: typeof d.message === "string" ? d.message : String(d.message ?? ""),
+      reason:
+        typeof d.message === "string" ? d.message : String(d.message ?? ""),
     };
   }
   if (type === "retry") {
     return {
       type: "retry",
       filename: typeof d.filename === "string" ? d.filename : undefined,
-      reason: typeof d.message === "string" ? d.message : String(d.message ?? ""),
+      reason:
+        typeof d.message === "string" ? d.message : String(d.message ?? ""),
       attempt: typeof d.attempt === "number" ? d.attempt : undefined,
-      nextWaitSeconds: typeof d.nextWaitSeconds === "number" ? d.nextWaitSeconds : undefined,
+      nextWaitSeconds:
+        typeof d.nextWaitSeconds === "number" ? d.nextWaitSeconds : undefined,
     };
   }
   return data;
 };
 
 function downloadImage(url: string, dest: string): Promise<void> {
-  return withFileLock(dest, () => new Promise((resolve, reject) => {
-    if (url.startsWith("file://") || url.startsWith("/")) {
-      let srcPath = url;
-      if (url.startsWith("file://")) {
-        srcPath = new URL(url).pathname;
-        if (
-          process.platform === "win32" &&
-          srcPath.startsWith("/") &&
-          srcPath.includes(":")
-        ) {
-          srcPath = srcPath.substring(1);
-        }
+  const REQUEST_TIMEOUT_MS = 15000;
+  const MAX_RETRY_ATTEMPTS = 3;
+
+  const copyFromLocalPath = async (targetUrl: string): Promise<void> => {
+    let srcPath = targetUrl;
+    if (targetUrl.startsWith("file://")) {
+      srcPath = new URL(targetUrl).pathname;
+      if (
+        process.platform === "win32" &&
+        srcPath.startsWith("/") &&
+        srcPath.includes(":")
+      ) {
+        srcPath = srcPath.substring(1);
       }
-
-      srcPath = decodeURIComponent(srcPath);
-
-      fs.copy(srcPath, dest)
-        .then(() => resolve())
-        .catch((err) => {
-          fs.unlink(dest, () => {});
-          reject(err);
-        });
-      return;
     }
+    await fs.copy(decodeURIComponent(srcPath), dest);
+  };
 
-    const file = fs.createWriteStream(dest);
-    const client = url.startsWith("https") ? https : http;
+  const isRetryableDownloadError = (error: Error): boolean => {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (
+      code === "ECONNRESET" ||
+      code === "ETIMEDOUT" ||
+      code === "ECONNABORTED" ||
+      code === "EAI_AGAIN" ||
+      code === "EPIPE" ||
+      code === "ENETUNREACH"
+    ) {
+      return true;
+    }
+    return /socket hang up|timeout|network/i.test(error.message);
+  };
 
-    const request = client.get(url, (response) => {
-      if (response.statusCode === 200) {
-        response.pipe(file);
-        file.on("finish", () => {
-          file.close();
-          resolve();
-        });
-      } else {
-        file.close();
-        fs.unlink(dest, () => {});
-        reject(
-          new Error(
-            `Server responded with ${response.statusCode}: ${response.statusMessage}`
-          )
+  const requestRemoteOnce = async (targetUrl: string): Promise<void> => {
+    const referer = (() => {
+      try {
+        return new URL(targetUrl).origin;
+      } catch {
+        return "";
+      }
+    })();
+
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => {
+      abortController.abort();
+    }, REQUEST_TIMEOUT_MS);
+
+    try {
+      const response = await net.fetch(targetUrl, {
+        method: "GET",
+        redirect: "follow",
+        signal: abortController.signal,
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 LookBack/1.0",
+          Accept:
+            "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9",
+          ...(referer ? { Referer: `${referer}/` } : {}),
+          Connection: "close",
+        },
+      });
+      if (!response.ok) {
+        throw new Error(
+          `Server responded with ${response.status}: ${response.statusText}`,
         );
       }
-    });
 
-    request.on("error", (err) => {
-      fs.unlink(dest, () => {});
-      reject(err);
-    });
+      const buffer = Buffer.from(await response.arrayBuffer());
+      await fs.writeFile(dest, buffer);
+    } catch (error) {
+      await fs.remove(dest).catch(() => undefined);
+      if (
+        error instanceof Error &&
+        (error.name === "AbortError" || /aborted/i.test(error.message))
+      ) {
+        throw new Error("Download timeout");
+      }
+      throw error instanceof Error ? error : new Error(String(error));
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
 
-    file.on("error", (err) => {
-      fs.unlink(dest, () => {});
-      reject(err);
-    });
-  }));
+  const requestRemote = async (targetUrl: string): Promise<void> => {
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt += 1) {
+      try {
+        await requestRemoteOnce(targetUrl);
+        return;
+      } catch (error) {
+        const normalized =
+          error instanceof Error ? error : new Error(String(error));
+        lastError = normalized;
+        const shouldRetry =
+          attempt < MAX_RETRY_ATTEMPTS &&
+          isRetryableDownloadError(normalized);
+        if (!shouldRetry) {
+          break;
+        }
+        await new Promise((resolve) => {
+          setTimeout(resolve, attempt * 250);
+        });
+      }
+    }
+
+    throw lastError ?? new Error("Download failed");
+  };
+
+  return withFileLock(dest, async () => {
+    if (url.startsWith("file://") || url.startsWith("/")) {
+      await copyFromLocalPath(url);
+      return;
+    }
+    await requestRemote(url);
+  });
 }
 
-export async function startServer(sendToRenderer?: SendToRenderer) {
+const listenOnAvailablePort = (
+  appServer: express.Express,
+  startPort: number,
+): Promise<number> =>
+  new Promise((resolve, reject) => {
+    const tryListen = (port: number) => {
+      if (port > MAX_SERVER_PORT) {
+        reject(new Error("No available localhost port for local server"));
+        return;
+      }
+
+      const httpServer = appServer.listen(port, API_HOSTNAME, () => {
+        resolve(port);
+      });
+
+      httpServer.once("error", (error: NodeJS.ErrnoException) => {
+        if (error.code === "EADDRINUSE") {
+          tryListen(port + 1);
+          return;
+        }
+        reject(error);
+      });
+    };
+
+    tryListen(startPort);
+  });
+
+export async function startServer(
+  sendToRenderer?: SendToRenderer,
+): Promise<number> {
   await initializeStorage();
   const server = express();
   server.use(cors());
@@ -594,7 +703,7 @@ export async function startServer(sendToRenderer?: SendToRenderer) {
 
   const runPythonVector = async (
     mode: "encode-image" | "encode-text",
-    arg: string
+    arg: string,
   ) => {
     return vectorService.run(mode, arg);
   };
@@ -609,10 +718,7 @@ export async function startServer(sendToRenderer?: SendToRenderer) {
 
   const sendRenderer = sendToRenderer;
 
-  const logErrorToFile = async (
-    error: unknown,
-    req?: express.Request
-  ) => {
+  const logErrorToFile = async (error: unknown, req?: express.Request) => {
     const message = error instanceof Error ? error.message : String(error);
     const stack = error instanceof Error ? error.stack : undefined;
     const payload = {
@@ -647,7 +753,7 @@ export async function startServer(sendToRenderer?: SendToRenderer) {
           onProgress(mapModelDownloadProgress(data));
         }),
       sendToRenderer: sendRenderer,
-    })
+    }),
   );
   server.use(
     createTagsRouter({
@@ -655,7 +761,7 @@ export async function startServer(sendToRenderer?: SendToRenderer) {
       getIncompatibleError: () => incompatibleError,
       readSettings,
       writeSettings,
-    })
+    }),
   );
   server.use(
     createImagesRouter({
@@ -670,7 +776,7 @@ export async function startServer(sendToRenderer?: SendToRenderer) {
       runPythonTone,
       downloadImage,
       sendToRenderer: sendRenderer,
-    })
+    }),
   );
 
   server.use("/images", express.static(STORAGE_DIR));
@@ -680,18 +786,17 @@ export async function startServer(sendToRenderer?: SendToRenderer) {
       err: unknown,
       req: express.Request,
       res: express.Response,
-      _next: express.NextFunction
+      _next: express.NextFunction,
     ) => {
       const message = err instanceof Error ? err.message : String(err);
       void _next;
       void logErrorToFile(err, req);
       res.status(500).json({ error: "Unexpected error", details: message });
-    }
+    },
   );
 
-  server.listen(SERVER_PORT, () => {
-    console.log(`Local server running on port ${SERVER_PORT}`);
-  });
+  const port = await listenOnAvailablePort(server, DEFAULT_SERVER_PORT);
+  console.log(`Local server running at http://${API_HOSTNAME}:${port}`);
 
-  return;
+  return port;
 }

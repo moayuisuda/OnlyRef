@@ -15,7 +15,7 @@ import {
   indexingActions,
   indexingState,
 } from "../store/globalStore";
-import { state as galleryState } from "../store/galleryStore";
+import { actions as galleryActions, state as galleryState } from "../store/galleryStore";
 import { indexImages } from "../service";
 import { useClickOutside } from "../hooks/useClickOutside";
 import { ToggleSwitch } from "./ToggleSwitch";
@@ -93,12 +93,13 @@ export const TitleBar: React.FC = () => {
   const snap = useSnapshot(globalState);
   const gallerySnap = useSnapshot(galleryState);
   const indexingSnap = useSnapshot(indexingState);
-  const { t } = useT();
+  const { t, locale, setLocale } = useT();
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [storageDir, setStorageDir] = useState("");
   const [loadingStorageDir, setLoadingStorageDir] = useState(false);
   const [isIndexing, setIsIndexing] = useState(false);
+  const indexingResetTimerRef = useRef<number | null>(null);
 
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const settingsPanelRef = useRef<HTMLDivElement>(null);
@@ -135,16 +136,31 @@ export const TitleBar: React.FC = () => {
   useEffect(() => {
     if (!settingsOpen || !window.electron?.getStorageDir) return;
 
+    let cancelled = false;
     setLoadingStorageDir(true);
     void window.electron
       .getStorageDir()
-      .then((dir) => setStorageDir(dir))
-      .finally(() => setLoadingStorageDir(false));
+      .then((dir) => {
+        if (cancelled) return;
+        setStorageDir(dir);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setLoadingStorageDir(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [settingsOpen]);
 
-  const handleToggleVectorSearch = (enabled: boolean) => {
-    globalActions.setEnableVectorSearch(enabled);
-  };
+  useEffect(() => {
+    return () => {
+      if (indexingResetTimerRef.current !== null) {
+        window.clearTimeout(indexingResetTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleChooseStorageDir = async () => {
     if (!window.electron?.chooseStorageDir) return;
@@ -155,6 +171,10 @@ export const TitleBar: React.FC = () => {
   };
 
   const handleIndexMissingImages = async () => {
+    if (indexingResetTimerRef.current !== null) {
+      window.clearTimeout(indexingResetTimerRef.current);
+      indexingResetTimerRef.current = null;
+    }
     setIsIndexing(true);
     indexingActions.update({
       isIndexing: true,
@@ -199,8 +219,9 @@ export const TitleBar: React.FC = () => {
       globalActions.pushToast({ key: "toast.indexFailed" }, "error");
     } finally {
       setIsIndexing(false);
-      window.setTimeout(() => {
+      indexingResetTimerRef.current = window.setTimeout(() => {
         indexingActions.reset();
+        indexingResetTimerRef.current = null;
       }, 800);
     }
   };
@@ -219,14 +240,17 @@ export const TitleBar: React.FC = () => {
       : null;
 
   const imageCount = gallerySnap.images.length;
-  const imageCountLabel = `${imageCount} ${imageCount === 1 ? "image" : "images"}`;
+  const imageCountLabel = t(
+    imageCount === 1 ? "settings.imageCount.one" : "settings.imageCount.other",
+    { count: imageCount },
+  );
 
   const statusMeta = indexingSnap.isIndexing
     ? {
-        title: progressText ?? "Preparing library update",
+        title: progressText ?? t("settings.status.indexingTitleFallback"),
         detail:
           indexingSnap.filename ||
-          "Refreshing your local reference library and metadata.",
+          t("settings.status.indexingDetailFallback"),
         percent:
           indexingSnap.total > 0
             ? Math.round((indexingSnap.current / indexingSnap.total) * 100)
@@ -236,9 +260,9 @@ export const TitleBar: React.FC = () => {
           title: imageCountLabel,
           detail: snap.enableVectorSearch
             ? snap.llmSettings.enabled
-              ? "Semantic search and query translation are active."
-              : "Semantic search is active for your local library."
-            : "Search, color filtering, and local library management are ready.",
+              ? t("settings.status.ready.semanticAndTranslation")
+              : t("settings.status.ready.semantic")
+            : t("settings.status.ready.basic"),
           percent: 100,
         };
 
@@ -271,7 +295,7 @@ export const TitleBar: React.FC = () => {
               iconButtonClass,
               settingsOpen && "bg-white/[0.08] text-[var(--color-primary)]",
             )}
-            title="Open settings"
+            title={t("settings.open")}
             onClick={() => setSettingsOpen((open) => !open)}
           >
             <Settings size={14} />
@@ -280,7 +304,7 @@ export const TitleBar: React.FC = () => {
           <button
             type="button"
             className={windowButtonClass}
-            title="Minimize"
+            title={t("titleBar.minimize")}
             onClick={() => window.electron?.min()}
           >
             <Minus size={14} />
@@ -288,7 +312,7 @@ export const TitleBar: React.FC = () => {
           <button
             type="button"
             className={windowButtonClass}
-            title="Maximize"
+            title={t("titleBar.maximize")}
             onClick={() => window.electron?.max()}
           >
             <Square size={12} />
@@ -296,7 +320,7 @@ export const TitleBar: React.FC = () => {
           <button
             type="button"
             className={clsx(windowButtonClass, "hover:bg-red-500/14 hover:text-red-200")}
-            title="Close"
+            title={t("common.close")}
             onClick={() => window.electron?.close()}
           >
             <X size={14} />
@@ -310,7 +334,7 @@ export const TitleBar: React.FC = () => {
           className="no-drag absolute right-3 top-[calc(100%+0.5rem)] z-40 w-[360px] rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(20,20,20,0.97),rgba(10,10,10,0.97))] p-3 shadow-[0_20px_50px_rgba(0,0,0,0.45)] backdrop-blur-xl"
         >
           <div className="mb-2 flex items-center justify-between">
-            <div className="text-sm font-semibold text-white">Settings</div>
+            <div className="text-sm font-semibold text-white">{t("titleBar.settings")}</div>
             <div className="text-[11px] text-neutral-500">{imageCountLabel}</div>
           </div>
 
@@ -318,9 +342,11 @@ export const TitleBar: React.FC = () => {
             <div className="border-b border-white/6 px-3 py-3">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="text-xs font-medium text-neutral-200">Storage folder</div>
+                  <div className="text-xs font-medium text-neutral-200">
+                    {t("settings.storageFolder")}
+                  </div>
                   <div className="mt-1 break-all text-[11px] leading-5 text-neutral-500">
-                    {loadingStorageDir ? t("common.loading") : storageDir || "Unavailable"}
+                    {loadingStorageDir ? t("common.loading") : storageDir || t("common.unavailable")}
                   </div>
                 </div>
                 <button
@@ -329,7 +355,7 @@ export const TitleBar: React.FC = () => {
                   onClick={handleChooseStorageDir}
                 >
                   <FolderOpen size={12} />
-                  Change
+                  {t("titleBar.change")}
                 </button>
               </div>
             </div>
@@ -337,58 +363,78 @@ export const TitleBar: React.FC = () => {
             <div className="border-b border-white/6 px-3 py-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <div className="text-xs font-medium text-neutral-200">Semantic search</div>
+                  <div className="text-xs font-medium text-neutral-200">{t("common.language")}</div>
                   <div className="mt-1 text-[11px] text-neutral-500">
-                    {snap.enableVectorSearch ? "Enabled" : "Disabled"}
+                    {locale === "en" ? t("common.language.en") : t("common.language.zh")}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] p-1">
+                  <button
+                    type="button"
+                    className={clsx(
+                      "rounded-md px-2 py-1 text-xs transition-colors",
+                      locale === "en"
+                        ? "bg-[var(--color-primary)] text-black"
+                        : "text-neutral-300 hover:bg-white/[0.08]",
+                    )}
+                    onClick={() => setLocale("en")}
+                  >
+                    {t("common.language.en")}
+                  </button>
+                  <button
+                    type="button"
+                    className={clsx(
+                      "rounded-md px-2 py-1 text-xs transition-colors",
+                      locale === "zh"
+                        ? "bg-[var(--color-primary)] text-black"
+                        : "text-neutral-300 hover:bg-white/[0.08]",
+                    )}
+                    onClick={() => setLocale("zh")}
+                  >
+                    {t("common.language.zh")}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="border-b border-white/6 px-3 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-medium text-neutral-200">
+                    {t("settings.queryTranslation")}
+                  </div>
+                  <div className="mt-1 text-[11px] text-neutral-500">
+                    {t("settings.queryTranslation.desc")}
                   </div>
                 </div>
                 <ToggleSwitch
-                  checked={snap.enableVectorSearch}
-                  onToggle={() => {
-                    void handleToggleVectorSearch(!snap.enableVectorSearch);
-                  }}
+                  checked={snap.llmSettings.enabled}
+                  onToggle={() =>
+                    globalActions.setLlmSettings({
+                      enabled: !snap.llmSettings.enabled,
+                    })
+                  }
                 />
               </div>
 
-              {snap.enableVectorSearch && (
-                <div className="mt-3 border-t border-white/6 pt-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-xs font-medium text-neutral-200">Query translation</div>
-                      <div className="mt-1 text-[11px] text-neutral-500">
-                        LLM-assisted query rewrite
-                      </div>
-                    </div>
-                    <ToggleSwitch
-                      checked={snap.llmSettings.enabled}
-                      onToggle={() =>
-                        globalActions.setLlmSettings({
-                          enabled: !snap.llmSettings.enabled,
-                        })
-                      }
-                    />
-                  </div>
-
-                  {snap.llmSettings.enabled && (
-                    <div className="mt-3 space-y-2">
-                      <SettingInput
-                        value={snap.llmSettings.baseUrl}
-                        placeholder="Base URL"
-                        onChange={(value) => globalActions.setLlmSettings({ baseUrl: value })}
-                      />
-                      <SettingInput
-                        value={snap.llmSettings.key}
-                        placeholder="API key"
-                        type="password"
-                        onChange={(value) => globalActions.setLlmSettings({ key: value })}
-                      />
-                      <SettingInput
-                        value={snap.llmSettings.model}
-                        placeholder="Model"
-                        onChange={(value) => globalActions.setLlmSettings({ model: value })}
-                      />
-                    </div>
-                  )}
+              {snap.llmSettings.enabled && (
+                <div className="mt-3 space-y-2">
+                  <SettingInput
+                    value={snap.llmSettings.baseUrl}
+                    placeholder={t("settings.llm.baseUrl")}
+                    onChange={(value) => globalActions.setLlmSettings({ baseUrl: value })}
+                  />
+                  <SettingInput
+                    value={snap.llmSettings.key}
+                    placeholder={t("settings.llm.key")}
+                    type="password"
+                    onChange={(value) => globalActions.setLlmSettings({ key: value })}
+                  />
+                  <SettingInput
+                    value={snap.llmSettings.model}
+                    placeholder={t("settings.llm.model")}
+                    onChange={(value) => globalActions.setLlmSettings({ model: value })}
+                  />
                 </div>
               )}
             </div>
@@ -396,7 +442,9 @@ export const TitleBar: React.FC = () => {
             <div className="border-b border-white/6 px-3 py-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="truncate text-xs font-medium text-neutral-200">Indexing</div>
+                  <div className="truncate text-xs font-medium text-neutral-200">
+                    {t("settings.indexing")}
+                  </div>
                   <div className="mt-1 truncate text-[11px] text-neutral-500">
                     {statusMeta.title}
                   </div>
@@ -413,16 +461,16 @@ export const TitleBar: React.FC = () => {
                       isIndexing && "animate-pulse",
                     )}
                   />
-                  {isIndexing ? "Running" : "Run"}
+                  {isIndexing ? t("settings.running") : t("settings.run")}
                 </button>
               </div>
 
-              {(indexingSnap.isIndexing || modelSnap.isDownloading) && (
+              {indexingSnap.isIndexing && (
                 <div className="mt-3 flex items-center gap-2">
                   <div className="min-w-0 flex-1">
                     <ProgressBar
                       value={statusMeta.percent}
-                      active={indexingSnap.isIndexing || modelSnap.isDownloading}
+                      active={indexingSnap.isIndexing}
                     />
                   </div>
                   <div className="text-[11px] text-neutral-500">{statusMeta.percent}%</div>
@@ -431,7 +479,9 @@ export const TitleBar: React.FC = () => {
             </div>
 
             <div className="px-3 py-3">
-              <div className="mb-2 text-xs font-medium text-neutral-200">Toggle window shortcut</div>
+              <div className="mb-2 text-xs font-medium text-neutral-200">
+                {t("settings.toggleWindowShortcut")}
+              </div>
               <ShortcutInput
                 value={snap.toggleWindowShortcut}
                 onChange={(value) => {

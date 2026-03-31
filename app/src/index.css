@@ -41,6 +41,35 @@ body {
     @apply text-white overflow-hidden;
 }
 
+html {
+  scrollbar-color: rgba(115, 115, 115, 0.9) rgba(23, 23, 23, 0.88);
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: rgba(23, 23, 23, 0.88);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(115, 115, 115, 0.95), rgba(82, 82, 82, 0.95));
+  border: 2px solid rgba(23, 23, 23, 0.88);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(163, 163, 163, 0.95), rgba(115, 115, 115, 0.95));
+}
+
+*::-webkit-scrollbar-corner {
+  background: rgba(23, 23, 23, 0.88);
+}
+
 /* 隐藏滚动条但保留功能 */
 .scrollbar-hide::-webkit-scrollbar {
     display: none;

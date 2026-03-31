@@ -22,10 +22,11 @@ interface TagProps extends React.HTMLAttributes<HTMLDivElement> {
   size?: "sm" | "md";
   isEdit?: boolean;
   showColor?: boolean;
+  showEditActions?: boolean;
   onRemove?: () => void;
 }
 
-const TagColorDot: React.FC<{
+export const TagColorDot: React.FC<{
   tag: string;
   color?: string;
   className?: string;
@@ -41,7 +42,7 @@ const TagColorDot: React.FC<{
       type="button"
       className={`${
         size === "sm" ? "w-2.5 h-2.5" : "w-3.5 h-3.5"
-      } border rounded-full cursor-pointer shrink-0 ${className || ""}`}
+      } inline-flex items-center justify-center self-center p-0 border rounded-full cursor-pointer shrink-0 align-middle ${className || ""}`}
       style={{
         backgroundColor: displayColor,
       }}
@@ -72,6 +73,7 @@ export const Tag: React.FC<TagProps> = ({
   size = "sm",
   isEdit = false,
   showColor = true,
+  showEditActions = false,
   onRemove,
   onClick,
   className,
@@ -79,6 +81,7 @@ export const Tag: React.FC<TagProps> = ({
   ...props
 }) => {
   const snap = useSnapshot(globalState);
+  const { t } = useT();
   const rawColor = snap.tagColors[tag];
   const normalized = typeof rawColor === "string" ? rawColor.trim() : "";
   const displayColor = normalized.length > 0 ? normalized : THEME.primary;
@@ -91,11 +94,14 @@ export const Tag: React.FC<TagProps> = ({
   // Styles
   const baseClasses =
     "relative rounded transition-colors flex items-center group/tag whitespace-nowrap";
-  const sizeClasses = size === "sm" ? "text-[10px] px-1" : "text-xs px-2 py-1";
+  const sizeClasses =
+    size === "sm"
+      ? "text-[10px] px-1 min-h-4"
+      : "h-6 text-xs px-2";
 
   const interactiveClasses = onClick ? "cursor-pointer hover:text-white" : "";
   const editClasses = isEdit
-    ? "group hover:bg-red-900/20 hover:text-red-200"
+    ? "group"
     : "";
 
   return (
@@ -110,6 +116,9 @@ export const Tag: React.FC<TagProps> = ({
         ...style,
       }}
       onClick={(e) => {
+        if (!onClick) {
+          return;
+        }
         e.stopPropagation();
         onClick?.(e);
       }}
@@ -132,19 +141,23 @@ export const Tag: React.FC<TagProps> = ({
 
       {/* Remove Button & Color Indicator (Edit mode) */}
       {isEdit && (
-        <div className="w-0 overflow-hidden group-hover:w-auto flex items-center transition-all duration-200">
+        <div
+          className={`flex items-center overflow-hidden transition-all duration-200 ${
+            showEditActions ? "ml-1.5 w-auto opacity-100" : "ml-0 w-0 opacity-0"
+          }`}
+        >
           {shouldShowColorDot && (
             <TagColorDot
               tag={tag}
               color={rawColor}
-              className="opacity-0 group-hover:opacity-100 transition-opacity mx-1"
+              className="mx-1"
               size={size}
             />
           )}
           {onRemove && (
             <button
               type="button"
-              className="mr-1 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-transparent text-current opacity-0 transition-all group-hover:opacity-100 hover:border-red-700 hover:bg-red-950/80 hover:text-red-200"
+              className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-red-700/80 bg-red-950/75 text-red-200"
               title={t("common.delete")}
               aria-label={t("common.delete")}
               onPointerDown={(e) => {

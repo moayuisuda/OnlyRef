@@ -8,7 +8,12 @@ import { debounce } from "radash";
 import { Tag } from "./Tag";
 import { THEME } from "../theme";
 import { SortableGalleryItem } from "./gallery/GalleryItem";
-import { importFiles, scanDroppedItems } from "../utils/import";
+import { extractDroppedImageUrl } from "../utils/droppedImageUrl";
+import {
+  importFiles,
+  importImageUrl,
+  scanDroppedItems,
+} from "../utils/import";
 import { indexImages, localApi, updateImage, moveGalleryOrder } from "../service";
 import {
   DndContext,
@@ -333,6 +338,30 @@ export const Gallery: React.FC = () => {
 
   const closeContextMenu = () => setContextMenu(null);
 
+  const updateContextMenuImage = useCallback(
+    (imageId: string, nextImage: ImageMeta) => {
+      setContextMenu((current) => {
+        if (!current || current.image.id !== imageId) {
+          return current;
+        }
+        return {
+          ...current,
+          image: nextImage,
+        };
+      });
+    },
+    []
+  );
+
+  const closeContextMenuIfMatch = useCallback((imageId: string) => {
+    setContextMenu((current) => {
+      if (!current || current.image.id !== imageId) {
+        return current;
+      }
+      return null;
+    });
+  }, []);
+
   const handleUpdateDominantColor = useCallback(
     async (image: ImageMeta, dominantColor: string | null) => {
       try {
@@ -342,13 +371,12 @@ export const Gallery: React.FC = () => {
         );
         if (data && data.meta) {
           actions.updateImage(image.id, data.meta);
+          updateContextMenuImage(image.id, data.meta);
         } else {
           actions.updateImage(image.id, { dominantColor });
-        }
-        if (contextMenu && contextMenu.image.id === image.id) {
-          setContextMenu({
-            ...contextMenu,
-            image: { ...contextMenu.image, dominantColor },
+          updateContextMenuImage(image.id, {
+            ...image,
+            dominantColor,
           });
         }
       } catch (e) {
@@ -359,7 +387,7 @@ export const Gallery: React.FC = () => {
         );
       }
     },
-    [contextMenu]
+    [updateContextMenuImage]
   );
 
   const debouncedUpdateDominantColor = useMemo(
@@ -383,35 +411,33 @@ export const Gallery: React.FC = () => {
   const handleUpdateName = async (image: ImageMeta, name: string) => {
     const newMeta = await actions.requestUpdateImageName(image, name);
     if (newMeta) {
-      if (contextMenu && contextMenu.image.id === image.id) {
-        setContextMenu({
-          ...contextMenu,
-          image: newMeta,
-        });
-      }
+      updateContextMenuImage(image.id, newMeta);
     }
   };
 
   const handleDelete = async () => {
     if (!contextMenu) return;
-    const success = await actions.requestDeleteImage(contextMenu.image);
+    const targetImage = contextMenu.image;
+    const success = await actions.requestDeleteImage(targetImage);
     if (success) {
-      closeContextMenu();
+      closeContextMenuIfMatch(targetImage.id);
     }
   };
 
   const handleReindex = async () => {
     if (!contextMenu) return;
+    const targetImage = contextMenu.image;
     try {
       const data = await indexImages<{
         success?: boolean;
         meta?: ImageMeta;
       }>({
-        imageId: contextMenu.image.id,
+        imageId: targetImage.id,
       });
 
       if (data && data.success && data.meta) {
-        actions.updateImage(contextMenu.image.id, data.meta);
+        actions.updateImage(targetImage.id, data.meta);
+        updateContextMenuImage(targetImage.id, data.meta);
         globalActions.pushToast({ key: "toast.vectorIndexed" }, "success");
       } else {
         globalActions.pushToast({ key: "toast.vectorIndexFailed" }, "error");
@@ -420,20 +446,21 @@ export const Gallery: React.FC = () => {
       console.error(e);
       globalActions.pushToast({ key: "toast.vectorIndexFailed" }, "error");
     }
-    closeContextMenu();
+    closeContextMenuIfMatch(targetImage.id);
   };
 
   const handleOpenFile = async () => {
     if (!contextMenu) return;
+    const targetImageId = contextMenu.image.id;
     try {
       await localApi<unknown>("/api/open-in-folder", {
-        id: contextMenu.image.id,
+        id: targetImageId,
       });
     } catch (e) {
       console.error(e);
       globalActions.pushToast({ key: "toast.openFileFailed" }, "error");
     }
-    closeContextMenu();
+    closeContextMenuIfMatch(targetImageId);
   };
 
   const handleImageClick = async (image: ImageMeta) => {
@@ -455,20 +482,13 @@ export const Gallery: React.FC = () => {
         });
         if (data && data.meta) {
           actions.updateImage(image.id, data.meta);
-          if (contextMenu && contextMenu.image.id === image.id) {
-            setContextMenu({
-              ...contextMenu,
-              image: data.meta,
-            });
-          }
+          updateContextMenuImage(image.id, data.meta);
         } else {
           actions.updateImage(image.id, { tags });
-          if (contextMenu && contextMenu.image.id === image.id) {
-            setContextMenu({
-              ...contextMenu,
-              image: { ...image, tags },
-            });
-          }
+          updateContextMenuImage(image.id, {
+            ...image,
+            tags,
+          });
         }
         void actions.loadTags();
       } catch (e) {
@@ -476,7 +496,7 @@ export const Gallery: React.FC = () => {
         globalActions.pushToast({ key: "toast.updateTagsFailed" }, "error");
       }
     },
-    [contextMenu]
+    [updateContextMenuImage]
   );
 
   const handleAddTag = async (image: ImageMeta, tag: string) => {
@@ -502,9 +522,26 @@ export const Gallery: React.FC = () => {
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const files = await scanDroppedItems(e.dataTransfer);
-    if (files.length > 0) {
-      await importFiles(files);
+    try {
+      let files = await scanDroppedItems(e.dataTransfer);
+      if (files.length === 0) {
+        files = Array.from(e.dataTransfer.files || []);
+      }
+
+      if (files.length > 0) {
+        await importFiles(files);
+        return;
+      }
+
+      const imageUrl = extractDroppedImageUrl(e.dataTransfer);
+      if (!imageUrl) {
+        return;
+      }
+
+      await importImageUrl(imageUrl);
+    } catch (error) {
+      console.error("Error importing dropped image", error);
+      globalActions.pushToast({ key: "toast.importImageFailed" }, "error");
     }
   };
 
@@ -639,6 +676,7 @@ export const Gallery: React.FC = () => {
             onMouseDown={() => setTagColorPicker(null)}
           />
           <div
+            data-tag-color-picker="true"
             className="fixed z-[61] w-62 bg-neutral-900/95 border border-neutral-700/80 rounded-xl shadow-2xl p-3 backdrop-blur"
             style={{
               top: tagColorPicker.y,

@@ -1,8 +1,9 @@
-import React, { useState, useRef } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Input from "rc-input";
 import { Search, X } from "lucide-react";
 import { useSnapshot } from "valtio";
 import { SortableContext, rectSortingStrategy } from "@dnd-kit/sortable";
+import { debounce } from "radash";
 import { Tag } from "../Tag";
 import { SortableTag } from "./SortableTag";
 import { ColorInput } from "./ColorInput";
@@ -87,8 +88,27 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
   const { t } = useT();
 
   const [showLoading, setShowLoading] = useState(false);
+  const [searchDraft, setSearchDraft] = useState(snap.searchQuery);
 
-  React.useEffect(() => {
+  const debouncedSetSearchQuery = useMemo(
+    () =>
+      debounce({ delay: 240 }, (nextQuery: string) => {
+        actions.setSearchQuery(nextQuery);
+      }),
+    [],
+  );
+
+  useEffect(() => {
+    setSearchDraft(snap.searchQuery);
+  }, [snap.searchQuery]);
+
+  useEffect(() => {
+    return () => {
+      debouncedSetSearchQuery.cancel();
+    };
+  }, [debouncedSetSearchQuery]);
+
+  useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
     if (loading) {
       timer = setTimeout(() => {
@@ -115,7 +135,7 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
     try {
       await renameTag(oldTag, newTag);
 
-      const nextImages = snap.images.map((img) => {
+      const nextImages = state.images.map((img) => {
         if (img.tags && img.tags.includes(oldTag)) {
           const nextTags = img.tags.map((t) => (t === oldTag ? newTag : t));
           const uniqueTags = Array.from(new Set(nextTags));
@@ -125,22 +145,22 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
       });
       actions.setImages(nextImages as ImageMeta[]);
 
-      if (snap.searchTags.includes(oldTag)) {
-        const nextSearchTags = snap.searchTags.map((t) =>
+      if (state.searchTags.includes(oldTag)) {
+        const nextSearchTags = state.searchTags.map((t) =>
           t === oldTag ? newTag : t
         );
         actions.setSearchTags(nextSearchTags);
       }
 
-      if (snap.tagSortOrder && snap.tagSortOrder.includes(oldTag)) {
-        const nextOrder = snap.tagSortOrder.map((t) =>
+      if (state.tagSortOrder && state.tagSortOrder.includes(oldTag)) {
+        const nextOrder = state.tagSortOrder.map((t) =>
           t === oldTag ? newTag : t
         );
         actions.setTagSortOrder(nextOrder);
       }
 
-      if (Object.prototype.hasOwnProperty.call(appSnap.tagColors, oldTag)) {
-        const color = appSnap.tagColors[oldTag];
+      if (Object.prototype.hasOwnProperty.call(globalState.tagColors, oldTag)) {
+        const color = globalState.tagColors[oldTag];
         globalActions.clearTagColor(oldTag);
         globalActions.setTagColor(newTag, color);
       }
@@ -157,23 +177,23 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
     try {
       await deleteTagService(tag);
 
-      const nextImages = snap.images.map((img) => ({
+      const nextImages = state.images.map((img) => ({
         ...img,
         tags: img.tags.filter((item) => item !== tag),
       }));
       actions.setImages(nextImages as ImageMeta[]);
 
-      if (snap.searchTags.includes(tag)) {
-        actions.setSearchTags(snap.searchTags.filter((item) => item !== tag));
+      if (state.searchTags.includes(tag)) {
+        actions.setSearchTags(state.searchTags.filter((item) => item !== tag));
       }
 
-      if (snap.tagSortOrder.includes(tag)) {
+      if (state.tagSortOrder.includes(tag)) {
         actions.setTagSortOrder(
-          snap.tagSortOrder.filter((item) => item !== tag)
+          state.tagSortOrder.filter((item) => item !== tag)
         );
       }
 
-      if (Object.prototype.hasOwnProperty.call(appSnap.tagColors, tag)) {
+      if (Object.prototype.hasOwnProperty.call(globalState.tagColors, tag)) {
         globalActions.clearTagColor(tag);
       }
 
@@ -214,14 +234,21 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
               <Input
                 placeholder={t("gallery.searchPlaceholder")}
                 className="flex-1 bg-transparent text-white text-sm outline-none min-w-[80px] placeholder-neutral-500"
-                value={snap.searchQuery}
+                value={searchDraft}
                 onChange={(e) => {
-                  actions.setSearchQuery(e.target.value);
+                  const nextQuery = e.target.value;
+                  setSearchDraft(nextQuery);
+                  debouncedSetSearchQuery(nextQuery);
                 }}
                 onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    debouncedSetSearchQuery.cancel();
+                    actions.setSearchQuery(searchDraft);
+                    return;
+                  }
                   if (
                     e.key === "Backspace" &&
-                    snap.searchQuery === "" &&
+                    searchDraft === "" &&
                     snap.searchTags.length > 0
                   ) {
                     const next = snap.searchTags.slice(0, -1);
@@ -297,6 +324,8 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
               <button
                 className="w-4 inline-flex items-center justify-center rounded hover:bg-neutral-700/70 text-neutral-400 hover:text-white transition-colors shrink-0"
                 onClick={() => {
+                  debouncedSetSearchQuery.cancel();
+                  setSearchDraft("");
                   actions.setSearchQuery("");
                   actions.setSearchTags([]);
                   actions.setSearchColor(null);

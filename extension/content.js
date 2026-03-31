@@ -1,6 +1,6 @@
 // OnlyRef Collector Content Script
 
-const API_PORT = 30001;
+const API_PORT = 30003;
 const API_BASE = `http://localhost:${API_PORT}/api`;
 
 const LOCAL_APP_PROBE_INTERVAL_MS = 5000;

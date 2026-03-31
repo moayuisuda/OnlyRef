@@ -9,7 +9,7 @@ import {
   updateImage,
   deleteImage,
 } from '../service';
-import { API_BASE_URL } from '../config';
+import { API_BASE_URL } from '../../config';
 import { globalActions, globalState, type LLMSettings } from './globalStore';
 import { translateToClipFriendly } from '../llmService';
 

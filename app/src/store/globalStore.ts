@@ -88,17 +88,15 @@ export interface GlobalState {
 }
 
 const DEFAULT_COLOR_SWATCHES = [
-  "#39c5bb",
-  "#3b82f6",
-  "#06b6d4",
-  "#22c55e",
-  "#eab308",
-  "#f97316",
   "#ef4444",
+  "#f97316",
+  "#eab308",
+  "#22c55e",
+  "#14b8a6",
+  "#06b6d4",
+  "#3b82f6",
+  "#8b5cf6",
   "#ec4899",
-  "#94a3b8",
-  "#ffffff",
-  "#0f172a",
 ] as const;
 
 const isMac =
@@ -135,7 +133,7 @@ export const globalState = proxy<GlobalState>({
   colorSwatches: [...DEFAULT_COLOR_SWATCHES],
   toasts: [],
   toggleWindowShortcut: DEFAULT_TOGGLE_WINDOW_SHORTCUT,
-  enableVectorSearch: false,
+  enableVectorSearch: true,
   llmSettings: {
     enabled: false,
     baseUrl: "",
@@ -164,11 +162,6 @@ export const globalActions = {
         "toggleWindowShortcut",
         DEFAULT_TOGGLE_WINDOW_SHORTCUT,
       );
-      const rawEnableVectorSearch = readSetting<unknown>(
-        settings,
-        "enableVectorSearch",
-        false,
-      );
       const rawLlmSettings = readSetting<unknown>(settings, "llmSettings", {});
 
       const nextTagColors: Record<string, string> = {};
@@ -178,17 +171,9 @@ export const globalActions = {
         }
       }
       globalState.tagColors = nextTagColors;
-
-      let swatches: string[] = [];
-      if (Array.isArray(rawColorSwatches)) {
-        swatches = rawColorSwatches
-          .filter(isHexColor)
-          .map((color) => normalizeHexColor(color));
-      }
-      globalState.colorSwatches =
-        swatches.length > 0
-          ? swatches.slice(0, DEFAULT_COLOR_SWATCHES.length)
-          : [...DEFAULT_COLOR_SWATCHES];
+      globalState.colorSwatches = Array.isArray(rawColorSwatches)
+        ? rawColorSwatches.filter(isHexColor).map((color) => normalizeHexColor(color))
+        : [...DEFAULT_COLOR_SWATCHES];
 
       if (
         typeof rawToggleWindowShortcut === "string" &&
@@ -197,9 +182,8 @@ export const globalActions = {
         globalState.toggleWindowShortcut = rawToggleWindowShortcut.trim();
       }
 
-      if (typeof rawEnableVectorSearch === "boolean") {
-        globalState.enableVectorSearch = rawEnableVectorSearch;
-      }
+      globalState.enableVectorSearch = true;
+      void settingStorage.set("enableVectorSearch", true);
 
       if (isRecord(rawLlmSettings)) {
         globalState.llmSettings = {
