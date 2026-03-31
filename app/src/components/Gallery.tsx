@@ -1,7 +1,19 @@
-import React, { useEffect, useMemo, useState, useRef, useCallback } from "react";
+import React, {
+  useEffect,
+  useMemo,
+  useState,
+  useRef,
+  useCallback,
+} from "react";
 import Masonry from "react-masonry-css";
 import { globalActions, globalState } from "../store/globalStore";
-import { state as galleryState, actions, type GallerySort, getImageUrl, type SearchResult } from "../store/galleryStore";
+import {
+  state as galleryState,
+  actions,
+  type GallerySort,
+  getImageUrl,
+  type SearchResult,
+} from "../store/galleryStore";
 import type { ImageMeta } from "../store/galleryStore";
 import { useSnapshot } from "valtio";
 import { debounce } from "radash";
@@ -9,7 +21,12 @@ import { Tag } from "./Tag";
 import { THEME } from "../theme";
 import { SortableGalleryItem } from "./gallery/GalleryItem";
 import { importDroppedData } from "../utils/import";
-import { indexImages, localApi, updateImage, moveGalleryOrder } from "../service";
+import {
+  indexImages,
+  localApi,
+  updateImage,
+  moveGalleryOrder,
+} from "../service";
 import {
   DndContext,
   closestCenter,
@@ -52,7 +69,7 @@ const GALLERY_LIMIT_DELTA = 6;
 const clampPopover = (x: number, y: number) => {
   const nextX = Math.min(
     Math.max(12, x),
-    window.innerWidth - POPOVER_WIDTH - 12
+    window.innerWidth - POPOVER_WIDTH - 12,
   );
   const nextY = Math.max(12, y);
   return { x: nextX, y: nextY };
@@ -160,7 +177,7 @@ export const Gallery: React.FC = () => {
     }),
     useSensor(KeyboardSensor, {
       coordinateGetter: sortableKeyboardCoordinates,
-    })
+    }),
   );
 
   useEffect(() => {
@@ -186,7 +203,7 @@ export const Gallery: React.FC = () => {
         const rows = Math.max(1, Math.ceil(height / GALLERY_ROW_HEIGHT));
         const newLimit = Math.max(
           GALLERY_LIMIT_MIN,
-          Math.round(rows * cols * GALLERY_LIMIT_BUFFER)
+          Math.round(rows * cols * GALLERY_LIMIT_BUFFER),
         );
         // Use direct state access to avoid dependency cycle in useEffect
         if (Math.abs(galleryState.limit - newLimit) > GALLERY_LIMIT_DELTA) {
@@ -204,7 +221,8 @@ export const Gallery: React.FC = () => {
 
   const debouncedReload = useMemo(
     () =>
-      debounce({ delay: 200 }, (nextLimit: number) => {
+      debounce({ delay: 400 }, (nextLimit: number) => {
+        console.log("11");
         actions.resetSearchResults();
         void loadImages(true, nextLimit);
       }),
@@ -214,9 +232,6 @@ export const Gallery: React.FC = () => {
   // Search conditions changed: Reset and load
   useEffect(() => {
     debouncedReload(snap.limit);
-    return () => {
-      debouncedReload.cancel();
-    };
   }, [
     snap.searchQuery,
     snap.searchTags,
@@ -229,7 +244,11 @@ export const Gallery: React.FC = () => {
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
-    if (scrollHeight - scrollTop - clientHeight < 500 && snap.hasMore && !snap.loading) {
+    if (
+      scrollHeight - scrollTop - clientHeight < 500 &&
+      snap.hasMore &&
+      !snap.loading
+    ) {
       void loadImages(false, snap.limit);
     }
   };
@@ -254,12 +273,8 @@ export const Gallery: React.FC = () => {
   }, [snap.tags, snap.tagSortOrder]);
 
   const sortedImages = useMemo(
-    () =>
-      sortImagesForGallery(
-        snap.images as ImageMeta[],
-        snap.gallerySort
-      ),
-    [snap.images, snap.gallerySort]
+    () => sortImagesForGallery(snap.images as ImageMeta[], snap.gallerySort),
+    [snap.images, snap.gallerySort],
   );
 
   const handleDragStart = (event: DragStartEvent) => {
@@ -345,7 +360,7 @@ export const Gallery: React.FC = () => {
         };
       });
     },
-    []
+    [],
   );
 
   const closeContextMenuIfMatch = useCallback((imageId: string) => {
@@ -362,7 +377,7 @@ export const Gallery: React.FC = () => {
       try {
         const data = await updateImage<{ success?: boolean; meta?: ImageMeta }>(
           image.id,
-          { dominantColor }
+          { dominantColor },
         );
         if (data && data.meta) {
           actions.updateImage(image.id, data.meta);
@@ -378,11 +393,11 @@ export const Gallery: React.FC = () => {
         console.error(e);
         globalActions.pushToast(
           { key: "toast.updateDominantColorFailed" },
-          "error"
+          "error",
         );
       }
     },
-    [updateContextMenuImage]
+    [updateContextMenuImage],
   );
 
   const debouncedUpdateDominantColor = useMemo(
@@ -394,7 +409,7 @@ export const Gallery: React.FC = () => {
         if (!image || image.id !== imageId) return;
         void handleUpdateDominantColor(image as ImageMeta, color);
       }),
-    [contextMenu, handleUpdateDominantColor]
+    [contextMenu, handleUpdateDominantColor],
   );
 
   useEffect(() => {
@@ -472,9 +487,12 @@ export const Gallery: React.FC = () => {
   const handleUpdateTags = useCallback(
     async (image: ImageMeta, tags: string[]) => {
       try {
-        const data = await updateImage<{ success?: boolean; meta?: ImageMeta }>(image.id, {
-          tags,
-        });
+        const data = await updateImage<{ success?: boolean; meta?: ImageMeta }>(
+          image.id,
+          {
+            tags,
+          },
+        );
         if (data && data.meta) {
           actions.updateImage(image.id, data.meta);
           updateContextMenuImage(image.id, data.meta);
@@ -491,7 +509,7 @@ export const Gallery: React.FC = () => {
         globalActions.pushToast({ key: "toast.updateTagsFailed" }, "error");
       }
     },
-    [updateContextMenuImage]
+    [updateContextMenuImage],
   );
 
   const handleAddTag = async (image: ImageMeta, tag: string) => {
@@ -538,7 +556,10 @@ export const Gallery: React.FC = () => {
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
       >
-        <GalleryHeader loading={snap.loading || snap.vectorLoading} allTags={allTags} />
+        <GalleryHeader
+          loading={snap.loading || snap.vectorLoading}
+          allTags={allTags}
+        />
 
         <div
           className="flex-1 overflow-y-auto overflow-x-hidden p-4 scrollbar-hide"
@@ -606,8 +627,9 @@ export const Gallery: React.FC = () => {
           key={contextMenu.image.id}
           value={contextMenu}
           image={
-            (snap.images.find((i) => i.id === contextMenu.image.id) as ImageMeta) ||
-            contextMenu.image
+            (snap.images.find(
+              (i) => i.id === contextMenu.image.id,
+            ) as ImageMeta) || contextMenu.image
           }
           allTags={allTags}
           enableVectorSearch={appSnap.enableVectorSearch}
@@ -618,8 +640,9 @@ export const Gallery: React.FC = () => {
           onOpenDominantColorPicker={({ x, y }) => {
             const next = clampPopover(x, y + 16);
             const activeImage =
-              (snap.images.find((i) => i.id === contextMenu.image.id) as ImageMeta) ||
-              contextMenu.image;
+              (snap.images.find(
+                (i) => i.id === contextMenu.image.id,
+              ) as ImageMeta) || contextMenu.image;
             const current = activeImage.dominantColor || THEME.primary;
             setDominantColorPicker({
               imageId: contextMenu.image.id,
@@ -630,20 +653,23 @@ export const Gallery: React.FC = () => {
           }}
           onUpdateName={(name) => {
             const activeImage =
-              (snap.images.find((i) => i.id === contextMenu.image.id) as ImageMeta) ||
-              contextMenu.image;
+              (snap.images.find(
+                (i) => i.id === contextMenu.image.id,
+              ) as ImageMeta) || contextMenu.image;
             handleUpdateName(activeImage, name);
           }}
           onAddTag={(tag) => {
             const activeImage =
-              (snap.images.find((i) => i.id === contextMenu.image.id) as ImageMeta) ||
-              contextMenu.image;
+              (snap.images.find(
+                (i) => i.id === contextMenu.image.id,
+              ) as ImageMeta) || contextMenu.image;
             handleAddTag(activeImage, tag);
           }}
           onRemoveTag={(tag) => {
             const activeImage =
-              (snap.images.find((i) => i.id === contextMenu.image.id) as ImageMeta) ||
-              contextMenu.image;
+              (snap.images.find(
+                (i) => i.id === contextMenu.image.id,
+              ) as ImageMeta) || contextMenu.image;
             void handleRemoveTag(activeImage, tag);
           }}
         />
@@ -702,7 +728,9 @@ export const Gallery: React.FC = () => {
                     key={`${c}_${i}`}
                     color={c}
                     selected={c.toLowerCase() === current.toLowerCase()}
-                    onPress={() => globalActions.setTagColor(tagColorPicker.tag, c)}
+                    onPress={() =>
+                      globalActions.setTagColor(tagColorPicker.tag, c)
+                    }
                     onReplaceWithCurrent={() =>
                       globalActions.setColorSwatch(i, current)
                     }
@@ -759,7 +787,7 @@ export const Gallery: React.FC = () => {
                   });
                   debouncedUpdateDominantColor(
                     dominantColorPicker.imageId,
-                    next
+                    next,
                   );
                 }}
               />
@@ -788,10 +816,10 @@ export const Gallery: React.FC = () => {
                     });
                     const image =
                       galleryState.images.find(
-                        (img) => img.id === dominantColorPicker.imageId
-                      ) ||
-                      contextMenu.image;
-                    if (!image || image.id !== dominantColorPicker.imageId) return;
+                        (img) => img.id === dominantColorPicker.imageId,
+                      ) || contextMenu.image;
+                    if (!image || image.id !== dominantColorPicker.imageId)
+                      return;
                     void handleUpdateDominantColor(image as ImageMeta, c);
                   }}
                   onReplaceWithCurrent={() =>

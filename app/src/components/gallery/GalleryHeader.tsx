@@ -68,7 +68,7 @@ const toneRangeLabelKey = (key: (typeof TONE_RANGES)[number]): I18nKey => {
 const clampPopover = (x: number, y: number) => {
   const nextX = Math.min(
     Math.max(12, x),
-    window.innerWidth - POPOVER_WIDTH - 12
+    window.innerWidth - POPOVER_WIDTH - 12,
   );
   const nextY = Math.max(12, y);
   return { x: nextX, y: nextY };
@@ -129,7 +129,9 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
 
   const popoverRef = useRef<HTMLDivElement>(null);
   const colorButtonRef = useRef<HTMLButtonElement>(null);
-  useClickOutside<HTMLElement>([popoverRef, colorButtonRef], () => setSearchColorPicker(null));
+  useClickOutside<HTMLElement>([popoverRef, colorButtonRef], () =>
+    setSearchColorPicker(null),
+  );
 
   const handleRenameTag = async (oldTag: string, newTag: string) => {
     try {
@@ -147,14 +149,14 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
 
       if (state.searchTags.includes(oldTag)) {
         const nextSearchTags = state.searchTags.map((t) =>
-          t === oldTag ? newTag : t
+          t === oldTag ? newTag : t,
         );
         actions.setSearchTags(nextSearchTags);
       }
 
       if (state.tagSortOrder && state.tagSortOrder.includes(oldTag)) {
         const nextOrder = state.tagSortOrder.map((t) =>
-          t === oldTag ? newTag : t
+          t === oldTag ? newTag : t,
         );
         actions.setTagSortOrder(nextOrder);
       }
@@ -189,7 +191,7 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
 
       if (state.tagSortOrder.includes(tag)) {
         actions.setTagSortOrder(
-          state.tagSortOrder.filter((item) => item !== tag)
+          state.tagSortOrder.filter((item) => item !== tag),
         );
       }
 
@@ -209,7 +211,7 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
 
   return (
     <>
-      <div className="p-4 border-b border-neutral-800">
+      <div className="p-3 px-4 border-b border-neutral-800">
         <div className="relative">
           <div
             className="flex items-center gap-2 w-full bg-neutral-800 text-white px-3 py-2 rounded text-sm focus-within:ring-1 focus-within:ring-[var(--brand-color)]"
@@ -226,7 +228,7 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
                   showColor={false}
                   onClick={() =>
                     actions.setSearchTags(
-                      snap.searchTags.filter((t) => t !== tag)
+                      snap.searchTags.filter((t) => t !== tag),
                     )
                   }
                 />
@@ -287,22 +289,27 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
                   backgroundBlendMode: "overlay",
                 } as React.CSSProperties
               }
-              title={
-                (() => {
-                  const toneKey = snap.searchTone ? TONE_LABEL_KEYS[snap.searchTone] : undefined;
-                  const toneText = toneKey ? t(toneKey) : "";
-                  if (snap.searchColor && toneText) {
-                    return t("gallery.filterSummary.colorTone", { color: snap.searchColor, tone: toneText });
-                  }
-                  if (snap.searchColor) {
-                    return t("gallery.filterSummary.color", { color: snap.searchColor });
-                  }
-                  if (toneText) {
-                    return t("gallery.filterSummary.tone", { tone: toneText });
-                  }
-                  return t("gallery.filter");
-                })()
-              }
+              title={(() => {
+                const toneKey = snap.searchTone
+                  ? TONE_LABEL_KEYS[snap.searchTone]
+                  : undefined;
+                const toneText = toneKey ? t(toneKey) : "";
+                if (snap.searchColor && toneText) {
+                  return t("gallery.filterSummary.colorTone", {
+                    color: snap.searchColor,
+                    tone: toneText,
+                  });
+                }
+                if (snap.searchColor) {
+                  return t("gallery.filterSummary.color", {
+                    color: snap.searchColor,
+                  });
+                }
+                if (toneText) {
+                  return t("gallery.filterSummary.tone", { tone: toneText });
+                }
+                return t("gallery.filter");
+              })()}
               onClick={(e) => {
                 e.stopPropagation();
                 if (searchColorPicker) {
@@ -490,7 +497,7 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
                         title={t(TONE_LABEL_KEYS[key] ?? "tone.unknown")}
                         onClick={() =>
                           actions.setSearchTone(
-                            key === snap.searchTone ? null : key
+                            key === snap.searchTone ? null : key,
                           )
                         }
                       />
