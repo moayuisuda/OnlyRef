@@ -169,6 +169,27 @@ const listImageFiles = async (dir: string): Promise<string[]> => {
     .map((entry) => entry.name);
 };
 
+const pruneMissingIndexedImages = (
+  imageDb: ImageDb,
+  indexedItems: ImageMeta[],
+  diskFilenames: Set<string>
+) => {
+  let deleted = 0;
+  const retainedItems: ImageMeta[] = [];
+
+  indexedItems.forEach((item) => {
+    const diskFilename = path.basename(item.imagePath);
+    if (!diskFilenames.has(diskFilename)) {
+      imageDb.deleteImage(item.id);
+      deleted += 1;
+      return;
+    }
+    retainedItems.push(item);
+  });
+
+  return { deleted, retainedItems };
+};
+
 const parseTags = (raw: unknown): string[] => {
   if (Array.isArray(raw)) {
     return raw.filter((tag): tag is string => typeof tag === "string");
@@ -1206,9 +1227,17 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
       }
 
       if (mode === "missing") {
-        const items = imageDb.listImages();
-        const existingNames = new Set(items.map((item) => item.filename));
+        const indexedItems = imageDb.listImages();
         const files = await listImageFiles(deps.getImageDir());
+        const diskFilenames = new Set(files);
+        const { deleted, retainedItems } = pruneMissingIndexedImages(
+          imageDb,
+          indexedItems,
+          diskFilenames
+        );
+        const existingNames = new Set(
+          retainedItems.map((item) => path.basename(item.imagePath))
+        );
         let created = 0;
         const newItems: ImportedImageRecord[] = [];
         for (const filename of files) {
@@ -1254,7 +1283,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
         }
 
         const newMetas = newItems.map((item) => item.meta);
-        const candidates = [...items, ...newMetas].filter((item) => !item.hasVector);
+        const candidates = [...retainedItems, ...newMetas].filter((item) => !item.hasVector);
         const indexedCandidates = candidates.filter(
           (
             item
@@ -1285,7 +1314,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
               vectorContext: "batch",
             }
           );
-          res.json({ success: true, created, updated: 0, total });
+          res.json({ success: true, created, updated: 0, deleted, total });
           return;
         }
         deps.sendToRenderer?.("indexing-progress", {
@@ -1334,7 +1363,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
           total,
           statusKey: "indexing.completed" as I18nKey,
         });
-        res.json({ success: true, created, updated: updatedVectors, total });
+        res.json({ success: true, created, updated: updatedVectors, deleted, total });
         return;
       }
 

@@ -6,52 +6,156 @@ import {
   normalizeDroppedImageUrl,
 } from './droppedImageUrl';
 
-export const scanDroppedItems = async (dataTransfer: DataTransfer): Promise<File[]> => {
-  const items = Array.from(dataTransfer.items);
-  const files: File[] = [];
+type NativePathFile = File & {
+  path?: string;
+  webkitRelativePath?: string;
+};
 
-  const scanEntry = async (entry: FileSystemEntry) => {
-    if (entry.isFile) {
-      try {
-        const file = await new Promise<File>((resolve, reject) => {
-          (entry as FileSystemFileEntry).file(resolve, reject);
-        });
-        files.push(file);
-      } catch (e) {
-        console.error('Failed to read file entry', entry.name, e);
-      }
-    } else if (entry.isDirectory) {
-      try {
-        const reader = (entry as FileSystemDirectoryEntry).createReader();
-        const readAllEntries = async (): Promise<FileSystemEntry[]> => {
-          const entries: FileSystemEntry[] = [];
-          let batch: FileSystemEntry[] = [];
-          do {
-            batch = await new Promise<FileSystemEntry[]>((resolve, reject) => {
-              reader.readEntries(resolve, reject);
-            });
-            entries.push(...batch);
-          } while (batch.length > 0);
-          return entries;
-        };
-        
-        const entries = await readAllEntries();
-        for (const e of entries) {
-          await scanEntry(e);
-        }
-      } catch (e) {
-        console.error('Failed to read directory entry', entry.name, e);
-      }
+const MAX_DROP_SCAN_CONCURRENCY = 16;
+
+const clampInt = (value: number, min: number, max: number) => {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, Math.floor(value)));
+};
+
+const getHardwareConcurrency = () => {
+  const n = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined;
+  if (typeof n === 'number' && Number.isFinite(n) && n > 0) return n;
+  return 8;
+};
+
+const getDropScanConcurrency = (workItems: number) => {
+  const hw = getHardwareConcurrency();
+  const base = clampInt(hw, 4, MAX_DROP_SCAN_CONCURRENCY);
+  return clampInt(Math.min(base, Math.max(1, workItems)), 1, MAX_DROP_SCAN_CONCURRENCY);
+};
+
+const mapWithConcurrency = async <T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> => {
+  const limit = Math.max(1, Math.floor(concurrency || 1));
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  const workerCount = Math.min(limit, items.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      results[index] = await mapper(items[index], index);
     }
-  };
+  });
 
-  for (const item of items) {
-    const entry = item.webkitGetAsEntry();
-    if (entry) {
-      await scanEntry(entry);
+  await Promise.all(workers);
+  return results;
+};
+
+const getNativeFilePath = (file: File): string => {
+  const path = (file as NativePathFile).path;
+  return typeof path === 'string' ? path.trim() : '';
+};
+
+const getDroppedFileKeys = (file: File): string[] => {
+  const keys: string[] = [];
+  const nativePath = getNativeFilePath(file);
+  if (nativePath) {
+    keys.push(`path:${nativePath}`);
+  }
+
+  const relativePath = (file as NativePathFile).webkitRelativePath?.trim();
+  if (relativePath) {
+    keys.push(`relative:${relativePath}:${file.size}:${file.lastModified}`);
+  }
+
+  keys.push(`meta:${file.name}:${file.size}:${file.lastModified}:${file.type}`);
+  return keys;
+};
+
+const mergeDroppedFiles = (...fileLists: File[][]): File[] => {
+  const keyToCanonicalKey = new Map<string, string>();
+  const fileMap = new Map<string, File>();
+
+  fileLists.forEach((files) => {
+    files.forEach((file) => {
+      const keys = getDroppedFileKeys(file);
+      const canonicalKey = keys.find((key) => keyToCanonicalKey.has(key)) ?? keys[0];
+      const existing = fileMap.get(canonicalKey);
+
+      if (!existing) {
+        fileMap.set(canonicalKey, file);
+      } else if (!getNativeFilePath(existing) && getNativeFilePath(file)) {
+        // Electron 原生 path 对批量本地导入更稳定，命中重复时优先保留它。
+        fileMap.set(canonicalKey, file);
+      }
+
+      keys.forEach((key) => {
+        keyToCanonicalKey.set(key, canonicalKey);
+      });
+    });
+  });
+
+  return Array.from(fileMap.values());
+};
+
+const scanDroppedEntry = async (entry: FileSystemEntry): Promise<File[]> => {
+  if (entry.isFile) {
+    try {
+      const file = await new Promise<File>((resolve, reject) => {
+        (entry as FileSystemFileEntry).file(resolve, reject);
+      });
+      return [file];
+    } catch (e) {
+      console.error('Failed to read file entry', entry.name, e);
+      return [];
     }
   }
-  return files;
+
+  if (entry.isDirectory) {
+    try {
+      const reader = (entry as FileSystemDirectoryEntry).createReader();
+      const entries: FileSystemEntry[] = [];
+      let batch: FileSystemEntry[] = [];
+      do {
+        batch = await new Promise<FileSystemEntry[]>((resolve, reject) => {
+          reader.readEntries(resolve, reject);
+        });
+        entries.push(...batch);
+      } while (batch.length > 0);
+
+      const lists = await mapWithConcurrency(
+        entries,
+        getDropScanConcurrency(entries.length),
+        async (child) => scanDroppedEntry(child),
+      );
+      return lists.flat();
+    } catch (e) {
+      console.error('Failed to read directory entry', entry.name, e);
+      return [];
+    }
+  }
+
+  return [];
+};
+
+export const scanDroppedItems = async (dataTransfer: DataTransfer): Promise<File[]> => {
+  const entries = Array.from(dataTransfer.items)
+    .map((item) => item.webkitGetAsEntry())
+    .filter((entry): entry is FileSystemEntry => Boolean(entry));
+
+  const lists = await mapWithConcurrency(
+    entries,
+    getDropScanConcurrency(entries.length),
+    async (entry) => scanDroppedEntry(entry),
+  );
+  return lists.flat();
+};
+
+const resolveDroppedFiles = async (dataTransfer: DataTransfer): Promise<File[]> => {
+  const scannedFiles = await scanDroppedItems(dataTransfer);
+  const directFiles = Array.from(dataTransfer.files || []);
+  return mergeDroppedFiles(scannedFiles, directFiles);
 };
 
 export const importFiles = async (files: File[]): Promise<ImageMeta[]> => {
@@ -61,9 +165,9 @@ export const importFiles = async (files: File[]): Promise<ImageMeta[]> => {
 
   files.forEach((file) => {
     if (!file.type.startsWith('image/')) return;
-    const fileWithPath = file as File & { path?: string };
-    if (typeof fileWithPath.path === 'string' && fileWithPath.path.trim()) {
-      pathFiles.push(fileWithPath as File & { path: string });
+    const nativePath = getNativeFilePath(file);
+    if (nativePath) {
+      pathFiles.push(file as File & { path: string });
       return;
     }
     bufferFiles.push(file);
@@ -148,10 +252,7 @@ export const importImageUrl = async (imageUrl: string): Promise<ImageMeta> => {
 export const importDroppedData = async (
   dataTransfer: DataTransfer,
 ): Promise<ImageMeta[]> => {
-  let files = await scanDroppedItems(dataTransfer);
-  if (files.length === 0) {
-    files = Array.from(dataTransfer.files || []);
-  }
+  const files = await resolveDroppedFiles(dataTransfer);
 
   if (files.length > 0) {
     return importFiles(files);

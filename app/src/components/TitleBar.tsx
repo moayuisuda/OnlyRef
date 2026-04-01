@@ -19,7 +19,6 @@ import {
 import { actions as galleryActions, state as galleryState } from "../store/galleryStore";
 import { indexImages } from "../service";
 import { useClickOutside } from "../hooks/useClickOutside";
-import { ToggleSwitch } from "./ToggleSwitch";
 import { ShortcutInput } from "./ShortcutInput";
 import type { I18nKey, I18nParams } from "../../shared/i18n/types";
 import { isI18nKey } from "../../shared/i18n/guards";
@@ -32,46 +31,6 @@ const iconButtonClass =
 
 const windowButtonClass =
   "flex h-7 w-7 items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-white/[0.06] hover:text-white";
-
-type SettingInputProps = {
-  value: string;
-  onChange: (value: string) => void;
-  type?: string;
-  placeholder?: string;
-};
-
-const SettingInput: React.FC<SettingInputProps> = ({
-  value,
-  onChange,
-  type = "text",
-  placeholder,
-}) => {
-  const [draft, setDraft] = useState(value);
-
-  useEffect(() => {
-    setDraft(value);
-  }, [value]);
-
-  return (
-    <input
-      type={type}
-      value={draft}
-      placeholder={placeholder}
-      className="w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2 text-sm text-white outline-none transition-colors placeholder:text-neutral-600 focus:border-[var(--color-primary)]"
-      onChange={(event) => setDraft(event.target.value)}
-      onBlur={() => {
-        if (draft !== value) {
-          onChange(draft);
-        }
-      }}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") {
-          event.currentTarget.blur();
-        }
-      }}
-    />
-  );
-};
 
 const ProgressBar: React.FC<{
   value: number;
@@ -197,6 +156,7 @@ export const TitleBar: React.FC = () => {
         success?: boolean;
         created?: number;
         updated?: number;
+        deleted?: number;
       }>({
         mode: "missing",
       });
@@ -208,7 +168,7 @@ export const TitleBar: React.FC = () => {
 
       galleryActions.reload();
 
-      if (!data.created && !data.updated) {
+      if (!data.created && !data.updated && !data.deleted) {
         globalActions.pushToast({ key: "toast.noUnindexedImages" }, "info");
         return;
       }
@@ -219,6 +179,7 @@ export const TitleBar: React.FC = () => {
           params: {
             created: data.created ?? 0,
             updated: data.updated ?? 0,
+            deleted: data.deleted ?? 0,
           },
         },
         "success",
@@ -430,7 +391,8 @@ export const TitleBar: React.FC = () => {
               </div>
             </div>
 
-            <div className="border-b border-white/6 px-3 py-3">
+            {/* 暂时隐藏 LLM 翻译设置，后续若恢复可直接取消这段注释。 */}
+            {/* <div className="border-b border-white/6 px-3 py-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <div className="text-xs font-medium text-neutral-200">
@@ -470,7 +432,7 @@ export const TitleBar: React.FC = () => {
                   />
                 </div>
               )}
-            </div>
+            </div> */}
 
             <div className="border-b border-white/6 px-3 py-3">
               <div className="flex items-center justify-between gap-3">

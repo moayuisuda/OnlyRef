@@ -45,7 +45,7 @@ export const en = {
 
   'toast.indexFailed': 'Failed to index images',
   'toast.noUnindexedImages': 'No unindexed images found',
-  'toast.indexCompleted': 'Index completed: {{created}} created, {{updated}} updated',
+  'toast.indexCompleted': 'Index completed: {{created}} created, {{updated}} updated, {{deleted}} deleted',
   'toast.modelReady': 'AI Model is ready',
   'toast.modelCheckFailed': 'Model check failed: {{error}}',
   'toast.settingsUpdateFailed': 'Failed to update settings',
@@ -107,7 +107,7 @@ export const en = {
   'errors.copyLog': 'Copy Log',
   'errors.reloadApplication': 'Reload Application',
 
-  'gallery.searchPlaceholder': 'Search',
+  'gallery.searchPlaceholder': 'Search in English',
   'gallery.filter': 'Filter',
   'gallery.filterSummary.color': 'Color: {{color}}',
   'gallery.filterSummary.tone': 'Tone: {{tone}}',

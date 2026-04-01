@@ -44,7 +44,7 @@ export const zh: I18nDict = {
 
   'toast.indexFailed': '索引图片失败',
   'toast.noUnindexedImages': '没有未入库的图片',
-  'toast.indexCompleted': '索引完成：新增 {{created}}，更新 {{updated}}',
+  'toast.indexCompleted': '索引完成：新增 {{created}}，更新 {{updated}}，删除 {{deleted}}',
   'toast.modelReady': '搜索模型已就绪',
   'toast.modelCheckFailed': '模型检查失败：{{error}}',
   'toast.settingsUpdateFailed': '更新设置失败',
@@ -105,7 +105,7 @@ export const zh: I18nDict = {
   'errors.copyLog': '复制日志',
   'errors.reloadApplication': '重新加载应用',
 
-  'gallery.searchPlaceholder': '搜索',
+  'gallery.searchPlaceholder': '请用英文搜索，或先译成英文',
   'gallery.filter': '筛选',
   'gallery.filterSummary.color': '颜色：{{color}}',
   'gallery.filterSummary.tone': '色调：{{tone}}',
