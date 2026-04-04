@@ -7,8 +7,8 @@ contextBridge.exposeInMainWorld('electron', {
   focus: () => ipcRenderer.send('window-focus'),
   setWindowBounds: (bounds: { x?: number; y?: number; width?: number; height?: number }) =>
     ipcRenderer.send('set-window-bounds', bounds),
-  setFloatingWindowMode: (enabled: boolean) =>
-    ipcRenderer.invoke('set-floating-window-mode', enabled),
+  setWindowAlwaysOnTop: (alwaysOnTop: boolean) =>
+    ipcRenderer.invoke('set-window-always-on-top', alwaysOnTop),
   setToggleWindowShortcut: (accelerator: string) =>
     ipcRenderer.invoke('set-toggle-window-shortcut', accelerator),
   onRendererEvent: (callback: (event: string, ...args: unknown[]) => void) => {
@@ -20,6 +20,10 @@ contextBridge.exposeInMainWorld('electron', {
   getStorageDir: () => ipcRenderer.invoke('get-storage-dir'),
   openStorageDir: () => ipcRenderer.invoke('open-storage-dir'),
   chooseStorageDir: () => ipcRenderer.invoke('choose-storage-dir'),
+  chooseSearchImage: () => ipcRenderer.invoke('choose-search-image'),
+  startImageDrag: (payload: { imagePath: string; fallbackIconPath?: string }) =>
+    ipcRenderer.invoke('start-image-drag', payload),
+  getEnvInitProgress: () => ipcRenderer.invoke('get-env-init-progress'),
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
   onImageUpdated: (callback: (data: unknown) => void) => {
     const handler = (_: unknown, data: unknown) => callback(data);

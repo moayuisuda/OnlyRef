@@ -5,12 +5,14 @@ import React, {
   useRef,
   useCallback,
 } from "react";
+import { flushSync } from "react-dom";
 import Masonry from "react-masonry-css";
 import { globalActions, globalState } from "../store/globalStore";
 import {
   state as galleryState,
   actions,
   type GallerySort,
+  deriveNameFromFilename,
   getImageUrl,
   type SearchResult,
 } from "../store/galleryStore";
@@ -21,6 +23,10 @@ import { Tag } from "./Tag";
 import { THEME } from "../theme";
 import { SortableGalleryItem } from "./gallery/GalleryItem";
 import { importDroppedData } from "../utils/import";
+import {
+  clearExternalDragSession,
+  markExternalDragSession,
+} from "../utils/externalDragSession";
 import {
   indexImages,
   localApi,
@@ -65,6 +71,8 @@ const GALLERY_LIMIT_MIN = 12;
 const GALLERY_LIMIT_BUFFER = 1.4;
 // 当 newLimit 与 prev 差值不超过该阈值时，不更新 limit，避免 ResizeObserver 抖动触发重复请求
 const GALLERY_LIMIT_DELTA = 6;
+const GALLERY_RESIZE_MIN_WIDTH = 180;
+const GALLERY_RESIZE_MIN_HEIGHT = 180;
 
 const clampPopover = (x: number, y: number) => {
   const nextX = Math.min(
@@ -121,6 +129,8 @@ export const Gallery: React.FC = () => {
     width: number;
     height: number;
   } | null>(null);
+  const dragOutTriggeredRef = useRef(false);
+  const [dndContextKey, setDndContextKey] = useState(0);
 
   const dragOverlay = useMemo(() => {
     if (activeImage && activeSize) {
@@ -163,6 +173,7 @@ export const Gallery: React.FC = () => {
     y: number;
     draft: string;
   } | null>(null);
+  const hasInitializedLimitReloadRef = useRef(false);
 
   // Dynamic Columns
   const galleryRef = useRef<HTMLDivElement>(null);
@@ -193,6 +204,14 @@ export const Gallery: React.FC = () => {
       for (const entry of entries) {
         const width = entry.contentRect.width;
         const height = entry.contentRect.height;
+        // 浮窗模式下主窗口会收缩到极小尺寸，若继续按当前可视区重算 limit，
+        // 会触发 resetSearchResults -> reload，导致结果列表先清空再出现。
+        if (
+          width < GALLERY_RESIZE_MIN_WIDTH ||
+          height < GALLERY_RESIZE_MIN_HEIGHT
+        ) {
+          return;
+        }
         // Calculate columns based on width.
         // Assuming ~120px per column is a good size to ensure 2 columns at default width (250px)
         const cols = Math.max(1, Math.floor(width / 120));
@@ -222,32 +241,49 @@ export const Gallery: React.FC = () => {
   const debouncedReload = useMemo(
     () =>
       debounce({ delay: 400 }, (nextLimit: number) => {
-        console.log("11");
         actions.resetSearchResults();
         void loadImages(true, nextLimit);
       }),
     [loadImages],
   );
 
-  // Search conditions changed: Reset and load
+  const debouncedLimitReload = useMemo(
+    () =>
+      debounce({ delay: 400 }, (nextLimit: number) => {
+        void loadImages(true, nextLimit);
+      }),
+    [loadImages],
+  );
+
+  // 搜索条件变化时，清空旧结果并重新请求。
   useEffect(() => {
-    debouncedReload(snap.limit);
+    debouncedReload(galleryState.limit);
   }, [
     snap.searchQuery,
+    snap.searchImage,
     snap.searchTags,
     snap.searchColor,
     snap.searchTone,
     appSnap.enableVectorSearch,
-    snap.limit,
     debouncedReload,
   ]);
+
+  // 仅窗口尺寸导致的 limit 变化，不先清空结果，避免拖拽/缩放窗口时闪屏。
+  useEffect(() => {
+    if (!hasInitializedLimitReloadRef.current) {
+      hasInitializedLimitReloadRef.current = true;
+      return;
+    }
+    debouncedLimitReload(snap.limit);
+  }, [snap.limit, debouncedLimitReload]);
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
     if (
       scrollHeight - scrollTop - clientHeight < 500 &&
       snap.hasMore &&
-      !snap.loading
+      !snap.loading &&
+      !snap.vectorLoading
     ) {
       void loadImages(false, snap.limit);
     }
@@ -256,8 +292,10 @@ export const Gallery: React.FC = () => {
   useEffect(() => {
     return () => {
       actions.cancelLoad();
+      debouncedReload.cancel();
+      debouncedLimitReload.cancel();
     };
-  }, []);
+  }, [debouncedLimitReload, debouncedReload]);
 
   const allTags = useMemo(() => {
     const unsorted = [...snap.tags];
@@ -278,6 +316,7 @@ export const Gallery: React.FC = () => {
   );
 
   const handleDragStart = (event: DragStartEvent) => {
+    dragOutTriggeredRef.current = false;
     const { active } = event;
     const activeId = active.id as string;
 
@@ -306,13 +345,23 @@ export const Gallery: React.FC = () => {
     }
   };
 
-  const handleDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event;
-
+  const resetActiveDragState = () => {
     setActiveImage(null);
     setActiveSize(null);
     setActiveTag(null);
     setActiveTagSize(null);
+  };
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+
+    const hasStartedExternalDrag = dragOutTriggeredRef.current;
+    dragOutTriggeredRef.current = false;
+    resetActiveDragState();
+
+    if (hasStartedExternalDrag) {
+      return;
+    }
 
     if (!over || active.id === over.id) return;
 
@@ -337,9 +386,70 @@ export const Gallery: React.FC = () => {
     }
   };
 
-  const handleNativeDragStart = (e: React.DragEvent, image: ImageMeta) => {
-    e.dataTransfer.setData("application/json", JSON.stringify(image));
+  const handleDragCancel = () => {
+    dragOutTriggeredRef.current = false;
+    resetActiveDragState();
   };
+
+  useEffect(() => {
+    if (!activeImage) {
+      return;
+    }
+
+    let isDisposed = false;
+
+    const tryStartExternalDrag = () => {
+      if (isDisposed || dragOutTriggeredRef.current) {
+        return;
+      }
+
+      dragOutTriggeredRef.current = true;
+      markExternalDragSession(activeImage);
+      flushSync(() => {
+        setDndContextKey((current) => current + 1);
+        resetActiveDragState();
+      });
+
+      void window.electron
+        ?.startImageDrag?.({
+          imagePath: activeImage.imagePath,
+          fallbackIconPath: activeImage.imagePath,
+        })
+        .then((result) => {
+          if (!result?.success) {
+            dragOutTriggeredRef.current = false;
+            clearExternalDragSession();
+          }
+        });
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const pointerLeftWindow =
+        event.clientX <= 0 ||
+        event.clientY <= 0 ||
+        event.clientX >= window.innerWidth ||
+        event.clientY >= window.innerHeight;
+
+      if (pointerLeftWindow) {
+        tryStartExternalDrag();
+      }
+    };
+
+    const handleMouseOut = (event: MouseEvent) => {
+      if (event.relatedTarget === null) {
+        tryStartExternalDrag();
+      }
+    };
+
+    window.addEventListener("pointermove", handlePointerMove, true);
+    document.addEventListener("mouseout", handleMouseOut, true);
+
+    return () => {
+      isDisposed = true;
+      window.removeEventListener("pointermove", handlePointerMove, true);
+      document.removeEventListener("mouseout", handleMouseOut, true);
+    };
+  }, [activeImage]);
 
   const handleContextMenu = (e: React.MouseEvent, image: ImageMeta) => {
     e.preventDefault();
@@ -473,6 +583,33 @@ export const Gallery: React.FC = () => {
     closeContextMenuIfMatch(targetImageId);
   };
 
+  const handleCopyImage = async () => {
+    if (!contextMenu) return;
+    const targetImageId = contextMenu.image.id;
+    try {
+      await localApi<{ success?: boolean }>("/api/copy-image", {
+        id: targetImageId,
+      });
+      globalActions.pushToast({ key: "toast.imageCopied" }, "success");
+    } catch (e) {
+      console.error(e);
+      globalActions.pushToast({ key: "toast.copyImageFailed" }, "error");
+    }
+    closeContextMenuIfMatch(targetImageId);
+  };
+
+  const handleSearchByImage = () => {
+    if (!contextMenu) return;
+    const targetImage = contextMenu.image;
+    actions.setSearchImageSource({
+      type: "library",
+      imageId: targetImage.id,
+      previewUrl: getImageUrl(targetImage.imagePath),
+      previewName: deriveNameFromFilename(targetImage.filename) || t("gallery.searchImage.defaultName"),
+    });
+    closeContextMenuIfMatch(targetImage.id);
+  };
+
   const handleImageClick = async (image: ImageMeta) => {
     try {
       await localApi<unknown>("/api/open-with-default", {
@@ -551,10 +688,13 @@ export const Gallery: React.FC = () => {
       onDragEnter={(e) => e.preventDefault()}
     >
       <DndContext
+        key={dndContextKey}
         sensors={sensors}
         collisionDetection={closestCenter}
+        cancelDrop={() => dragOutTriggeredRef.current}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
+        onDragCancel={handleDragCancel}
       >
         <GalleryHeader
           loading={snap.loading || snap.vectorLoading}
@@ -562,7 +702,7 @@ export const Gallery: React.FC = () => {
         />
 
         <div
-          className="flex-1 overflow-y-auto overflow-x-hidden p-4 scrollbar-hide"
+          className="flex-1 overflow-y-auto overflow-x-hidden p-4 pt-0 scrollbar-hide"
           ref={galleryRef}
           onDrop={handleDrop}
           onDragOver={(e) => e.preventDefault()}
@@ -586,7 +726,6 @@ export const Gallery: React.FC = () => {
                     key={image.id}
                     image={image as ImageMeta}
                     enableVectorSearch={appSnap.enableVectorSearch}
-                    onDragStart={handleNativeDragStart}
                     onContextMenu={(e) => {
                       handleContextMenu(e, image as ImageMeta);
                     }}
@@ -634,7 +773,9 @@ export const Gallery: React.FC = () => {
           allTags={allTags}
           enableVectorSearch={appSnap.enableVectorSearch}
           onClose={closeContextMenu}
+          onCopyImage={handleCopyImage}
           onOpenFile={handleOpenFile}
+          onSearchByImage={handleSearchByImage}
           onDelete={handleDelete}
           onReindex={handleReindex}
           onOpenDominantColorPicker={({ x, y }) => {

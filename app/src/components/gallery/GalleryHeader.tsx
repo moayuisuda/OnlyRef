@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Input from "rc-input";
-import { Search, X } from "lucide-react";
+import { Image as ImageIcon, Search, X } from "lucide-react";
 import { useSnapshot } from "valtio";
 import { SortableContext, rectSortingStrategy } from "@dnd-kit/sortable";
 import { debounce } from "radash";
@@ -13,12 +13,17 @@ import { globalActions, globalState } from "../../store/globalStore";
 import { state, actions } from "../../store/galleryStore";
 import type { ImageMeta } from "../../store/galleryStore";
 import { THEME, hexToRgba } from "../../theme";
-import { deleteTag as deleteTagService, renameTag } from "../../service";
+import {
+  deleteTag as deleteTagService,
+  getLocalImagePreviewUrl,
+  renameTag,
+} from "../../service";
 import { useT } from "../../i18n/useT";
 import type { I18nKey } from "../../../shared/i18n/types";
 import { useClickOutside } from "../../hooks/useClickOutside";
 
 const POPOVER_WIDTH = 280;
+type NativePathFile = File & { path?: string };
 
 const TONE_KEYS = ["high", "mid", "low"] as const;
 const TONE_RANGES = ["short", "mid", "long"] as const;
@@ -89,6 +94,7 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
 
   const [showLoading, setShowLoading] = useState(false);
   const [searchDraft, setSearchDraft] = useState(snap.searchQuery);
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
   const debouncedSetSearchQuery = useMemo(
     () =>
@@ -209,14 +215,100 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
     }
   };
 
+  const handlePickSearchImage = () => {
+    if (window.electron?.chooseSearchImage) {
+      void window.electron.chooseSearchImage().then((result) => {
+        if (!result?.path) return;
+        const previewName =
+          result.name.trim() || t("gallery.searchImage.defaultName");
+        actions.setSearchImageSource({
+          type: "local",
+          localPath: result.path,
+          previewUrl: getLocalImagePreviewUrl(result.path),
+          previewName,
+          revokePreviewUrl: false,
+        });
+      });
+      return;
+    }
+
+    const input = imageInputRef.current;
+    if (!input) return;
+    input.value = "";
+    input.click();
+  };
+
+  const handleSearchImageChange = (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = event.target.files?.[0] as NativePathFile | undefined;
+    if (!file) return;
+
+    const localPath = typeof file.path === "string" ? file.path.trim() : "";
+    if (!localPath) {
+      globalActions.pushToast({ key: "toast.imageVectorSearchFailed" }, "error");
+      return;
+    }
+
+    const previewName = file.name.trim() || t("gallery.searchImage.defaultName");
+    actions.setSearchImageSource({
+      type: "local",
+      localPath,
+      previewUrl: getLocalImagePreviewUrl(localPath),
+      previewName,
+      revokePreviewUrl: false,
+    });
+  };
+
+  const searchPlaceholder = snap.searchImage
+    ? t("gallery.searchPlaceholderImage")
+    : t("gallery.searchPlaceholder");
+
   return (
     <>
-      <div className="p-3 px-4 border-b border-neutral-800">
+      <div className="p-3">
         <div className="relative">
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handleSearchImageChange}
+          />
           <div
-            className="flex items-center gap-2 w-full bg-neutral-800 text-white px-3 py-2 rounded text-sm focus-within:ring-1 focus-within:ring-[var(--brand-color)]"
+            className="flex items-center gap-2 w-full bg-neutral-800 text-white p-1 px-2 rounded text-sm focus-within:ring-1 focus-within:ring-[var(--brand-color)]"
             style={{ "--brand-color": THEME.primary } as React.CSSProperties}
           >
+            <button
+              type="button"
+              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-neutral-700 bg-black/20 text-neutral-300 transition-colors hover:border-neutral-500 hover:text-white"
+              title={t("gallery.searchImage.pick")}
+              onClick={handlePickSearchImage}
+            >
+              <ImageIcon size={15} />
+            </button>
+
+            {snap.searchImage && (
+              <div className="flex h-7 min-w-0 shrink-0 items-center gap-1.5 overflow-hidden rounded-md border border-neutral-700/80 bg-black/20 px-1.5">
+                <img
+                  src={snap.searchImage.previewUrl}
+                  alt={snap.searchImage.previewName}
+                  className="h-6 w-6 rounded object-cover"
+                />
+                <div className="min-w-0 max-w-[120px] text-xs text-neutral-200 truncate">
+                  {snap.searchImage.previewName}
+                </div>
+                <button
+                  type="button"
+                  className="inline-flex h-4 w-4 items-center justify-center rounded text-neutral-400 transition-colors hover:bg-neutral-700/70 hover:text-white"
+                  title={t("common.clear")}
+                  onClick={() => actions.clearSearchImageSource()}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            )}
+
             <Search className="text-neutral-500 shrink-0" size={16} />
 
             <div className="flex flex-wrap items-center gap-1.5 flex-1 min-w-0">
@@ -234,9 +326,14 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
                 />
               ))}
               <Input
-                placeholder={t("gallery.searchPlaceholder")}
-                className="flex-1 bg-transparent text-white text-sm outline-none min-w-[80px] placeholder-neutral-500"
+                placeholder={searchPlaceholder}
+                className={`flex-1 bg-transparent text-sm outline-none min-w-[80px] placeholder-neutral-500 ${
+                  snap.searchImage
+                    ? "cursor-not-allowed text-neutral-500"
+                    : "text-white"
+                }`}
                 value={searchDraft}
+                disabled={!!snap.searchImage}
                 onChange={(e) => {
                   const nextQuery = e.target.value;
                   setSearchDraft(nextQuery);
@@ -326,6 +423,7 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
 
             {(snap.searchTags.length > 0 ||
               snap.searchQuery.trim() ||
+              snap.searchImage ||
               snap.searchColor ||
               snap.searchTone) && (
               <button
@@ -333,10 +431,7 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
                 onClick={() => {
                   debouncedSetSearchQuery.cancel();
                   setSearchDraft("");
-                  actions.setSearchQuery("");
-                  actions.setSearchTags([]);
-                  actions.setSearchColor(null);
-                  actions.setSearchTone(null);
+                  actions.clearSearch();
                 }}
                 title={t("common.clear")}
               >

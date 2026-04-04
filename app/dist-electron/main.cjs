@@ -22,12 +22,12 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // electron/main.ts
-var import_electron3 = require("electron");
-var import_path5 = __toESM(require("path"), 1);
-var import_fs_extra4 = __toESM(require("fs-extra"), 1);
+var import_electron4 = require("electron");
+var import_path6 = __toESM(require("path"), 1);
+var import_fs_extra5 = __toESM(require("fs-extra"), 1);
 var import_electron_log = __toESM(require("electron-log"), 1);
 var import_electron_updater = require("electron-updater");
-var import_child_process2 = require("child_process");
+var import_child_process3 = require("child_process");
 
 // backend/fileLock.ts
 var import_fs_extra = __toESM(require("fs-extra"), 1);
@@ -100,13 +100,13 @@ var import_https = __toESM(require("https"), 1);
 var import_zlib = __toESM(require("zlib"), 1);
 
 // backend/server.ts
-var import_electron2 = require("electron");
-var import_path4 = __toESM(require("path"), 1);
+var import_electron3 = require("electron");
+var import_path5 = __toESM(require("path"), 1);
 var import_express5 = __toESM(require("express"), 1);
 var import_cors = __toESM(require("cors"), 1);
 var import_body_parser = __toESM(require("body-parser"), 1);
-var import_fs_extra3 = __toESM(require("fs-extra"), 1);
-var import_child_process = require("child_process");
+var import_fs_extra4 = __toESM(require("fs-extra"), 1);
+var import_child_process2 = require("child_process");
 var import_readline = __toESM(require("readline"), 1);
 
 // backend/db.ts
@@ -726,9 +726,6 @@ var buildColorFilterSql = (alias, color) => {
   };
 };
 
-// backend/server.ts
-var import_radash = require("radash");
-
 // backend/routes/images.ts
 var import_path3 = __toESM(require("path"), 1);
 var import_express = __toESM(require("express"), 1);
@@ -764,6 +761,44 @@ var parseVectorCursor = (query) => {
   const rowid = parseNumber(query.cursorRowid);
   if (typeof distance !== "number" || typeof rowid !== "number") return null;
   return { distance, rowid };
+};
+var parseVectorSearchSource = (raw) => {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const payload = raw;
+  const type = typeof payload.type === "string" ? payload.type.trim() : "";
+  if (type === "text") {
+    const query = typeof payload.query === "string" ? payload.query.trim() : "";
+    if (!query) {
+      return null;
+    }
+    return {
+      type: "text",
+      query
+    };
+  }
+  if (type === "imageId") {
+    const imageId = typeof payload.imageId === "string" ? payload.imageId.trim() : "";
+    if (!imageId) {
+      return null;
+    }
+    return {
+      type: "imageId",
+      imageId
+    };
+  }
+  if (type === "localPath") {
+    const localPath = typeof payload.localPath === "string" ? payload.localPath.trim() : "";
+    if (!localPath) {
+      return null;
+    }
+    return {
+      type: "localPath",
+      localPath
+    };
+  }
+  return null;
 };
 var buildTextCursor = (items) => {
   const last = items[items.length - 1];
@@ -822,6 +857,20 @@ var listImageFiles = async (dir) => {
     withFileTypes: true
   });
   return entries.filter((entry) => entry.isFile() && isImageFilename(entry.name)).map((entry) => entry.name);
+};
+var pruneMissingIndexedImages = (imageDb2, indexedItems, diskFilenames) => {
+  let deleted = 0;
+  const retainedItems = [];
+  indexedItems.forEach((item) => {
+    const diskFilename = import_path3.default.basename(item.imagePath);
+    if (!diskFilenames.has(diskFilename)) {
+      imageDb2.deleteImage(item.id);
+      deleted += 1;
+      return;
+    }
+    retainedItems.push(item);
+  });
+  return { deleted, retainedItems };
 };
 var parseTags = (raw) => {
   if (Array.isArray(raw)) {
@@ -957,6 +1006,75 @@ var createImagesRouter = (deps) => {
       code: "STORAGE_INCOMPATIBLE"
     });
     return true;
+  };
+  const resolveVectorSearchLocalPath = async (imageDb2, source) => {
+    if (source.type === "text") {
+      return {
+        mode: "encode-text",
+        arg: source.query
+      };
+    }
+    if (source.type === "imageId") {
+      const row = imageDb2.getImageRowById(source.imageId);
+      if (!row) {
+        return null;
+      }
+      return {
+        mode: "encode-image",
+        arg: import_path3.default.join(deps.getStorageDir(), row.imagePath)
+      };
+    }
+    const resolvedPath = import_path3.default.resolve(source.localPath);
+    const exists = await withFileLock(
+      resolvedPath,
+      async () => import_fs_extra2.default.pathExists(resolvedPath)
+    );
+    if (!exists) {
+      return null;
+    }
+    return {
+      mode: "encode-image",
+      arg: resolvedPath
+    };
+  };
+  const runVectorSearch = async (imageDb2, params) => {
+    var _a, _b;
+    if (params.source.type === "text" && !params.source.query.trim()) {
+      return { items: [], nextCursor: null };
+    }
+    const settings = await deps.readSettings();
+    const enableVectorSearch = Boolean(settings.enableVectorSearch);
+    if (!enableVectorSearch) {
+      return { items: [], nextCursor: null };
+    }
+    const resolved = await resolveVectorSearchLocalPath(imageDb2, params.source);
+    if (!resolved) {
+      return { items: [], nextCursor: null };
+    }
+    const vector = resolved.mode === "encode-image" ? await withFileLock(
+      resolved.arg,
+      async () => deps.runPythonVector(resolved.mode, resolved.arg)
+    ) : await deps.runPythonVector(resolved.mode, resolved.arg);
+    if (!vector) {
+      return { items: [], nextCursor: null };
+    }
+    const tagIds = imageDb2.getTagIdsByNames(params.tags);
+    const tagCount = params.tags.length;
+    const results = imageDb2.searchImages({
+      vector,
+      limit: params.effectiveLimit,
+      tagIds,
+      tagCount,
+      tone: params.tone,
+      color: params.color,
+      afterDistance: ((_a = params.cursor) == null ? void 0 : _a.distance) ?? null,
+      afterRowid: ((_b = params.cursor) == null ? void 0 : _b.rowid) ?? null
+    });
+    const nextCursor = buildVectorCursor(results);
+    return {
+      items: results.map((item) => ({ ...item, isVectorResult: true })),
+      nextCursor
+    };
   };
   const indexImageVector = async (imageDb2, params) => {
     var _a;
@@ -1292,37 +1410,19 @@ var createImagesRouter = (deps) => {
       const color = colorHex ? hexToOklch(colorHex) : null;
       const effectiveLimit = parseLimit(req.query.limit) ?? 100;
       if (mode === "vector") {
-        if (!query) {
-          res.json({ items: [], nextCursor: null });
-          return;
-        }
-        const settings = await deps.readSettings();
-        const enableVectorSearch = Boolean(settings.enableVectorSearch);
-        if (!enableVectorSearch) {
-          res.json({ items: [], nextCursor: null });
-          return;
-        }
         const vectorCursor = parseVectorCursor(req.query);
-        const tagIds2 = imageDb2.getTagIdsByNames(tags);
-        const tagCount2 = tags.length;
-        const vector = await deps.runPythonVector("encode-text", query);
-        if (!vector) {
-          res.json({ items: [], nextCursor: null });
-          return;
-        }
-        const results2 = imageDb2.searchImages({
-          vector,
-          limit: effectiveLimit,
-          tagIds: tagIds2,
-          tagCount: tagCount2,
+        const data = await runVectorSearch(imageDb2, {
+          source: {
+            type: "text",
+            query
+          },
+          tags,
           tone,
           color,
-          afterDistance: (vectorCursor == null ? void 0 : vectorCursor.distance) ?? null,
-          afterRowid: (vectorCursor == null ? void 0 : vectorCursor.rowid) ?? null
+          effectiveLimit,
+          cursor: vectorCursor
         });
-        const nextCursor2 = buildVectorCursor(results2);
-        const items = results2.map((item) => ({ ...item, isVectorResult: true }));
-        res.json({ items, nextCursor: nextCursor2 });
+        res.json(data);
         return;
       }
       const textCursor = parseTextCursor(req.query);
@@ -1351,6 +1451,62 @@ var createImagesRouter = (deps) => {
       });
       const nextCursor = buildTextCursor(results);
       res.json({ items: results, nextCursor });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    }
+  });
+  router.post("/api/images/vector-search", async (req, res) => {
+    try {
+      if (guardStorage(res)) return;
+      const imageDb2 = deps.getImageDb();
+      const body = req.body;
+      const source = parseVectorSearchSource(body.source);
+      if (!source) {
+        res.status(400).json({ error: "Invalid vector search source" });
+        return;
+      }
+      const tone = typeof body.tone === "string" && body.tone.trim() ? body.tone.trim() : null;
+      const colorHex = normalizeHexColor(body.color);
+      const color = colorHex ? hexToOklch(colorHex) : null;
+      const effectiveLimit = parseLimit(String(body.limit ?? "")) ?? 100;
+      const vectorCursor = parseVectorCursor({
+        cursorDistance: String(body.cursorDistance ?? ""),
+        cursorRowid: String(body.cursorRowid ?? "")
+      });
+      const tags = parseTags(body.tags);
+      const data = await runVectorSearch(imageDb2, {
+        source,
+        tags,
+        tone,
+        color,
+        effectiveLimit,
+        cursor: vectorCursor
+      });
+      res.json(data);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    }
+  });
+  router.get("/api/local-image-preview", async (req, res) => {
+    try {
+      if (guardStorage(res)) return;
+      const rawPath = typeof req.query.path === "string" ? req.query.path.trim() : "";
+      if (!rawPath) {
+        res.status(400).json({ error: "Path is required" });
+        return;
+      }
+      const resolvedPath = import_path3.default.resolve(rawPath);
+      const exists = await withFileLock(
+        resolvedPath,
+        async () => import_fs_extra2.default.pathExists(resolvedPath)
+      );
+      if (!exists) {
+        res.status(404).json({ error: "Image not found" });
+        return;
+      }
+      res.sendFile(resolvedPath);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       res.status(500).json({ error: message });
@@ -1679,9 +1835,17 @@ var createImagesRouter = (deps) => {
         return;
       }
       if (mode === "missing") {
-        const items = imageDb2.listImages();
-        const existingNames = new Set(items.map((item) => item.filename));
+        const indexedItems = imageDb2.listImages();
         const files = await listImageFiles(deps.getImageDir());
+        const diskFilenames = new Set(files);
+        const { deleted, retainedItems } = pruneMissingIndexedImages(
+          imageDb2,
+          indexedItems,
+          diskFilenames
+        );
+        const existingNames = new Set(
+          retainedItems.map((item) => import_path3.default.basename(item.imagePath))
+        );
         let created = 0;
         const newItems = [];
         for (const filename of files) {
@@ -1724,7 +1888,7 @@ var createImagesRouter = (deps) => {
           created += 1;
         }
         const newMetas = newItems.map((item) => item.meta);
-        const candidates = [...items, ...newMetas].filter((item) => !item.hasVector);
+        const candidates = [...retainedItems, ...newMetas].filter((item) => !item.hasVector);
         const indexedCandidates = candidates.filter(
           (item) => typeof item.rowid === "number"
         );
@@ -1750,7 +1914,7 @@ var createImagesRouter = (deps) => {
               vectorContext: "batch"
             }
           );
-          res.json({ success: true, created, updated: 0, total });
+          res.json({ success: true, created, updated: 0, deleted, total });
           return;
         }
         (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "indexing-progress", {
@@ -1800,7 +1964,7 @@ var createImagesRouter = (deps) => {
           total,
           statusKey: "indexing.completed"
         });
-        res.json({ success: true, created, updated: updatedVectors, total });
+        res.json({ success: true, created, updated: updatedVectors, deleted, total });
         return;
       }
       res.status(400).json({ error: "Invalid request" });
@@ -1846,6 +2010,41 @@ var createImagesRouter = (deps) => {
       }
       const targetPath = import_path3.default.join(deps.getStorageDir(), meta.imagePath);
       await import_electron.shell.openPath(targetPath);
+      res.json({ success: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    }
+  });
+  router.post("/api/copy-image", async (req, res) => {
+    try {
+      if (guardStorage(res)) return;
+      const imageDb2 = deps.getImageDb();
+      const { id } = req.body;
+      if (typeof id !== "string" || !id.trim()) {
+        res.status(400).json({ error: "Image id is required" });
+        return;
+      }
+      const meta = imageDb2.getImageRowById(id);
+      if (!meta) {
+        res.status(404).json({ error: "Image not found" });
+        return;
+      }
+      const targetPath = import_path3.default.join(deps.getStorageDir(), meta.imagePath);
+      const exists = await withFileLock(
+        targetPath,
+        async () => import_fs_extra2.default.pathExists(targetPath)
+      );
+      if (!exists) {
+        res.status(404).json({ error: "Image file not found" });
+        return;
+      }
+      const image = import_electron.nativeImage.createFromPath(targetPath);
+      if (image.isEmpty()) {
+        res.status(500).json({ error: "Failed to load image" });
+        return;
+      }
+      import_electron.clipboard.writeImage(image);
       res.json({ success: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2027,8 +2226,67 @@ var createModelRouter = (deps) => {
   return router;
 };
 
+// backend/settingsStore.ts
+var import_fs_extra3 = __toESM(require("fs-extra"), 1);
+var settingsFilePath = "";
+var settingsCache = null;
+var configureSettingsStore = (filePath) => {
+  if (!filePath) {
+    throw new Error("Settings file path is required");
+  }
+  if (settingsFilePath === filePath) return;
+  settingsFilePath = filePath;
+  settingsCache = null;
+};
+var getSettingsFilePath = () => {
+  if (!settingsFilePath) {
+    throw new Error("Settings store is not configured");
+  }
+  return settingsFilePath;
+};
+var readSettings = async () => {
+  const filePath = getSettingsFilePath();
+  if (settingsCache) return settingsCache;
+  return withFileLock(filePath, async () => {
+    if (!await import_fs_extra3.default.pathExists(filePath)) {
+      settingsCache = {};
+      return settingsCache;
+    }
+    try {
+      const raw = await import_fs_extra3.default.readJson(filePath);
+      if (raw && typeof raw === "object") {
+        settingsCache = raw;
+        return settingsCache;
+      }
+    } catch (error) {
+      console.error("Failed to read settings file", error);
+    }
+    settingsCache = {};
+    return settingsCache;
+  });
+};
+var writeSettings = async (settings) => {
+  const filePath = getSettingsFilePath();
+  settingsCache = settings;
+  await withFileLock(filePath, async () => {
+    try {
+      await import_fs_extra3.default.writeJson(filePath, settings);
+    } catch (error) {
+      console.error("Failed to write settings file", error);
+    }
+  });
+};
+
 // backend/imageAnalysis.ts
 var import_sharp = __toESM(require("sharp"), 1);
+var DEFAULT_DOMINANT_COLOR = "#808080";
+var DOMINANT_ANALYSIS_SIZE = 96;
+var DOMINANT_CLUSTER_COUNT = 6;
+var DOMINANT_CLUSTER_ITERATIONS = 10;
+var MIN_VISIBLE_ALPHA = 8;
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
 function rgbToHsv(r, g, b) {
   const rNorm = r / 255;
   const gNorm = g / 255;
@@ -2047,7 +2305,7 @@ function rgbToHsv(r, g, b) {
       case gNorm:
         h = (bNorm - rNorm) / d + 2;
         break;
-      case bNorm:
+      default:
         h = (rNorm - gNorm) / d + 4;
         break;
     }
@@ -2058,69 +2316,336 @@ function rgbToHsv(r, g, b) {
 function rgbToHex(r, g, b) {
   return "#" + [r, g, b].map((x) => Math.round(x).toString(16).padStart(2, "0")).join("");
 }
+function srgbChannelToLinear(value) {
+  const normalized = value / 255;
+  return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+}
+function rgbToLab(r, g, b) {
+  const rLinear = srgbChannelToLinear(r);
+  const gLinear = srgbChannelToLinear(g);
+  const bLinear = srgbChannelToLinear(b);
+  const x = rLinear * 0.4124564 + gLinear * 0.3575761 + bLinear * 0.1804375;
+  const y = rLinear * 0.2126729 + gLinear * 0.7151522 + bLinear * 0.072175;
+  const z = rLinear * 0.0193339 + gLinear * 0.119192 + bLinear * 0.9503041;
+  const xn = 0.95047;
+  const yn = 1;
+  const zn = 1.08883;
+  const delta = 6 / 29;
+  const deltaCubed = delta ** 3;
+  const factor = 1 / (3 * delta ** 2);
+  const offset = 4 / 29;
+  const f = (value) => value > deltaCubed ? Math.cbrt(value) : value * factor + offset;
+  const fx = f(x / xn);
+  const fy = f(y / yn);
+  const fz = f(z / zn);
+  return {
+    l: 116 * fy - 16,
+    labA: 500 * (fx - fy),
+    labB: 200 * (fy - fz)
+  };
+}
+function labDistanceSquared(left, right) {
+  const dl = left.l - right.l;
+  const da = left.labA - right.labA;
+  const db = left.labB - right.labB;
+  return dl * dl + da * da + db * db;
+}
+function deltaE2000(left, right) {
+  const l1 = left.l;
+  const a1 = left.labA;
+  const b1 = left.labB;
+  const l2 = right.l;
+  const a2 = right.labA;
+  const b2 = right.labB;
+  const c1 = Math.sqrt(a1 * a1 + b1 * b1);
+  const c2 = Math.sqrt(a2 * a2 + b2 * b2);
+  const cMean = (c1 + c2) / 2;
+  const cMeanPow7 = cMean ** 7;
+  const g = 0.5 * (1 - Math.sqrt(cMeanPow7 / (cMeanPow7 + 25 ** 7)));
+  const a1Prime = (1 + g) * a1;
+  const a2Prime = (1 + g) * a2;
+  const c1Prime = Math.sqrt(a1Prime * a1Prime + b1 * b1);
+  const c2Prime = Math.sqrt(a2Prime * a2Prime + b2 * b2);
+  const hPrime = (aPrime, bValue) => {
+    if (aPrime === 0 && bValue === 0) return 0;
+    const angle = Math.atan2(bValue, aPrime) * 180 / Math.PI;
+    return angle >= 0 ? angle : angle + 360;
+  };
+  const h1Prime = hPrime(a1Prime, b1);
+  const h2Prime = hPrime(a2Prime, b2);
+  const deltaLPrime = l2 - l1;
+  const deltaCPrime = c2Prime - c1Prime;
+  let deltahPrime = 0;
+  if (c1Prime !== 0 && c2Prime !== 0) {
+    const diff = h2Prime - h1Prime;
+    if (Math.abs(diff) <= 180) {
+      deltahPrime = diff;
+    } else if (diff > 180) {
+      deltahPrime = diff - 360;
+    } else {
+      deltahPrime = diff + 360;
+    }
+  }
+  const deltaHPrime = 2 * Math.sqrt(c1Prime * c2Prime) * Math.sin(deltahPrime / 2 * Math.PI / 180);
+  const lPrimeMean = (l1 + l2) / 2;
+  const cPrimeMean = (c1Prime + c2Prime) / 2;
+  let hPrimeMean = h1Prime + h2Prime;
+  if (c1Prime !== 0 && c2Prime !== 0) {
+    const diff = Math.abs(h1Prime - h2Prime);
+    if (diff <= 180) {
+      hPrimeMean = (h1Prime + h2Prime) / 2;
+    } else if (h1Prime + h2Prime < 360) {
+      hPrimeMean = (h1Prime + h2Prime + 360) / 2;
+    } else {
+      hPrimeMean = (h1Prime + h2Prime - 360) / 2;
+    }
+  }
+  const t2 = 1 - 0.17 * Math.cos((hPrimeMean - 30) * Math.PI / 180) + 0.24 * Math.cos(2 * hPrimeMean * Math.PI / 180) + 0.32 * Math.cos((3 * hPrimeMean + 6) * Math.PI / 180) - 0.2 * Math.cos((4 * hPrimeMean - 63) * Math.PI / 180);
+  const deltaTheta = 30 * Math.exp(-(((hPrimeMean - 275) / 25) ** 2));
+  const rC = 2 * Math.sqrt(cPrimeMean ** 7 / (cPrimeMean ** 7 + 25 ** 7));
+  const sL = 1 + 0.015 * (lPrimeMean - 50) ** 2 / Math.sqrt(20 + (lPrimeMean - 50) ** 2);
+  const sC = 1 + 0.045 * cPrimeMean;
+  const sH = 1 + 0.015 * cPrimeMean * t2;
+  const rT = -Math.sin(2 * deltaTheta * Math.PI / 180) * rC;
+  const lTerm = deltaLPrime / sL;
+  const cTerm = deltaCPrime / sC;
+  const hTerm = deltaHPrime / sH;
+  return Math.sqrt(lTerm * lTerm + cTerm * cTerm + hTerm * hTerm + rT * cTerm * hTerm);
+}
+function getCenterWeight(x, y, width, height) {
+  const normalizedX = width <= 1 ? 0 : x / (width - 1) * 2 - 1;
+  const normalizedY = height <= 1 ? 0 : y / (height - 1) * 2 - 1;
+  const radialDistance = Math.sqrt(normalizedX * normalizedX + normalizedY * normalizedY);
+  return clamp(0.65 + Math.exp(-(radialDistance * radialDistance) / 0.55) * 0.55, 0.65, 1.2);
+}
+async function collectDominantColorInput(filePath) {
+  const { data, info } = await (0, import_sharp.default)(filePath).resize(DOMINANT_ANALYSIS_SIZE, DOMINANT_ANALYSIS_SIZE, { fit: "inside" }).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const width = info.width || DOMINANT_ANALYSIS_SIZE;
+  const height = info.height || DOMINANT_ANALYSIS_SIZE;
+  const channels = info.channels || 4;
+  const samples = [];
+  let totalWeight = 0;
+  let weightedL = 0;
+  let weightedA = 0;
+  let weightedB = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const index = (y * width + x) * channels;
+      const alpha = channels > 3 ? data[index + 3] : 255;
+      if (alpha < MIN_VISIBLE_ALPHA) continue;
+      const alphaWeight = alpha / 255;
+      const r = data[index];
+      const g = data[index + 1];
+      const b = data[index + 2];
+      const { l, labA, labB } = rgbToLab(r, g, b);
+      const centerWeight = getCenterWeight(x, y, width, height);
+      const weight = alphaWeight * centerWeight;
+      if (weight <= 0) continue;
+      samples.push({ r, g, b, l, labA, labB, weight, centerWeight });
+      totalWeight += weight;
+      weightedL += l * weight;
+      weightedA += labA * weight;
+      weightedB += labB * weight;
+    }
+  }
+  if (samples.length === 0 || totalWeight === 0) return null;
+  return {
+    samples,
+    totalWeight,
+    meanLab: {
+      l: weightedL / totalWeight,
+      labA: weightedA / totalWeight,
+      labB: weightedB / totalWeight
+    }
+  };
+}
+function chooseInitialCentroids(samples, centroidCount) {
+  if (samples.length === 0) return [];
+  let firstIndex = 0;
+  let maxWeight = -1;
+  for (let i = 0; i < samples.length; i++) {
+    if (samples[i].weight <= maxWeight) continue;
+    maxWeight = samples[i].weight;
+    firstIndex = i;
+  }
+  const centroids = [
+    {
+      l: samples[firstIndex].l,
+      labA: samples[firstIndex].labA,
+      labB: samples[firstIndex].labB
+    }
+  ];
+  while (centroids.length < centroidCount && centroids.length < samples.length) {
+    let bestIndex = -1;
+    let bestScore = -1;
+    for (let i = 0; i < samples.length; i++) {
+      const sample = samples[i];
+      let minDistance = Number.POSITIVE_INFINITY;
+      for (const centroid of centroids) {
+        minDistance = Math.min(minDistance, labDistanceSquared(sample, centroid));
+      }
+      const score = minDistance * sample.weight;
+      if (score <= bestScore) continue;
+      bestScore = score;
+      bestIndex = i;
+    }
+    if (bestIndex === -1) break;
+    centroids.push({
+      l: samples[bestIndex].l,
+      labA: samples[bestIndex].labA,
+      labB: samples[bestIndex].labB
+    });
+  }
+  return centroids;
+}
+function buildClusters(samples, assignments, centroidCount) {
+  const accumulators = Array.from({ length: centroidCount }, () => ({
+    weight: 0,
+    centerWeight: 0,
+    r: 0,
+    g: 0,
+    b: 0,
+    l: 0,
+    labA: 0,
+    labB: 0,
+    count: 0
+  }));
+  for (let i = 0; i < samples.length; i++) {
+    const sample = samples[i];
+    const clusterIndex = assignments[i];
+    const accumulator = accumulators[clusterIndex];
+    accumulator.weight += sample.weight;
+    accumulator.centerWeight += sample.centerWeight * sample.weight;
+    accumulator.r += sample.r * sample.weight;
+    accumulator.g += sample.g * sample.weight;
+    accumulator.b += sample.b * sample.weight;
+    accumulator.l += sample.l * sample.weight;
+    accumulator.labA += sample.labA * sample.weight;
+    accumulator.labB += sample.labB * sample.weight;
+    accumulator.count += 1;
+  }
+  return accumulators.filter((accumulator) => accumulator.weight > 0).map((accumulator) => ({
+    r: accumulator.r / accumulator.weight,
+    g: accumulator.g / accumulator.weight,
+    b: accumulator.b / accumulator.weight,
+    l: accumulator.l / accumulator.weight,
+    labA: accumulator.labA / accumulator.weight,
+    labB: accumulator.labB / accumulator.weight,
+    weight: accumulator.weight,
+    centerWeight: accumulator.centerWeight / accumulator.weight,
+    count: accumulator.count
+  })).sort((left, right) => right.weight - left.weight);
+}
+function clusterSamples(samples) {
+  const centroidCount = Math.min(DOMINANT_CLUSTER_COUNT, samples.length);
+  if (centroidCount === 0) return [];
+  const centroids = chooseInitialCentroids(samples, centroidCount);
+  const assignments = new Array(samples.length).fill(0);
+  for (let iteration = 0; iteration < DOMINANT_CLUSTER_ITERATIONS; iteration++) {
+    const accumulators = Array.from({ length: centroids.length }, () => ({
+      weight: 0,
+      l: 0,
+      labA: 0,
+      labB: 0
+    }));
+    let changed = false;
+    for (let i = 0; i < samples.length; i++) {
+      const sample = samples[i];
+      let bestIndex = 0;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      for (let centroidIndex = 0; centroidIndex < centroids.length; centroidIndex++) {
+        const centroid = centroids[centroidIndex];
+        const distance = labDistanceSquared(sample, centroid);
+        if (distance >= bestDistance) continue;
+        bestDistance = distance;
+        bestIndex = centroidIndex;
+      }
+      if (assignments[i] !== bestIndex) {
+        changed = true;
+        assignments[i] = bestIndex;
+      }
+      const accumulator = accumulators[bestIndex];
+      accumulator.weight += sample.weight;
+      accumulator.l += sample.l * sample.weight;
+      accumulator.labA += sample.labA * sample.weight;
+      accumulator.labB += sample.labB * sample.weight;
+    }
+    for (let centroidIndex = 0; centroidIndex < centroids.length; centroidIndex++) {
+      const accumulator = accumulators[centroidIndex];
+      if (accumulator.weight === 0) continue;
+      centroids[centroidIndex] = {
+        l: accumulator.l / accumulator.weight,
+        labA: accumulator.labA / accumulator.weight,
+        labB: accumulator.labB / accumulator.weight
+      };
+    }
+    if (!changed && iteration > 0) break;
+  }
+  return buildClusters(samples, assignments, centroids.length);
+}
+function scoreCluster(cluster, totalWeight, meanLab, maxChroma, maxContrast) {
+  const share = cluster.weight / totalWeight;
+  const { s, v } = rgbToHsv(cluster.r, cluster.g, cluster.b);
+  const chroma = Math.sqrt(cluster.labA * cluster.labA + cluster.labB * cluster.labB);
+  const contrast = deltaE2000(cluster, meanLab);
+  const chromaScore = maxChroma > 0 ? chroma / maxChroma : 0;
+  const contrastScore = maxContrast > 0 ? contrast / maxContrast : 0;
+  const centerScore = clamp((cluster.centerWeight - 0.65) / 0.55, 0, 1);
+  let score = share;
+  score *= 0.95 + chromaScore * 1.8;
+  score *= 0.95 + contrastScore * 1.35;
+  score *= 0.9 + centerScore * 0.35;
+  if (s < 0.08 && v > 0.9) {
+    score *= 0.02;
+  } else if (s < 0.15 && v > 0.82) {
+    score *= 0.14;
+  }
+  if (v < 0.15 && chromaScore < 0.25) {
+    score *= 0.18;
+  } else if (v < 0.22 && s < 0.18) {
+    score *= 0.35;
+  }
+  if (share < 0.015 && chromaScore < 0.3) {
+    score *= 0.4;
+  }
+  return score;
+}
 async function getDominantColor(filePath) {
   try {
-    const { data } = await (0, import_sharp.default)(filePath).resize(150, 150, { fit: "cover" }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
-    const pixelCount = data.length / 3;
-    const colorCounts = /* @__PURE__ */ new Map();
-    const QUANTIZATION_BITS = 5;
-    const SHIFT = 8 - QUANTIZATION_BITS;
-    const BIN_SIZE = 1 << SHIFT;
-    const OFFSET = BIN_SIZE / 2;
-    for (let i = 0; i < data.length; i += 3) {
-      const r = data[i];
-      const g = data[i + 1];
-      const b = data[i + 2];
-      const rQ = r >> SHIFT << SHIFT;
-      const gQ = g >> SHIFT << SHIFT;
-      const bQ = b >> SHIFT << SHIFT;
-      const key = `${rQ},${gQ},${bQ}`;
-      colorCounts.set(key, (colorCounts.get(key) || 0) + 1);
-    }
-    const sortedColors = Array.from(colorCounts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([key, count]) => {
-      const [r, g, b] = key.split(",").map(Number);
-      return {
-        r: Math.min(255, r + OFFSET),
-        g: Math.min(255, g + OFFSET),
-        b: Math.min(255, b + OFFSET),
-        count
-      };
-    });
+    const input = await collectDominantColorInput(filePath);
+    if (!input) return DEFAULT_DOMINANT_COLOR;
+    const clusters = clusterSamples(input.samples);
+    if (clusters.length === 0) return DEFAULT_DOMINANT_COLOR;
+    const contrasts = clusters.map((cluster) => deltaE2000(cluster, input.meanLab));
+    const chromas = clusters.map((cluster) => Math.sqrt(cluster.labA * cluster.labA + cluster.labB * cluster.labB));
+    const maxContrast = Math.max(...contrasts, 1);
+    const maxChroma = Math.max(...chromas, 1);
+    let bestCluster = null;
     let bestScore = -1;
-    let bestHex = "#808080";
-    const totalPixels = pixelCount;
-    for (const color of sortedColors) {
-      const { r, g, b, count } = color;
-      const { s, v } = rgbToHsv(r, g, b);
-      const dominance = count / totalPixels;
-      let score = dominance;
-      score *= 1 + s * 1.5;
-      score *= 1 + v * 1.2;
-      if (v < 0.2) {
-        score *= 0.1;
-      }
-      if (s < 0.1 && v > 0.8) {
-        score *= 0.5;
-      }
-      if (score > bestScore) {
-        bestScore = score;
-        bestHex = rgbToHex(r, g, b);
-      }
+    for (const cluster of clusters) {
+      const score = scoreCluster(cluster, input.totalWeight, input.meanLab, maxChroma, maxContrast);
+      if (score <= bestScore) continue;
+      bestScore = score;
+      bestCluster = cluster;
     }
-    return bestHex;
+    return bestCluster ? rgbToHex(bestCluster.r, bestCluster.g, bestCluster.b) : DEFAULT_DOMINANT_COLOR;
   } catch (error) {
     console.error(`Error calculating dominant color for ${filePath}:`, error);
-    return "#808080";
+    return DEFAULT_DOMINANT_COLOR;
   }
 }
 async function calculateTone(filePath) {
   try {
-    const { data } = await (0, import_sharp.default)(filePath).resize(150, 150, { fit: "cover" }).grayscale().raw().toBuffer({ resolveWithObject: true });
+    const { data, info } = await (0, import_sharp.default)(filePath).resize(150, 150, { fit: "cover" }).grayscale().ensureAlpha().raw().toBuffer({ resolveWithObject: true });
     const hist = new Array(256).fill(0);
-    for (let i = 0; i < data.length; i++) {
-      hist[data[i]]++;
+    const channels = info.channels || 2;
+    for (let i = 0; i < data.length; i += channels) {
+      const luminance = data[i];
+      const alpha = channels > 1 ? data[i + 1] : 255;
+      if (alpha === 0) continue;
+      hist[luminance]++;
     }
-    const totalPixels = data.length;
+    const totalPixels = hist.reduce((sum, count) => sum + count, 0);
     if (totalPixels === 0) return "mid-mid";
     let shadowPixels = 0;
     let highlightPixels = 0;
@@ -2169,13 +2694,735 @@ async function calculateTone(filePath) {
   }
 }
 
+// backend/pythonRuntime.ts
+var import_child_process = require("child_process");
+var import_crypto = require("crypto");
+var import_electron2 = require("electron");
+var import_node_pty = require("@lydell/node-pty");
+var import_path4 = __toESM(require("path"), 1);
+var PYTHON_RUNTIME_DIR_NAME = "python-runtime";
+var PYTHON_RUNTIME_FILES = ["requirements.lock.txt", "tagger.py"];
+var RUNTIME_STATE_FILE_NAME = "runtime-state.json";
+var RUNTIME_VENV_DIR_NAME = ".venv";
+var RUNTIME_STAGING_VENV_DIR_NAME = ".venv.next";
+var RUNTIME_BACKUP_VENV_DIR_NAME = ".venv.prev";
+var RUNTIME_UV_CACHE_DIR_NAME = ".uv-cache";
+var RUNTIME_STATE_VERSION = 1;
+var PYPI_INDEX_URL = "https://mirrors.aliyun.com/pypi/simple/";
+var runtimePromise = null;
+var getUnpackedPath = (targetPath) => {
+  if (!import_electron2.app.isPackaged) return targetPath;
+  return targetPath.replace("app.asar", "app.asar.unpacked");
+};
+var getBundledPythonSourceDir = () => {
+  return getUnpackedPath(import_path4.default.join(__dirname, "../backend/python"));
+};
+var getBundledPythonSourceFile = (fileName) => {
+  return import_path4.default.join(getBundledPythonSourceDir(), fileName);
+};
+var getManagedPythonRuntimeDir = () => {
+  return import_path4.default.join(import_electron2.app.getPath("userData"), PYTHON_RUNTIME_DIR_NAME);
+};
+var getManagedPythonScriptPath = () => {
+  return import_path4.default.join(getManagedPythonRuntimeDir(), "tagger.py");
+};
+var getManagedPythonVenvDir = () => {
+  return import_path4.default.join(getManagedPythonRuntimeDir(), RUNTIME_VENV_DIR_NAME);
+};
+var getManagedPythonStagingVenvDir = () => {
+  return import_path4.default.join(getManagedPythonRuntimeDir(), RUNTIME_STAGING_VENV_DIR_NAME);
+};
+var getManagedPythonBackupVenvDir = () => {
+  return import_path4.default.join(getManagedPythonRuntimeDir(), RUNTIME_BACKUP_VENV_DIR_NAME);
+};
+var getPythonExecutablePath = (venvDir) => {
+  return process.platform === "win32" ? import_path4.default.join(venvDir, "Scripts", "python.exe") : import_path4.default.join(venvDir, "bin", "python");
+};
+var getManagedPythonExecutablePath = () => {
+  return getPythonExecutablePath(getManagedPythonVenvDir());
+};
+var getManagedPythonRequirementsPath = () => {
+  return import_path4.default.join(getManagedPythonRuntimeDir(), "requirements.lock.txt");
+};
+var getManagedPythonStatePath = () => {
+  return import_path4.default.join(getManagedPythonRuntimeDir(), RUNTIME_STATE_FILE_NAME);
+};
+var getManagedUvCacheDir = () => {
+  return import_path4.default.join(getManagedPythonRuntimeDir(), RUNTIME_UV_CACHE_DIR_NAME);
+};
+var cleanupManagedUvCache = async () => {
+  const cacheDir = getManagedUvCacheDir();
+  if (!await lockedFs.pathExists(cacheDir)) {
+    return;
+  }
+  await lockedFs.remove(cacheDir);
+};
+var getRuntimeEnv = () => {
+  return {
+    ...process.env,
+    PYTHONIOENCODING: "utf-8",
+    PYTHONUTF8: "1",
+    TRANSFORMERS_VERBOSITY: "error",
+    HF_HUB_DISABLE_PROGRESS_BARS: "1",
+    UV_INDEX_URL: PYPI_INDEX_URL,
+    PIP_INDEX_URL: PYPI_INDEX_URL,
+    HF_ENDPOINT: "https://hf-mirror.com",
+    UV_CACHE_DIR: getManagedUvCacheDir()
+  };
+};
+var runCommand = async (command, args, cwd, envOverrides = {}, callbacks = {}) => {
+  return new Promise((resolve, reject) => {
+    var _a, _b;
+    const env = {
+      ...getRuntimeEnv(),
+      ...envOverrides
+    };
+    const proc = (0, import_child_process.spawn)(command, args, {
+      cwd,
+      env,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    let stdoutBuffer = "";
+    let stderrBuffer = "";
+    const flushBuffer = (source, force = false) => {
+      var _a2;
+      const callback = source === "stdout" ? callbacks.onStdoutLine : callbacks.onStderrLine;
+      const buffer = source === "stdout" ? stdoutBuffer : stderrBuffer;
+      if (!callback || !buffer) {
+        if (force) {
+          if (source === "stdout") {
+            stdoutBuffer = "";
+          } else {
+            stderrBuffer = "";
+          }
+        }
+        return;
+      }
+      const parts = buffer.split(/\r?\n|\r/g);
+      const completeCount = force ? parts.length : parts.length - 1;
+      for (let index = 0; index < completeCount; index += 1) {
+        const line = (_a2 = parts[index]) == null ? void 0 : _a2.trim();
+        if (line) {
+          callback(line);
+        }
+      }
+      const remainder = force ? "" : parts.at(-1) ?? "";
+      if (source === "stdout") {
+        stdoutBuffer = remainder;
+      } else {
+        stderrBuffer = remainder;
+      }
+    };
+    (_a = proc.stdout) == null ? void 0 : _a.on("data", (chunk) => {
+      const text = chunk.toString();
+      stdout += text;
+      stdoutBuffer += text;
+      flushBuffer("stdout");
+    });
+    (_b = proc.stderr) == null ? void 0 : _b.on("data", (chunk) => {
+      const text = chunk.toString();
+      stderr += text;
+      stderrBuffer += text;
+      flushBuffer("stderr");
+    });
+    proc.once("error", reject);
+    proc.once("exit", (code) => {
+      flushBuffer("stdout", true);
+      flushBuffer("stderr", true);
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      reject(
+        new Error(
+          `Command failed (${command} ${args.join(" ")}): ${stderr.trim() || stdout.trim() || `exit code ${code}`}`
+        )
+      );
+    });
+  });
+};
+var tryRunCommand = async (command, args, cwd) => {
+  try {
+    return await runCommand(command, args, cwd);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("ENOENT") || message.includes("not recognized") || message.includes("No such file or directory")) {
+      return null;
+    }
+    throw error;
+  }
+};
+var syncRuntimeFile = async (fileName) => {
+  const sourcePath = getBundledPythonSourceFile(fileName);
+  const targetPath = import_path4.default.join(getManagedPythonRuntimeDir(), fileName);
+  const exists = await lockedFs.pathExists(sourcePath);
+  if (!exists) {
+    throw new Error(`Missing bundled python runtime file: ${sourcePath}`);
+  }
+  await lockedFs.copy(sourcePath, targetPath);
+};
+var getNvidiaSmiCandidates = () => {
+  const candidates = ["nvidia-smi"];
+  if (process.platform !== "win32") {
+    return candidates;
+  }
+  const roots = [
+    process.env.ProgramFiles,
+    process.env["ProgramW6432"],
+    process.env["ProgramFiles(x86)"]
+  ].filter((value) => Boolean(value)).map((value) => value.trim());
+  const seen = new Set(candidates);
+  for (const root of roots) {
+    const target = import_path4.default.join(
+      root,
+      "NVIDIA Corporation",
+      "NVSMI",
+      "nvidia-smi.exe"
+    );
+    if (seen.has(target)) continue;
+    seen.add(target);
+    candidates.push(target);
+  }
+  return candidates;
+};
+var resolveSuccessfulCommand = async (candidates, args, cwd) => {
+  for (const candidate of candidates) {
+    if (import_path4.default.isAbsolute(candidate) && !await lockedFs.pathExists(candidate)) {
+      continue;
+    }
+    const result = await tryRunCommand(candidate, args, cwd);
+    if (result) {
+      return { command: candidate, result };
+    }
+  }
+  return null;
+};
+var ensurePythonRuntimeFiles = async () => {
+  const runtimeDir = getManagedPythonRuntimeDir();
+  await lockedFs.ensureDir(runtimeDir);
+  await lockedFs.ensureDir(getManagedUvCacheDir());
+  await Promise.all(PYTHON_RUNTIME_FILES.map(syncRuntimeFile));
+  return {
+    runtimeDir,
+    scriptPath: getManagedPythonScriptPath()
+  };
+};
+var detectGpuSupport = async () => {
+  var _a, _b, _c, _d;
+  if (process.platform === "darwin") {
+    return {
+      torchBackend: "cpu",
+      supported: false,
+      gpuName: null,
+      driverVersion: null,
+      cudaVersion: null,
+      reason: "CUDA is not available on macOS"
+    };
+  }
+  const runtimeDir = getManagedPythonRuntimeDir();
+  const resolvedGpuCommand = await resolveSuccessfulCommand(
+    getNvidiaSmiCandidates(),
+    ["-L"],
+    runtimeDir
+  );
+  if (!resolvedGpuCommand) {
+    return {
+      torchBackend: "cpu",
+      supported: false,
+      gpuName: null,
+      driverVersion: null,
+      cudaVersion: null,
+      reason: "nvidia-smi is unavailable"
+    };
+  }
+  const firstGpuLine = resolvedGpuCommand.result.stdout.split(/\r?\n/).map((line) => line.trim()).find((line) => line.startsWith("GPU "));
+  if (!firstGpuLine) {
+    return {
+      torchBackend: "cpu",
+      supported: false,
+      gpuName: null,
+      driverVersion: null,
+      cudaVersion: null,
+      reason: "No NVIDIA GPU detected"
+    };
+  }
+  const gpuName = ((_b = (_a = firstGpuLine.match(/^GPU \d+:\s*(.+?)\s+\(UUID:/)) == null ? void 0 : _a[1]) == null ? void 0 : _b.trim()) ?? null;
+  const detail = await tryRunCommand(resolvedGpuCommand.command, [], runtimeDir);
+  const detailOutput = `${(detail == null ? void 0 : detail.stdout) ?? ""}
+${(detail == null ? void 0 : detail.stderr) ?? ""}`;
+  const driverVersion = ((_c = detailOutput.match(/Driver Version:\s*([0-9.]+)/)) == null ? void 0 : _c[1]) ?? null;
+  const cudaVersion = ((_d = detailOutput.match(/CUDA Version:\s*([0-9.]+)/)) == null ? void 0 : _d[1]) ?? null;
+  return {
+    torchBackend: "auto",
+    supported: true,
+    gpuName,
+    driverVersion,
+    cudaVersion,
+    reason: "Detected NVIDIA GPU via nvidia-smi"
+  };
+};
+var readRuntimeState = async () => {
+  const statePath = getManagedPythonStatePath();
+  const exists = await lockedFs.pathExists(statePath);
+  if (!exists) return null;
+  try {
+    return await lockedFs.readJson(statePath);
+  } catch {
+    return null;
+  }
+};
+var hashRequirements = async () => {
+  const requirementsPath = getManagedPythonRequirementsPath();
+  const content = await lockedFs.readFile(requirementsPath, "utf8");
+  return (0, import_crypto.createHash)("sha256").update(content).digest("hex");
+};
+var countLockedPackages = async (requirementsPath) => {
+  const content = await lockedFs.readFile(requirementsPath, "utf8");
+  return content.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#")).length;
+};
+var ANSI_COLOR_PATTERN = new RegExp(
+  `${String.fromCharCode(27)}\\[[0-9;]*m`,
+  "g"
+);
+var ANSI_CONTROL_SEQUENCE_PATTERN = new RegExp(
+  `${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-~]`,
+  "g"
+);
+var OSC_SEQUENCE_PATTERN = new RegExp(
+  `${String.fromCharCode(27)}\\][^${String.fromCharCode(7)}]*${String.fromCharCode(7)}`,
+  "g"
+);
+var BEL_CHARACTER = String.fromCharCode(7);
+var normalizeCommandLine = (line) => {
+  return line.replace(ANSI_COLOR_PATTERN, "").trim();
+};
+var stripTerminalSequences = (value) => {
+  return value.replace(OSC_SEQUENCE_PATTERN, "").replace(ANSI_CONTROL_SEQUENCE_PATTERN, "").split(BEL_CHARACTER).join("");
+};
+var clampProgress = (value) => {
+  return Math.max(0, Math.min(1, value));
+};
+var mapProgress = (start, end, current, total) => {
+  if (total <= 0) return start;
+  const ratio = clampProgress(current / total);
+  return start + (end - start) * ratio;
+};
+var extractPackageCount = (line, verb) => {
+  const matched = line.match(new RegExp(`${verb}\\s+(\\d+)\\s+packages?`, "i"));
+  return matched ? Number.parseInt(matched[1], 10) : null;
+};
+var extractPackageName = (line) => {
+  const matched = line.match(/^[+\-~]\s+([A-Za-z0-9._-]+)/);
+  return (matched == null ? void 0 : matched[1]) ?? null;
+};
+var createUvSyncProgressParser = (totalPackages, reportProgress) => {
+  let installedPackages = 0;
+  let preparedPackages = 0;
+  let installedSummary = 0;
+  let downloadedPackages = 0;
+  return (rawLine) => {
+    if (!reportProgress) return;
+    const line = normalizeCommandLine(rawLine);
+    if (!line) return;
+    const resolvedCount = extractPackageCount(line, "Resolved");
+    if (resolvedCount !== null) {
+      reportProgress(
+        "envInit.resolvedPackages",
+        0.42,
+        {
+          total: resolvedCount
+        },
+        line
+      );
+      return;
+    }
+    const preparedCount = extractPackageCount(line, "Prepared");
+    if (preparedCount !== null) {
+      preparedPackages = Math.max(preparedPackages, preparedCount);
+      reportProgress(
+        "envInit.downloadingPackagesDetailed",
+        mapProgress(0.5, 0.72, preparedPackages, totalPackages),
+        {
+          current: preparedPackages,
+          total: totalPackages
+        },
+        line
+      );
+      return;
+    }
+    const installedCount = extractPackageCount(line, "Installed");
+    if (installedCount !== null) {
+      installedSummary = Math.max(installedSummary, installedCount);
+      reportProgress(
+        "envInit.installingPackagesDetailed",
+        mapProgress(0.72, 0.9, installedSummary, totalPackages),
+        {
+          current: installedSummary,
+          total: totalPackages
+        },
+        line
+      );
+      return;
+    }
+    const downloadingMatch = line.match(
+      /^Downloading\s+([A-Za-z0-9._-]+)\s+\(([^)]+)\)$/i
+    );
+    if (downloadingMatch) {
+      reportProgress(
+        "envInit.downloadingPackageNamed",
+        mapProgress(0.5, 0.72, downloadedPackages + 0.3, totalPackages),
+        {
+          current: downloadedPackages + 1,
+          total: totalPackages,
+          name: downloadingMatch[1],
+          size: downloadingMatch[2]
+        },
+        line
+      );
+      return;
+    }
+    const downloadedMatch = line.match(/^Downloaded\s+([A-Za-z0-9._-]+)$/i);
+    if (downloadedMatch) {
+      downloadedPackages = Math.min(totalPackages, downloadedPackages + 1);
+      reportProgress(
+        "envInit.downloadedPackageNamed",
+        mapProgress(0.5, 0.72, downloadedPackages, totalPackages),
+        {
+          current: downloadedPackages,
+          total: totalPackages,
+          name: downloadedMatch[1]
+        },
+        line
+      );
+      return;
+    }
+    const packageName = extractPackageName(line);
+    if (packageName) {
+      installedPackages = Math.min(totalPackages, installedPackages + 1);
+      reportProgress(
+        "envInit.installingPackageNamed",
+        mapProgress(0.72, 0.9, installedPackages, totalPackages),
+        {
+          current: installedPackages,
+          total: totalPackages,
+          name: packageName
+        },
+        line
+      );
+      return;
+    }
+    reportProgress("envInit.installingPackages", 0.72, void 0, line);
+  };
+};
+var runCommandInPty = async (command, args, cwd, envOverrides = {}, onLine) => {
+  return new Promise((resolve, reject) => {
+    const env = {
+      ...getRuntimeEnv(),
+      ...envOverrides,
+      TERM: process.env.TERM || "xterm-256color",
+      FORCE_COLOR: "0"
+    };
+    const terminal = (0, import_node_pty.spawn)(command, args, {
+      name: env.TERM,
+      cols: 160,
+      rows: 40,
+      cwd,
+      env,
+      encoding: "utf8",
+      useConpty: process.platform === "win32"
+    });
+    let output = "";
+    let lineBuffer = "";
+    let settled = false;
+    const emitBufferedLines = (force = false) => {
+      const normalized = lineBuffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      const parts = normalized.split("\n");
+      const completeCount = force ? parts.length : parts.length - 1;
+      for (let index = 0; index < completeCount; index += 1) {
+        const line = normalizeCommandLine(parts[index] ?? "");
+        if (line) {
+          onLine == null ? void 0 : onLine(line);
+        }
+      }
+      lineBuffer = force ? "" : parts.at(-1) ?? "";
+    };
+    const dataDisposable = terminal.onData((data) => {
+      const cleaned = stripTerminalSequences(data);
+      output += cleaned;
+      lineBuffer += cleaned;
+      emitBufferedLines();
+    });
+    const exitDisposable = terminal.onExit(({ exitCode }) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      dataDisposable.dispose();
+      exitDisposable.dispose();
+      emitBufferedLines(true);
+      if (exitCode === 0) {
+        resolve();
+        return;
+      }
+      reject(
+        new Error(
+          `Command failed (${command} ${args.join(" ")}): ${output.trim() || `exit code ${exitCode}`}`
+        )
+      );
+    });
+  });
+};
+var shouldRebuildRuntime = async (state, requirementsHash, preferredTorchBackend) => {
+  if (!state) return true;
+  if (state.version !== RUNTIME_STATE_VERSION) return true;
+  if (state.platform !== process.platform) return true;
+  if (state.arch !== process.arch) return true;
+  if (state.requirementsHash !== requirementsHash) return true;
+  if (preferredTorchBackend === "cpu" && state.torchBackend !== "cpu") return true;
+  if (preferredTorchBackend === "auto" && state.torchBackend !== "auto" && !state.gpuFallback) {
+    return true;
+  }
+  if (state.gpu.supported && state.torchBackend === "auto" && !state.installedTorch.cudaAvailable) {
+    return true;
+  }
+  return !await lockedFs.pathExists(getManagedPythonExecutablePath());
+};
+var canReusePersistedRuntime = async (state, requirementsHash) => {
+  if (!state) return false;
+  if (state.version !== RUNTIME_STATE_VERSION) return false;
+  if (state.platform !== process.platform) return false;
+  if (state.arch !== process.arch) return false;
+  if (state.requirementsHash !== requirementsHash) return false;
+  if (state.gpu.supported && state.torchBackend === "auto" && !state.installedTorch.cudaAvailable) {
+    return false;
+  }
+  return lockedFs.pathExists(getManagedPythonExecutablePath());
+};
+var validateInstalledTorch = (requireCuda, gpu, installedTorch) => {
+  if (!requireCuda) {
+    return;
+  }
+  if (!gpu.supported) {
+    return;
+  }
+  if (installedTorch.cudaAvailable) {
+    return;
+  }
+  throw new Error(
+    `GPU detected (${gpu.gpuName ?? "unknown GPU"}), but installed torch is not using CUDA`
+  );
+};
+var promoteRuntimeVenv = async (stagingVenvDir) => {
+  const runtimeVenvDir = getManagedPythonVenvDir();
+  const backupVenvDir = getManagedPythonBackupVenvDir();
+  await lockedFs.remove(backupVenvDir);
+  if (await lockedFs.pathExists(runtimeVenvDir)) {
+    await lockedFs.rename(runtimeVenvDir, backupVenvDir);
+  }
+  try {
+    await lockedFs.rename(stagingVenvDir, runtimeVenvDir);
+  } catch (error) {
+    if (await lockedFs.pathExists(backupVenvDir)) {
+      await lockedFs.rename(backupVenvDir, runtimeVenvDir);
+    }
+    throw error;
+  }
+  await lockedFs.remove(backupVenvDir);
+};
+var inspectInstalledTorch = async (pythonPath, cwd) => {
+  const script = [
+    "import json",
+    "import platform",
+    "import torch",
+    "print(json.dumps({",
+    "  'python_version': platform.python_version(),",
+    "  'torch_version': getattr(torch, '__version__', None),",
+    "  'torch_backend_built': bool(getattr(torch.backends.cuda, 'is_built', lambda: False)()),",
+    "  'cuda_available': bool(torch.cuda.is_available()),",
+    "  'cuda_device_count': torch.cuda.device_count() if torch.cuda.is_available() else 0,",
+    "  'device': 'cuda' if torch.cuda.is_available() else 'cpu',",
+    "}, ensure_ascii=False))"
+  ].join("\n");
+  const { stdout } = await runCommand(pythonPath, ["-c", script], cwd);
+  const raw = JSON.parse(stdout.trim());
+  return {
+    pythonVersion: raw.python_version,
+    torchVersion: raw.torch_version,
+    torchBackendBuilt: raw.torch_backend_built,
+    cudaAvailable: raw.cuda_available,
+    cudaDeviceCount: raw.cuda_device_count,
+    device: raw.device
+  };
+};
+var rebuildRuntime = async (uvPath, runtimeDir, torchBackend, gpu, requireCuda, reportProgress) => {
+  const stagingVenvDir = getManagedPythonStagingVenvDir();
+  const pythonPath = getPythonExecutablePath(stagingVenvDir);
+  const requirementsPath = getManagedPythonRequirementsPath();
+  const totalPackages = await countLockedPackages(requirementsPath);
+  const handleSyncLine = createUvSyncProgressParser(totalPackages, reportProgress);
+  await lockedFs.remove(stagingVenvDir);
+  try {
+    reportProgress == null ? void 0 : reportProgress("envInit.creatingVirtualEnv", 0.3);
+    await runCommand(uvPath, ["venv", stagingVenvDir], runtimeDir);
+    reportProgress == null ? void 0 : reportProgress("envInit.resolvingDependencies", 0.38);
+    await runCommandInPty(
+      uvPath,
+      [
+        "pip",
+        "sync",
+        requirementsPath,
+        "--python",
+        pythonPath,
+        "--torch-backend",
+        torchBackend,
+        "--strict",
+        "--color",
+        "never"
+      ],
+      runtimeDir,
+      {},
+      handleSyncLine
+    );
+    reportProgress == null ? void 0 : reportProgress("envInit.verifyingEnvironment", 0.94);
+    const installedTorch = await inspectInstalledTorch(pythonPath, runtimeDir);
+    validateInstalledTorch(requireCuda, gpu, installedTorch);
+    await promoteRuntimeVenv(stagingVenvDir);
+    return installedTorch;
+  } catch (error) {
+    await lockedFs.remove(stagingVenvDir);
+    throw error;
+  }
+};
+var installRuntimeForPreferredBackend = async (uvPath, runtimeDir, gpu, reportProgress) => {
+  if (gpu.torchBackend !== "auto") {
+    return {
+      installedTorch: await rebuildRuntime(
+        uvPath,
+        runtimeDir,
+        "cpu",
+        gpu,
+        false,
+        reportProgress
+      ),
+      torchBackend: "cpu",
+      gpuFallback: false
+    };
+  }
+  try {
+    return {
+      installedTorch: await rebuildRuntime(
+        uvPath,
+        runtimeDir,
+        "auto",
+        gpu,
+        true,
+        reportProgress
+      ),
+      torchBackend: "auto",
+      gpuFallback: false
+    };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `GPU runtime setup failed for ${gpu.gpuName ?? "the detected GPU"}: ${reason}`
+    );
+  }
+};
+var ensurePythonRuntime = async (uvPath, reportProgress) => {
+  if (runtimePromise) {
+    return runtimePromise;
+  }
+  runtimePromise = (async () => {
+    reportProgress == null ? void 0 : reportProgress("envInit.initializingPythonEnv", 0.08);
+    const { runtimeDir, scriptPath } = await ensurePythonRuntimeFiles();
+    const requirementsHash = await hashRequirements();
+    const currentState = await readRuntimeState();
+    const canReusePersisted = await canReusePersistedRuntime(
+      currentState,
+      requirementsHash
+    );
+    if (canReusePersisted && currentState) {
+      reportProgress == null ? void 0 : reportProgress("envInit.pythonEnvReady", 1);
+      return {
+        runtimeDir,
+        scriptPath,
+        pythonPath: getManagedPythonExecutablePath(),
+        state: currentState
+      };
+    }
+    reportProgress == null ? void 0 : reportProgress("envInit.detectingGpu", 0.16);
+    const gpu = await detectGpuSupport();
+    const shouldRebuild = await shouldRebuildRuntime(
+      currentState,
+      requirementsHash,
+      gpu.torchBackend
+    );
+    let installedTorch;
+    let resolvedTorchBackend = (currentState == null ? void 0 : currentState.torchBackend) ?? gpu.torchBackend;
+    let gpuFallback = (currentState == null ? void 0 : currentState.gpuFallback) ?? false;
+    if (shouldRebuild) {
+      const installResult = await installRuntimeForPreferredBackend(
+        uvPath,
+        runtimeDir,
+        gpu,
+        reportProgress
+      );
+      installedTorch = installResult.installedTorch;
+      resolvedTorchBackend = installResult.torchBackend;
+      gpuFallback = installResult.gpuFallback;
+    } else {
+      const pythonPath2 = getManagedPythonExecutablePath();
+      installedTorch = await inspectInstalledTorch(pythonPath2, runtimeDir);
+      if (gpu.supported && !installedTorch.cudaAvailable) {
+        const installResult = await installRuntimeForPreferredBackend(
+          uvPath,
+          runtimeDir,
+          gpu,
+          reportProgress
+        );
+        installedTorch = installResult.installedTorch;
+        resolvedTorchBackend = installResult.torchBackend;
+        gpuFallback = installResult.gpuFallback;
+      }
+    }
+    const pythonPath = getManagedPythonExecutablePath();
+    const nextState = {
+      version: RUNTIME_STATE_VERSION,
+      platform: process.platform,
+      arch: process.arch,
+      requirementsHash,
+      torchBackend: resolvedTorchBackend,
+      gpuFallback,
+      gpu,
+      installedTorch,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    await lockedFs.writeJson(getManagedPythonStatePath(), nextState);
+    await cleanupManagedUvCache();
+    reportProgress == null ? void 0 : reportProgress("envInit.pythonEnvReady", 1);
+    return {
+      runtimeDir,
+      scriptPath,
+      pythonPath,
+      state: nextState
+    };
+  })();
+  try {
+    return await runtimePromise;
+  } finally {
+    runtimePromise = null;
+  }
+};
+
 // backend/server.ts
 var DEFAULT_SERVER_PORT = 30003;
 var MAX_SERVER_PORT = 65535;
 var API_HOSTNAME = "localhost";
-var CONFIG_FILE = import_path4.default.join(import_electron2.app.getPath("userData"), "picaptain_config.json");
-var DEFAULT_STORAGE_DIR = import_path4.default.join(
-  import_electron2.app.getPath("userData"),
+var CONFIG_FILE = import_path5.default.join(import_electron3.app.getPath("userData"), "picaptain_config.json");
+var DEFAULT_STORAGE_DIR = import_path5.default.join(
+  import_electron3.app.getPath("userData"),
   "picaptain_storage"
 );
 var loadStorageRoot = async () => {
@@ -2188,18 +3435,18 @@ var loadStorageRoot = async () => {
     }
   } catch {
   }
-  if (import_electron2.app.isPackaged && process.platform !== "darwin") {
+  if (import_electron3.app.isPackaged && process.platform !== "darwin") {
     try {
-      const exeDir = import_path4.default.dirname(import_electron2.app.getPath("exe"));
-      const portableDataDir = import_path4.default.join(exeDir, "data");
+      const exeDir = import_path5.default.dirname(import_electron3.app.getPath("exe"));
+      const portableDataDir = import_path5.default.join(exeDir, "data");
       if (await lockedFs.pathExists(portableDataDir)) {
         return portableDataDir;
       }
-      const testFile = import_path4.default.join(exeDir, ".write_test");
+      const testFile = import_path5.default.join(exeDir, ".write_test");
       const writable = await withFileLock(testFile, async () => {
         try {
-          await import_fs_extra3.default.writeFile(testFile, "test");
-          await import_fs_extra3.default.remove(testFile);
+          await import_fs_extra4.default.writeFile(testFile, "test");
+          await import_fs_extra4.default.remove(testFile);
           return true;
         } catch {
           return false;
@@ -2214,68 +3461,35 @@ var loadStorageRoot = async () => {
   return DEFAULT_STORAGE_DIR;
 };
 var STORAGE_DIR = DEFAULT_STORAGE_DIR;
-var IMAGE_DIR = import_path4.default.join(STORAGE_DIR, "images");
-var SETTINGS_FILE = import_path4.default.join(STORAGE_DIR, "settings.json");
-var settingsCache = null;
+var IMAGE_DIR = import_path5.default.join(STORAGE_DIR, "images");
+var SETTINGS_FILE = import_path5.default.join(STORAGE_DIR, "settings.json");
+configureSettingsStore(SETTINGS_FILE);
 var updateStoragePaths = (root) => {
   STORAGE_DIR = root;
-  IMAGE_DIR = import_path4.default.join(STORAGE_DIR, "images");
-  SETTINGS_FILE = import_path4.default.join(STORAGE_DIR, "settings.json");
+  IMAGE_DIR = import_path5.default.join(STORAGE_DIR, "images");
+  SETTINGS_FILE = import_path5.default.join(STORAGE_DIR, "settings.json");
+  configureSettingsStore(SETTINGS_FILE);
 };
 var ensureStorageDirs = async (root) => {
   await Promise.all([
     lockedFs.ensureDir(root),
-    lockedFs.ensureDir(import_path4.default.join(root, "images")),
-    lockedFs.ensureDir(import_path4.default.join(root, "model"))
+    lockedFs.ensureDir(import_path5.default.join(root, "images")),
+    lockedFs.ensureDir(import_path5.default.join(root, "model"))
   ]);
+};
+var persistStorageRootConfig = async (root) => {
+  await withFileLock(CONFIG_FILE, async () => {
+    await import_fs_extra4.default.writeJson(CONFIG_FILE, { storageDir: root });
+  });
 };
 var getStorageDir = () => STORAGE_DIR;
 var setStorageRoot = async (root) => {
   const trimmed = root.trim();
   if (!trimmed) return;
   updateStoragePaths(trimmed);
-  settingsCache = null;
   await ensureStorageDirs(STORAGE_DIR);
-  await withFileLock(CONFIG_FILE, async () => {
-    await import_fs_extra3.default.writeJson(CONFIG_FILE, { storageDir: STORAGE_DIR });
-  });
+  await persistStorageRootConfig(STORAGE_DIR);
   initDatabase();
-};
-var readSettings = async () => {
-  if (settingsCache) return settingsCache;
-  return withFileLock(SETTINGS_FILE, async () => {
-    if (!await import_fs_extra3.default.pathExists(SETTINGS_FILE)) {
-      settingsCache = {};
-      return settingsCache;
-    }
-    try {
-      const raw = await import_fs_extra3.default.readJson(SETTINGS_FILE);
-      if (raw && typeof raw === "object") {
-        settingsCache = raw;
-        return settingsCache;
-      }
-    } catch (error) {
-      console.error("Failed to read settings file", error);
-    }
-    settingsCache = {};
-    return settingsCache;
-  });
-};
-var persistSettings = (0, import_radash.debounce)(
-  { delay: 500 },
-  async (settings) => {
-    await withFileLock(SETTINGS_FILE, async () => {
-      try {
-        await import_fs_extra3.default.writeJson(SETTINGS_FILE, settings);
-      } catch (error) {
-        console.error("Failed to write settings file", error);
-      }
-    });
-  }
-);
-var writeSettings = async (settings) => {
-  settingsCache = settings;
-  persistSettings(settings);
 };
 var imageDb = null;
 var incompatibleError = null;
@@ -2292,17 +3506,18 @@ var initDatabase = () => {
 var initializeStorage = async () => {
   const root = await loadStorageRoot();
   updateStoragePaths(root);
-  settingsCache = null;
   await ensureStorageDirs(STORAGE_DIR);
+  await persistStorageRootConfig(STORAGE_DIR);
   initDatabase();
 };
 var BasePythonService = class {
   process = null;
+  startupPromise = null;
   queue = [];
   serviceName = "Python Service";
   getManagedUvPath() {
-    return import_path4.default.join(
-      import_electron2.app.getPath("userData"),
+    return import_path5.default.join(
+      import_electron3.app.getPath("userData"),
       "uv",
       process.platform === "win32" ? "uv.exe" : "uv"
     );
@@ -2310,8 +3525,8 @@ var BasePythonService = class {
   getBundledUvPath() {
     const executable = process.platform === "win32" ? "uv.exe" : "uv";
     const target = `${process.platform}-${process.arch}`;
-    const root = import_electron2.app.isPackaged ? import_path4.default.join(process.resourcesPath, "uv") : import_path4.default.join(__dirname, "../resources/uv");
-    return import_path4.default.join(root, target, executable);
+    const root = import_electron3.app.isPackaged ? import_path5.default.join(process.resourcesPath, "uv") : import_path5.default.join(__dirname, "../resources/uv");
+    return import_path5.default.join(root, target, executable);
   }
   getUvCandidates() {
     var _a;
@@ -2329,6 +3544,18 @@ var BasePythonService = class {
       uniq.push(c);
     }
     return uniq;
+  }
+  async resolveUvCommand() {
+    const candidates = this.getUvCandidates();
+    for (const candidate of candidates) {
+      if (!import_path5.default.isAbsolute(candidate)) {
+        return candidate;
+      }
+      if (await lockedFs.pathExists(candidate)) {
+        return candidate;
+      }
+    }
+    throw new Error(`Failed to spawn ${this.serviceName}: uv not found`);
   }
   attachProcess(proc) {
     var _a;
@@ -2386,10 +3613,10 @@ var BasePythonService = class {
       rl.close();
     });
   }
-  spawnProcess(command, args, cwd) {
+  spawnProcess(command, args, cwd, envOverrides = {}, attachListeners = true) {
     const env = {
       ...process.env,
-      PROREF_MODEL_DIR: import_path4.default.join(getStorageDir(), "model"),
+      PROREF_MODEL_DIR: import_path5.default.join(getStorageDir(), "model"),
       PYTHONIOENCODING: "utf-8",
       PYTHONUTF8: "1",
       TRANSFORMERS_VERBOSITY: "error",
@@ -2399,62 +3626,84 @@ var BasePythonService = class {
       // Also set PIP_INDEX_URL as fallback/standard
       PIP_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
       // Use HF mirror for model downloads
-      HF_ENDPOINT: "https://hf-mirror.com"
+      HF_ENDPOINT: "https://hf-mirror.com",
+      ...envOverrides
     };
-    const proc = (0, import_child_process.spawn)(command, args, {
+    const proc = (0, import_child_process2.spawn)(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
       cwd,
       env
     });
-    this.attachProcess(proc);
+    if (attachListeners) {
+      this.attachProcess(proc);
+    }
     return proc;
   }
-  start() {
-    if (this.process) return;
-    let scriptPath = import_path4.default.join(__dirname, "../backend/python/tagger.py");
-    if (import_electron2.app.isPackaged) {
-      scriptPath = scriptPath.replace("app.asar", "app.asar.unpacked");
-    }
-    const pythonDir = import_path4.default.dirname(scriptPath);
-    const uvArgs = ["run", "python", scriptPath];
+  async spawnUvProcess(args, cwd, envOverrides = {}, attachListeners = true) {
     const uvCandidates = this.getUvCandidates();
     const trySpawn = async (index) => {
       console.log(`Trying uv candidate ${index}: ${uvCandidates[index]}`);
       if (index >= uvCandidates.length) {
-        console.error(`Failed to spawn ${this.serviceName}: uv not found`);
-        this.process = null;
-        return;
+        throw new Error(`Failed to spawn ${this.serviceName}: uv not found`);
       }
       const command = uvCandidates[index];
-      if (import_path4.default.isAbsolute(command)) {
+      if (import_path5.default.isAbsolute(command)) {
         const exists = await lockedFs.pathExists(command);
         if (!exists) {
-          await trySpawn(index + 1);
-          return;
+          return trySpawn(index + 1);
         }
       }
-      const proc = this.spawnProcess(command, uvArgs, pythonDir);
-      this.process = proc;
-      proc.once("error", (err) => {
-        const code = err.code;
-        if (code === "ENOENT") {
-          if (this.process === proc) {
-            this.process = null;
+      return new Promise((resolve, reject) => {
+        const proc = this.spawnProcess(
+          command,
+          args,
+          cwd,
+          envOverrides,
+          attachListeners
+        );
+        let settled = false;
+        proc.once("spawn", () => {
+          settled = true;
+          resolve(proc);
+        });
+        proc.once("error", (err) => {
+          const code = err.code;
+          if (!settled && code === "ENOENT") {
+            void trySpawn(index + 1).then(resolve).catch(reject);
+            return;
           }
-          trySpawn(index + 1);
-          return;
-        }
-        console.error(`Failed to spawn ${this.serviceName}`, err);
-        if (this.process === proc) {
-          this.process = null;
-        }
+          reject(err);
+        });
       });
     };
-    void trySpawn(0);
+    return trySpawn(0);
+  }
+  async start() {
+    if (this.process) return;
+    if (this.startupPromise) {
+      await this.startupPromise;
+      return;
+    }
+    this.startupPromise = (async () => {
+      const uvPath = await this.resolveUvCommand();
+      const { runtimeDir, scriptPath, pythonPath } = await ensurePythonRuntime(
+        uvPath
+      );
+      const proc = this.spawnProcess(pythonPath, [scriptPath], runtimeDir);
+      this.process = proc;
+    })();
+    try {
+      await this.startupPromise;
+    } finally {
+      this.startupPromise = null;
+      if (!this.process) {
+        this.startupPromise = null;
+      }
+    }
   }
   async sendRequest(req) {
     if (!this.process) {
-      this.start();
+      await this.start();
     }
     return new Promise((resolve, reject) => {
       var _a;
@@ -2468,49 +3717,55 @@ var BasePythonService = class {
   }
 };
 var PythonVectorService = class extends BasePythonService {
+  warmupPromise = null;
+  warmedUp = false;
   constructor() {
     super();
     this.serviceName = "Python Vector Service";
   }
+  attachProcess(proc) {
+    super.attachProcess(proc);
+    proc.once("exit", () => {
+      this.warmedUp = false;
+      this.warmupPromise = null;
+    });
+  }
+  async warmup() {
+    if (this.warmedUp) {
+      return;
+    }
+    if (this.warmupPromise) {
+      await this.warmupPromise;
+      return;
+    }
+    this.warmupPromise = (async () => {
+      await this.start();
+      await this.run("encode-text", "warmup");
+      this.warmedUp = true;
+    })();
+    try {
+      await this.warmupPromise;
+    } finally {
+      if (!this.warmedUp) {
+        this.warmupPromise = null;
+      }
+    }
+  }
   downloadModel(onProgress) {
     return new Promise((resolve, reject) => {
-      let scriptPath = import_path4.default.join(__dirname, "../backend/python/tagger.py");
-      if (import_electron2.app.isPackaged) {
-        scriptPath = scriptPath.replace("app.asar", "app.asar.unpacked");
-      }
-      const pythonDir = import_path4.default.dirname(scriptPath);
-      const uvArgs = ["run", "python", scriptPath, "--download-model"];
-      const uvCandidates = this.getUvCandidates();
-      const trySpawn = async (index) => {
+      const startDownload = async () => {
         var _a;
-        if (index >= uvCandidates.length) {
-          reject(new Error("Failed to spawn python service: uv not found"));
-          return;
-        }
-        const command = uvCandidates[index];
-        if (import_path4.default.isAbsolute(command)) {
-          const exists = await lockedFs.pathExists(command);
-          if (!exists) {
-            await trySpawn(index + 1);
-            return;
-          }
-        }
-        const env = {
-          ...process.env,
-          PROREF_MODEL_DIR: import_path4.default.join(getStorageDir(), "model"),
-          PYTHONIOENCODING: "utf-8",
-          PYTHONUTF8: "1",
-          TRANSFORMERS_VERBOSITY: "error",
-          HF_HUB_DISABLE_PROGRESS_BARS: "1",
-          UV_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
-          PIP_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
-          HF_ENDPOINT: "https://hf-mirror.com"
-        };
-        const proc = (0, import_child_process.spawn)(command, uvArgs, {
-          stdio: ["pipe", "pipe", "pipe"],
-          cwd: pythonDir,
-          env
-        });
+        const uvPath = await this.resolveUvCommand();
+        const { runtimeDir, scriptPath, pythonPath } = await ensurePythonRuntime(
+          uvPath
+        );
+        const proc = this.spawnProcess(
+          pythonPath,
+          [scriptPath, "--download-model"],
+          runtimeDir,
+          {},
+          false
+        );
         if (proc.stdout) {
           const rl = import_readline.default.createInterface({ input: proc.stdout });
           rl.on("line", (line) => {
@@ -2531,16 +3786,8 @@ var PythonVectorService = class extends BasePythonService {
             reject(new Error(`Download process exited with code ${code}`));
           }
         });
-        proc.on("error", (err) => {
-          const code = err.code;
-          if (code === "ENOENT") {
-            void trySpawn(index + 1);
-            return;
-          }
-          reject(err);
-        });
       };
-      void trySpawn(0);
+      void startDownload().catch(reject);
     });
   }
   async run(mode, arg) {
@@ -2617,6 +3864,16 @@ var mapModelDownloadProgress = (data) => {
   }
   return data;
 };
+var vectorServiceSingleton = null;
+var getVectorService = () => {
+  if (!vectorServiceSingleton) {
+    vectorServiceSingleton = new PythonVectorService();
+  }
+  return vectorServiceSingleton;
+};
+var warmupVectorService = async () => {
+  await getVectorService().warmup();
+};
 function downloadImage(url, dest) {
   const REQUEST_TIMEOUT_MS = 15e3;
   const MAX_RETRY_ATTEMPTS = 3;
@@ -2628,7 +3885,7 @@ function downloadImage(url, dest) {
         srcPath = srcPath.substring(1);
       }
     }
-    await import_fs_extra3.default.copy(decodeURIComponent(srcPath), dest);
+    await import_fs_extra4.default.copy(decodeURIComponent(srcPath), dest);
   };
   const isRetryableDownloadError = (error) => {
     const code = error.code;
@@ -2650,7 +3907,7 @@ function downloadImage(url, dest) {
       abortController.abort();
     }, REQUEST_TIMEOUT_MS);
     try {
-      const response = await import_electron2.net.fetch(targetUrl, {
+      const response = await import_electron3.net.fetch(targetUrl, {
         method: "GET",
         redirect: "follow",
         signal: abortController.signal,
@@ -2668,9 +3925,9 @@ function downloadImage(url, dest) {
         );
       }
       const buffer = Buffer.from(await response.arrayBuffer());
-      await import_fs_extra3.default.writeFile(dest, buffer);
+      await import_fs_extra4.default.writeFile(dest, buffer);
     } catch (error) {
-      await import_fs_extra3.default.remove(dest).catch(() => void 0);
+      await import_fs_extra4.default.remove(dest).catch(() => void 0);
       if (error instanceof Error && (error.name === "AbortError" || /aborted/i.test(error.message))) {
         throw new Error("Download timeout");
       }
@@ -2731,8 +3988,7 @@ async function startServer(sendToRenderer) {
   const server = (0, import_express5.default)();
   server.use((0, import_cors.default)());
   server.use(import_body_parser.default.json({ limit: "25mb" }));
-  const vectorService = new PythonVectorService();
-  await vectorService.start();
+  const vectorService = getVectorService();
   const runPythonVector = async (mode, arg) => {
     return vectorService.run(mode, arg);
   };
@@ -2756,10 +4012,10 @@ async function startServer(sendToRenderer) {
       method: req == null ? void 0 : req.method,
       url: req == null ? void 0 : req.originalUrl
     };
-    const logFile = import_path4.default.join(STORAGE_DIR, "server.log");
+    const logFile = import_path5.default.join(STORAGE_DIR, "server.log");
     await withFileLock(logFile, async () => {
-      await import_fs_extra3.default.ensureFile(logFile);
-      await import_fs_extra3.default.appendFile(logFile, `${JSON.stringify(payload)}
+      await import_fs_extra4.default.ensureFile(logFile);
+      await import_fs_extra4.default.appendFile(logFile, `${JSON.stringify(payload)}
 `);
     });
   };
@@ -2865,7 +4121,7 @@ var en = {
   "titleBar.processing": "Processing...",
   "toast.indexFailed": "Failed to index images",
   "toast.noUnindexedImages": "No unindexed images found",
-  "toast.indexCompleted": "Index completed: {{created}} created, {{updated}} updated",
+  "toast.indexCompleted": "Index completed: {{created}} created, {{updated}} updated, {{deleted}} deleted",
   "toast.modelReady": "AI Model is ready",
   "toast.modelCheckFailed": "Model check failed: {{error}}",
   "toast.settingsUpdateFailed": "Failed to update settings",
@@ -2887,10 +4143,14 @@ var en = {
   "toast.deleteCanvasFailed": "Failed to delete canvas",
   "toast.vectorIndexed": "Vector indexed",
   "toast.vectorIndexFailed": "Failed to index vector",
+  "toast.imageVectorSearchFailed": "Image search failed",
+  "toast.imageCopied": "Image copied",
+  "toast.copyImageFailed": "Failed to copy image",
   "toast.openFileFailed": "Failed to open file",
   "toast.shortcutInvalid": "Invalid shortcut",
   "toast.shortcutUpdateFailed": "Failed to update shortcut: {{error}}",
-  "toast.floatingWindowModeUpdateFailed": "Failed to switch floating mode: {{error}}",
+  "toast.windowDisplayModeUpdateFailed": "Failed to switch floating mode: {{error}}",
+  "toast.windowAlwaysOnTopUpdateFailed": "Failed to update always-on-top: {{error}}",
   "envInit.brandTitle": "PiCaptain",
   "envInit.heading": "Preparing PiCaptain...",
   "envInit.subheading": "First run may download tools, install dependencies, and fetch the local model. This is a one-time step.",
@@ -2898,9 +4158,20 @@ var en = {
   "envInit.checkingUv": "Checking uv...",
   "envInit.downloadingUv": "Downloading uv...",
   "envInit.initializingPythonEnv": "Initializing Python environment...",
+  "envInit.detectingGpu": "Detecting GPU support...",
+  "envInit.creatingVirtualEnv": "Creating Python virtual environment...",
   "envInit.resolvingDependencies": "Resolving dependencies...",
+  "envInit.resolvedPackages": "Resolved {{total}} packages",
+  "envInit.preparingPackagesElapsed": "Preparing {{total}} packages ({{elapsedSeconds}}s)...",
   "envInit.downloadingPackages": "Downloading packages...",
+  "envInit.downloadingPackagesDetailed": "Downloading packages ({{current}}/{{total}})...",
+  "envInit.downloadingPackageNamed": "Downloading package {{current}}/{{total}}: {{name}} ({{size}})",
+  "envInit.downloadedPackageNamed": "Downloaded package {{current}}/{{total}}: {{name}}",
   "envInit.installingPackages": "Installing packages...",
+  "envInit.installingPackagesDetailed": "Installing packages ({{current}}/{{total}})...",
+  "envInit.installingPackageNamed": "Installing package {{current}}/{{total}}: {{name}}",
+  "envInit.installingLargePackages": "Downloading large packages like torch ({{elapsedSeconds}}s)...",
+  "envInit.installingPackagesElapsed": "Installing dependencies ({{elapsedSeconds}}s)...",
   "envInit.verifyingEnvironment": "Verifying environment...",
   "envInit.pythonEnvReady": "Python environment ready",
   "model.downloading": "Downloading model...",
@@ -2921,7 +4192,8 @@ var en = {
   "errors.failedToLoadLogs": "Failed to load logs: {{message}}",
   "errors.copyLog": "Copy Log",
   "errors.reloadApplication": "Reload Application",
-  "gallery.searchPlaceholder": "Search",
+  "gallery.searchPlaceholder": "Search in English",
+  "gallery.searchPlaceholderImage": "Image search is active",
   "gallery.filter": "Filter",
   "gallery.filterSummary.color": "Color: {{color}}",
   "gallery.filterSummary.tone": "Tone: {{tone}}",
@@ -2932,6 +4204,8 @@ var en = {
   "gallery.referenceAlt": "Reference",
   "gallery.notIndexed": "Not Indexed",
   "gallery.vectorResult": "AI Search Result",
+  "gallery.searchImage.pick": "Choose image",
+  "gallery.searchImage.defaultName": "Image query",
   "gallery.contextMenu.nameLabel": "Name",
   "gallery.contextMenu.imageNamePlaceholder": "Image name",
   "gallery.contextMenu.linkLabel": "Link",
@@ -2939,7 +4213,9 @@ var en = {
   "gallery.contextMenu.addTagPlaceholder": "Add tag...",
   "gallery.contextMenu.dominantColorLabel": "Dominant Color",
   "gallery.contextMenu.toneLabel": "Tone",
+  "gallery.contextMenu.copyImage": "Copy image",
   "gallery.contextMenu.showInFolder": "Show in Folder",
+  "gallery.contextMenu.searchByImage": "Search by image",
   "gallery.contextMenu.indexVector": "Index Vector",
   "gallery.contextMenu.deleteImage": "Delete Image",
   "gallery.dominantColor.title": "Dominant Color",
@@ -3079,7 +4355,7 @@ var zh = {
   "titleBar.processing": "\u5904\u7406\u4E2D\u2026",
   "toast.indexFailed": "\u7D22\u5F15\u56FE\u7247\u5931\u8D25",
   "toast.noUnindexedImages": "\u6CA1\u6709\u672A\u5165\u5E93\u7684\u56FE\u7247",
-  "toast.indexCompleted": "\u7D22\u5F15\u5B8C\u6210\uFF1A\u65B0\u589E {{created}}\uFF0C\u66F4\u65B0 {{updated}}",
+  "toast.indexCompleted": "\u7D22\u5F15\u5B8C\u6210\uFF1A\u65B0\u589E {{created}}\uFF0C\u66F4\u65B0 {{updated}}\uFF0C\u5220\u9664 {{deleted}}",
   "toast.modelReady": "\u641C\u7D22\u6A21\u578B\u5DF2\u5C31\u7EEA",
   "toast.modelCheckFailed": "\u6A21\u578B\u68C0\u67E5\u5931\u8D25\uFF1A{{error}}",
   "toast.settingsUpdateFailed": "\u66F4\u65B0\u8BBE\u7F6E\u5931\u8D25",
@@ -3104,7 +4380,8 @@ var zh = {
   "toast.openFileFailed": "\u6253\u5F00\u6587\u4EF6\u5931\u8D25",
   "toast.shortcutInvalid": "\u5FEB\u6377\u952E\u65E0\u6548",
   "toast.shortcutUpdateFailed": "\u66F4\u65B0\u5FEB\u6377\u952E\u5931\u8D25\uFF1A{{error}}",
-  "toast.floatingWindowModeUpdateFailed": "\u5207\u6362\u6D6E\u7A97\u6A21\u5F0F\u5931\u8D25\uFF1A{{error}}",
+  "toast.windowDisplayModeUpdateFailed": "\u5207\u6362\u6D6E\u7A97\u6A21\u5F0F\u5931\u8D25\uFF1A{{error}}",
+  "toast.windowAlwaysOnTopUpdateFailed": "\u66F4\u65B0\u7F6E\u9876\u72B6\u6001\u5931\u8D25\uFF1A{{error}}",
   "envInit.brandTitle": "PiCaptain",
   "envInit.heading": "\u6B63\u5728\u51C6\u5907 PiCaptain\u2026",
   "envInit.subheading": "\u9996\u6B21\u8FD0\u884C\u53EF\u80FD\u4F1A\u4E0B\u8F7D\u5DE5\u5177\u3001\u5B89\u88C5\u4F9D\u8D56\u5E76\u62C9\u53D6\u672C\u5730\u6A21\u578B\uFF0C\u8FD9\u662F\u4E00\u6B21\u6027\u6B65\u9AA4\u3002",
@@ -3135,7 +4412,7 @@ var zh = {
   "errors.failedToLoadLogs": "\u52A0\u8F7D\u65E5\u5FD7\u5931\u8D25\uFF1A{{message}}",
   "errors.copyLog": "\u590D\u5236\u65E5\u5FD7",
   "errors.reloadApplication": "\u91CD\u65B0\u52A0\u8F7D\u5E94\u7528",
-  "gallery.searchPlaceholder": "\u641C\u7D22",
+  "gallery.searchPlaceholder": "\u8BF7\u7528\u82F1\u6587\u641C\u7D22\uFF0C\u6216\u5148\u8BD1\u6210\u82F1\u6587",
   "gallery.filter": "\u7B5B\u9009",
   "gallery.filterSummary.color": "\u989C\u8272\uFF1A{{color}}",
   "gallery.filterSummary.tone": "\u8272\u8C03\uFF1A{{tone}}",
@@ -3250,7 +4527,26 @@ var zh = {
   "settings.status.indexingDetailFallback": "\u6B63\u5728\u5237\u65B0\u672C\u5730\u7D20\u6750\u5E93\u4E0E\u5143\u6570\u636E",
   "settings.status.ready.semanticAndTranslation": "\u8BED\u4E49\u641C\u7D22\u548C\u67E5\u8BE2\u7FFB\u8BD1\u5DF2\u542F\u7528",
   "settings.status.ready.semantic": "\u672C\u5730\u7D20\u6750\u5E93\u7684\u8BED\u4E49\u641C\u7D22\u5DF2\u542F\u7528",
-  "settings.status.ready.basic": "\u641C\u7D22\u3001\u989C\u8272\u7B5B\u9009\u548C\u672C\u5730\u7D20\u6750\u7BA1\u7406\u5DF2\u5C31\u7EEA"
+  "settings.status.ready.basic": "\u641C\u7D22\u3001\u989C\u8272\u7B5B\u9009\u548C\u672C\u5730\u7D20\u6750\u7BA1\u7406\u5DF2\u5C31\u7EEA",
+  "envInit.detectingGpu": "\u6B63\u5728\u68C0\u6D4B GPU \u652F\u6301\u2026",
+  "envInit.creatingVirtualEnv": "\u6B63\u5728\u521B\u5EFA Python \u865A\u62DF\u73AF\u5883\u2026",
+  "envInit.resolvedPackages": "\u5DF2\u89E3\u6790 {{total}} \u4E2A\u4F9D\u8D56\u5305",
+  "envInit.downloadingPackagesDetailed": "\u6B63\u5728\u4E0B\u8F7D\u4F9D\u8D56\u5305\uFF08{{current}}/{{total}}\uFF09\u2026",
+  "envInit.downloadingPackageNamed": "\u6B63\u5728\u4E0B\u8F7D\u4F9D\u8D56\u5305 {{current}}/{{total}}\uFF1A{{name}}\uFF08{{size}}\uFF09",
+  "envInit.downloadedPackageNamed": "\u5DF2\u4E0B\u8F7D\u4F9D\u8D56\u5305 {{current}}/{{total}}\uFF1A{{name}}",
+  "envInit.installingPackagesDetailed": "\u6B63\u5728\u5B89\u88C5\u4F9D\u8D56\u5305\uFF08{{current}}/{{total}}\uFF09\u2026",
+  "envInit.installingPackageNamed": "\u6B63\u5728\u5B89\u88C5\u4F9D\u8D56\u5305 {{current}}/{{total}}\uFF1A{{name}}",
+  "envInit.preparingPackagesElapsed": "\u6B63\u5728\u51C6\u5907 {{total}} \u4E2A\u4F9D\u8D56\u5305\uFF08\u5DF2\u7528\u65F6 {{elapsedSeconds}}\u79D2\uFF09\u2026",
+  "envInit.installingLargePackages": "\u6B63\u5728\u4E0B\u8F7D torch \u7B49\u5927\u578B\u4F9D\u8D56\uFF08\u5DF2\u7528\u65F6 {{elapsedSeconds}}\u79D2\uFF09\u2026",
+  "envInit.installingPackagesElapsed": "\u6B63\u5728\u5B89\u88C5\u4F9D\u8D56\uFF08\u5DF2\u7528\u65F6 {{elapsedSeconds}}\u79D2\uFF09\u2026",
+  "toast.imageVectorSearchFailed": "\u4EE5\u56FE\u641C\u56FE\u5931\u8D25",
+  "toast.imageCopied": "\u5DF2\u590D\u5236\u56FE\u7247",
+  "toast.copyImageFailed": "\u590D\u5236\u56FE\u7247\u5931\u8D25",
+  "gallery.searchPlaceholderImage": "\u5DF2\u542F\u7528\u4EE5\u56FE\u641C\u56FE",
+  "gallery.searchImage.pick": "\u9009\u62E9\u56FE\u7247",
+  "gallery.searchImage.defaultName": "\u56FE\u7247\u68C0\u7D22",
+  "gallery.contextMenu.copyImage": "\u590D\u5236\u56FE\u7247",
+  "gallery.contextMenu.searchByImage": "\u4EE5\u56FE\u641C\u56FE"
 };
 
 // shared/i18n/t.ts
@@ -3269,60 +4565,56 @@ function t(locale, key, params) {
 }
 
 // electron/main.ts
-var import_radash2 = require("radash");
-if (!import_electron3.app.isPackaged) {
-  import_electron3.app.setName("PiCaptain");
+var import_radash = require("radash");
+if (!import_electron4.app.isPackaged) {
+  import_electron4.app.setName("PiCaptain");
 }
 Object.assign(console, import_electron_log.default.functions);
 import_electron_log.default.transports.file.level = "info";
 import_electron_log.default.transports.file.maxSize = 5 * 1024 * 1024;
 import_electron_log.default.transports.file.archiveLog = (file) => {
   const filePath = file.toString();
-  const info = import_path5.default.parse(filePath);
-  const dest = import_path5.default.join(info.dir, info.name + ".old" + info.ext);
+  const info = import_path6.default.parse(filePath);
+  const dest = import_path6.default.join(info.dir, info.name + ".old" + info.ext);
   lockedFs.rename(filePath, dest).catch((e) => {
     console.warn("Could not rotate log", e);
   });
 };
+var DEFAULT_WINDOW_ALWAYS_ON_TOP = false;
 var mainWindow = null;
 var isAppHidden = false;
-var localeCache = null;
 var localServerApiBaseUrl = `http://localhost:${DEFAULT_SERVER_PORT}`;
 var isLocalServerReady = false;
 var DEFAULT_TOGGLE_WINDOW_SHORTCUT = process.platform === "darwin" ? "Command+L" : "Ctrl+L";
+var APP_ID = "com.picaptain.app";
+var WINDOW_ICON_PATH = import_path6.default.join(__dirname, "../resources/icon.png");
 var toggleWindowShortcut = DEFAULT_TOGGLE_WINDOW_SHORTCUT;
 var isSettingsOpen = false;
 var hasPendingSecondInstanceRestore = false;
-var isFloatingWindowMode = false;
+var windowAlwaysOnTop = DEFAULT_WINDOW_ALWAYS_ON_TOP;
+var cachedWindowBounds = null;
 var NORMAL_WINDOW_MIN_WIDTH = 400;
 var NORMAL_WINDOW_MIN_HEIGHT = 300;
-var FLOATING_WINDOW_SIZE = 50;
-var hasSingleInstanceLock = import_electron3.app.requestSingleInstanceLock();
+var hasSingleInstanceLock = import_electron4.app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
-  import_electron3.app.quit();
+  import_electron4.app.quit();
 }
 var isLocale = (value) => value === "en" || value === "zh";
+var ensureSettingsStoreConfigured = () => {
+  configureSettingsStore(import_path6.default.join(getStorageDir(), "settings.json"));
+};
 async function getLocale() {
   try {
-    const settingsPath = import_path5.default.join(getStorageDir(), "settings.json");
-    const stat = await lockedFs.stat(settingsPath).catch(() => null);
-    if (!stat) return "en";
-    if (localeCache && localeCache.mtimeMs === stat.mtimeMs)
-      return localeCache.locale;
-    const settings = await lockedFs.readJson(settingsPath).catch(() => null);
-    const raw = settings && typeof settings === "object" ? settings.language : void 0;
-    const locale = isLocale(raw) ? raw : "en";
-    localeCache = { locale, mtimeMs: stat.mtimeMs };
-    return locale;
+    const settings = await readPersistedSettings();
+    const raw = settings.language;
+    return isLocale(raw) ? raw : "en";
   } catch {
     return "en";
   }
 }
 async function loadShortcuts() {
   try {
-    const settingsPath = import_path5.default.join(getStorageDir(), "settings.json");
-    const settings = await lockedFs.readJson(settingsPath).catch(() => null);
-    if (!settings || typeof settings !== "object") return;
+    const settings = await readPersistedSettings();
     const rawToggle = settings.toggleWindowShortcut;
     if (typeof rawToggle === "string" && rawToggle.trim()) {
       toggleWindowShortcut = rawToggle.trim();
@@ -3332,8 +4624,8 @@ async function loadShortcuts() {
 }
 async function readPersistedSettings() {
   try {
-    const settingsPath = import_path5.default.join(getStorageDir(), "settings.json");
-    const settings = await lockedFs.readJson(settingsPath).catch(() => null);
+    ensureSettingsStoreConfigured();
+    const settings = await readSettings();
     if (settings && typeof settings === "object") {
       return settings;
     }
@@ -3343,9 +4635,9 @@ async function readPersistedSettings() {
 }
 async function writePersistedSettings(patch) {
   try {
-    const settingsPath = import_path5.default.join(getStorageDir(), "settings.json");
+    ensureSettingsStoreConfigured();
     const current = await readPersistedSettings();
-    await lockedFs.writeJson(settingsPath, {
+    await writeSettings({
       ...current,
       ...patch
     });
@@ -3353,11 +4645,8 @@ async function writePersistedSettings(patch) {
     import_electron_log.default.error("Failed to write settings", error);
   }
 }
-function getWindowMode() {
-  return isFloatingWindowMode ? "floating" : "normal";
-}
-function normalizeNormalBounds(bounds) {
-  const workArea = import_electron3.screen.getPrimaryDisplay().workArea;
+function normalizeWindowBounds(bounds) {
+  const workArea = import_electron4.screen.getPrimaryDisplay().workArea;
   const width = Math.max(
     NORMAL_WINDOW_MIN_WIDTH,
     Math.min(
@@ -3374,7 +4663,7 @@ function normalizeNormalBounds(bounds) {
   );
   const fallbackX = workArea.x + Math.floor((workArea.width - width) / 2);
   const fallbackY = workArea.y + Math.floor((workArea.height - height) / 2);
-  const display = import_electron3.screen.getDisplayMatching({
+  const display = import_electron4.screen.getDisplayMatching({
     x: typeof (bounds == null ? void 0 : bounds.x) === "number" ? bounds.x : fallbackX,
     y: typeof (bounds == null ? void 0 : bounds.y) === "number" ? bounds.y : fallbackY,
     width,
@@ -3390,97 +4679,96 @@ function normalizeNormalBounds(bounds) {
     y: Math.min(Math.max(typeof (bounds == null ? void 0 : bounds.y) === "number" ? bounds.y : fallbackY, area.y), maxY)
   };
 }
-function normalizeFloatingBounds(bounds, fallbackBounds) {
-  const width = FLOATING_WINDOW_SIZE;
-  const height = FLOATING_WINDOW_SIZE;
-  const fallbackX = typeof (fallbackBounds == null ? void 0 : fallbackBounds.x) === "number" && typeof (fallbackBounds == null ? void 0 : fallbackBounds.width) === "number" ? fallbackBounds.x + Math.round((fallbackBounds.width - width) / 2) : void 0;
-  const fallbackY = typeof (fallbackBounds == null ? void 0 : fallbackBounds.y) === "number" && typeof (fallbackBounds == null ? void 0 : fallbackBounds.height) === "number" ? fallbackBounds.y + Math.round((fallbackBounds.height - height) / 2) : void 0;
-  const display = import_electron3.screen.getDisplayMatching({
-    x: typeof (bounds == null ? void 0 : bounds.x) === "number" ? bounds.x : fallbackX ?? import_electron3.screen.getPrimaryDisplay().workArea.x,
-    y: typeof (bounds == null ? void 0 : bounds.y) === "number" ? bounds.y : fallbackY ?? import_electron3.screen.getPrimaryDisplay().workArea.y,
-    width,
-    height
-  });
-  const area = display.workArea;
-  const defaultX = area.x + area.width - width - 24;
-  const defaultY = area.y + Math.max(24, Math.round(area.height * 0.18));
-  const maxX = area.x + Math.max(0, area.width - width);
-  const maxY = area.y + Math.max(0, area.height - height);
-  return {
+var resolveDragImagePath = (imagePath) => {
+  if (import_path6.default.isAbsolute(imagePath)) {
+    return import_path6.default.normalize(imagePath);
+  }
+  const normalizedRelativePath = imagePath.replace(/^[/\\]+/, "");
+  return import_path6.default.join(getStorageDir(), normalizedRelativePath);
+};
+var createDragPreviewIcon = (iconPath) => {
+  const maxSide = 72;
+  const source = import_electron4.nativeImage.createFromPath(iconPath);
+  const icon = source.isEmpty() ? import_electron4.nativeImage.createFromPath(WINDOW_ICON_PATH) : source;
+  const size = icon.getSize();
+  if (size.width <= 0 || size.height <= 0) {
+    return icon.resize({
+      width: maxSide,
+      height: maxSide,
+      quality: "good"
+    });
+  }
+  const scale = Math.min(maxSide / size.width, maxSide / size.height, 1);
+  const width = Math.max(1, Math.round(size.width * scale));
+  const height = Math.max(1, Math.round(size.height * scale));
+  return icon.resize({
     width,
     height,
-    x: Math.min(
-      Math.max(typeof (bounds == null ? void 0 : bounds.x) === "number" ? bounds.x : fallbackX ?? defaultX, area.x),
-      maxX
-    ),
-    y: Math.min(
-      Math.max(typeof (bounds == null ? void 0 : bounds.y) === "number" ? bounds.y : fallbackY ?? defaultY, area.y),
-      maxY
-    )
-  };
-}
-function resolveBoundsForMode(mode, settings, fallbackBounds) {
-  if (mode === "floating") {
-    return normalizeFloatingBounds(settings.floatingWindowBounds, fallbackBounds);
-  }
-  return normalizeNormalBounds(settings.windowBounds);
-}
-async function persistWindowBounds(mode, bounds) {
-  if (mode === "normal") {
-    const nextBounds = mainWindow && mainWindow.isMaximized() ? mainWindow.getNormalBounds() : bounds;
-    await writePersistedSettings({
-      windowBounds: normalizeNormalBounds(nextBounds)
-    });
-    return;
-  }
-  await writePersistedSettings({
-    floatingWindowBounds: normalizeFloatingBounds(bounds)
+    quality: "good"
   });
+};
+function cacheWindowBounds(bounds) {
+  const sourceBounds = (mainWindow == null ? void 0 : mainWindow.isMaximized()) ? mainWindow.getNormalBounds() : bounds;
+  const normalized = normalizeWindowBounds(sourceBounds);
+  cachedWindowBounds = normalized;
+  return normalized;
 }
-var debouncedSaveWindowBounds = (0, import_radash2.debounce)(
+function resolveWindowBounds(settings) {
+  return normalizeWindowBounds(cachedWindowBounds ?? settings.windowBounds);
+}
+async function saveWindowBounds(bounds) {
+  const nextBounds = cacheWindowBounds(bounds);
+  await writePersistedSettings({
+    windowBounds: nextBounds
+  });
+  return nextBounds;
+}
+var debouncedSaveWindowBounds = (0, import_radash.debounce)(
   { delay: 1e3 },
-  (mode, bounds) => {
-    void persistWindowBounds(mode, bounds);
+  (bounds) => {
+    void saveWindowBounds(bounds);
   }
 );
-function syncWindowAppearance(mode) {
+function notifyWindowAlwaysOnTop() {
   if (!mainWindow) return;
-  const floating = mode === "floating";
-  mainWindow.setAlwaysOnTop(floating);
-  mainWindow.setVisibleOnAllWorkspaces(floating, {
-    visibleOnFullScreen: floating
-  });
-  mainWindow.setResizable(!floating);
-  mainWindow.setMaximizable(!floating);
-  mainWindow.setFullScreenable(!floating);
-  mainWindow.setMinimizable(true);
-  mainWindow.setMinimumSize(
-    floating ? FLOATING_WINDOW_SIZE : NORMAL_WINDOW_MIN_WIDTH,
-    floating ? FLOATING_WINDOW_SIZE : NORMAL_WINDOW_MIN_HEIGHT
+  mainWindow.webContents.send(
+    "renderer-event",
+    "window-always-on-top",
+    windowAlwaysOnTop
   );
 }
-async function applyWindowMode(mode) {
+function syncWindowAppearance(alwaysOnTop) {
   if (!mainWindow) return;
-  const previousMode = getWindowMode();
-  const currentBounds = mainWindow.getBounds();
-  await persistWindowBounds(previousMode, currentBounds);
-  isFloatingWindowMode = mode === "floating";
-  const settings = await readPersistedSettings();
-  const nextBounds = resolveBoundsForMode(mode, settings, currentBounds);
-  syncWindowAppearance(mode);
-  mainWindow.setBounds(nextBounds, true);
-  await persistWindowBounds(mode, nextBounds);
+  mainWindow.setAlwaysOnTop(alwaysOnTop);
+  mainWindow.setAlwaysOnTop(alwaysOnTop);
+  mainWindow.setVisibleOnAllWorkspaces(alwaysOnTop, {
+    visibleOnFullScreen: alwaysOnTop
+  });
+  mainWindow.setResizable(true);
+  mainWindow.setMaximizable(true);
+  mainWindow.setFullScreenable(true);
+  mainWindow.setMinimizable(true);
+  mainWindow.setMinimumSize(
+    NORMAL_WINDOW_MIN_WIDTH,
+    NORMAL_WINDOW_MIN_HEIGHT
+  );
+}
+function applyWindowAlwaysOnTop(alwaysOnTop) {
+  if (!mainWindow || windowAlwaysOnTop === alwaysOnTop) return;
+  windowAlwaysOnTop = alwaysOnTop;
+  syncWindowAppearance(alwaysOnTop);
+  notifyWindowAlwaysOnTop();
 }
 function loadMainWindow() {
   if (!mainWindow) return;
   const query = new URLSearchParams({
     apiBaseUrl: localServerApiBaseUrl
   }).toString();
-  if (!import_electron3.app.isPackaged) {
+  if (!import_electron4.app.isPackaged) {
     import_electron_log.default.info("Loading renderer from localhost");
     void mainWindow.loadURL(`http://localhost:5173/?${query}`);
   } else {
-    const filePath = import_path5.default.join(__dirname, "../dist-renderer/index.html");
+    const filePath = import_path6.default.join(__dirname, "../dist-renderer/index.html");
     import_electron_log.default.info("Loading renderer from file:", filePath);
     void mainWindow.loadFile(filePath, {
       query: {
@@ -3522,7 +4810,7 @@ function setupAutoUpdater() {
       mainWindow.webContents.send("update-downloaded", info);
     }
   });
-  if (import_electron3.app.isPackaged) {
+  if (import_electron4.app.isPackaged) {
     import_electron_updater.autoUpdater.checkForUpdatesAndNotify();
   }
 }
@@ -3530,47 +4818,52 @@ async function createWindow(options) {
   import_electron_log.default.info("Creating main window...");
   isAppHidden = false;
   const settings = await readPersistedSettings();
-  isFloatingWindowMode = settings.floatingWindowMode === true;
-  const mode = getWindowMode();
-  const windowState = resolveBoundsForMode(mode, settings);
-  mainWindow = new import_electron3.BrowserWindow({
+  cachedWindowBounds = settings.windowBounds ? normalizeWindowBounds(settings.windowBounds) : null;
+  windowAlwaysOnTop = settings.windowAlwaysOnTop === true;
+  const windowState = resolveWindowBounds(settings);
+  mainWindow = new import_electron4.BrowserWindow({
     width: windowState.width,
     height: windowState.height,
     x: windowState.x,
     y: windowState.y,
-    icon: import_path5.default.join(__dirname, "../resources/icon.svg"),
+    icon: WINDOW_ICON_PATH,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: import_path5.default.join(__dirname, "preload.cjs")
+      preload: import_path6.default.join(__dirname, "preload.cjs")
     },
     frame: false,
     transparent: false,
     backgroundColor: "#0a0a0a",
-    alwaysOnTop: isFloatingWindowMode,
+    alwaysOnTop: windowAlwaysOnTop,
     hasShadow: true
   });
-  syncWindowAppearance(mode);
+  syncWindowAppearance(windowAlwaysOnTop);
   mainWindow.on("resize", () => {
     if (!mainWindow) return;
-    if (!isFloatingWindowMode && (mainWindow.isMinimized() || mainWindow.isMaximized())) {
+    if (mainWindow.isMinimized() || mainWindow.isMaximized()) {
       return;
     }
-    debouncedSaveWindowBounds(getWindowMode(), mainWindow.getBounds());
+    const bounds = mainWindow.getBounds();
+    cacheWindowBounds(bounds);
+    debouncedSaveWindowBounds(bounds);
   });
   mainWindow.on("move", () => {
     if (!mainWindow) return;
-    debouncedSaveWindowBounds(getWindowMode(), mainWindow.getBounds());
+    const bounds = mainWindow.getBounds();
+    cacheWindowBounds(bounds);
+    debouncedSaveWindowBounds(bounds);
   });
   mainWindow.webContents.on("did-finish-load", () => {
     import_electron_log.default.info("Renderer process finished loading");
+    notifyWindowAlwaysOnTop();
   });
-  if (!import_electron3.app.isPackaged) {
+  if (!import_electron4.app.isPackaged) {
     mainWindow.webContents.openDevTools({ mode: "detach" });
   }
   mainWindow.webContents.on(
     "did-fail-load",
-    (event, errorCode, errorDescription, validatedURL) => {
+    (_event, errorCode, errorDescription, validatedURL) => {
       import_electron_log.default.error(
         "Renderer process failed to load:",
         errorCode,
@@ -3579,24 +4872,24 @@ async function createWindow(options) {
       );
     }
   );
-  mainWindow.webContents.on("render-process-gone", (event, details) => {
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
     import_electron_log.default.error("Renderer process gone:", details.reason, details.exitCode);
   });
   if ((options == null ? void 0 : options.load) !== false) {
     loadMainWindow();
   }
   setupAutoUpdater();
-  import_electron3.ipcMain.on("window-min", () => mainWindow == null ? void 0 : mainWindow.minimize());
-  import_electron3.ipcMain.on("window-max", () => {
+  import_electron4.ipcMain.on("window-min", () => mainWindow == null ? void 0 : mainWindow.minimize());
+  import_electron4.ipcMain.on("window-max", () => {
     if (mainWindow == null ? void 0 : mainWindow.isMaximized()) {
       mainWindow.unmaximize();
     } else {
       mainWindow == null ? void 0 : mainWindow.maximize();
     }
   });
-  import_electron3.ipcMain.on("window-close", () => mainWindow == null ? void 0 : mainWindow.close());
-  import_electron3.ipcMain.on("window-focus", () => mainWindow == null ? void 0 : mainWindow.focus());
-  import_electron3.ipcMain.on(
+  import_electron4.ipcMain.on("window-close", () => mainWindow == null ? void 0 : mainWindow.close());
+  import_electron4.ipcMain.on("window-focus", () => mainWindow == null ? void 0 : mainWindow.focus());
+  import_electron4.ipcMain.on(
     "set-window-bounds",
     (_event, bounds) => {
       if (!mainWindow) return;
@@ -3607,34 +4900,38 @@ async function createWindow(options) {
         width: bounds.width ?? current.width,
         height: bounds.height ?? current.height
       };
-      if (isFloatingWindowMode) {
-        const normalized = normalizeFloatingBounds(nextBounds);
-        mainWindow.setBounds(normalized);
-        return;
-      }
-      mainWindow.setBounds(normalizeNormalBounds(nextBounds));
+      const normalized = normalizeWindowBounds(nextBounds);
+      mainWindow.setBounds(normalized);
+      cacheWindowBounds(normalized);
     }
   );
-  import_electron3.ipcMain.handle("set-floating-window-mode", async (_event, enabled) => {
+  import_electron4.ipcMain.handle("set-window-always-on-top", async (_event, value) => {
     try {
-      await applyWindowMode(enabled ? "floating" : "normal");
-      return { success: true };
+      if (typeof value !== "boolean") {
+        throw new Error("Invalid always-on-top value");
+      }
+      applyWindowAlwaysOnTop(value);
+      await writePersistedSettings({
+        windowAlwaysOnTop
+      });
+      return { success: true, alwaysOnTop: windowAlwaysOnTop };
     } catch (error) {
-      import_electron_log.default.error("Failed to switch floating window mode", error);
+      import_electron_log.default.error("Failed to switch always-on-top state", error);
       return {
         success: false,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
+        alwaysOnTop: windowAlwaysOnTop
       };
     }
   });
-  import_electron3.ipcMain.on("log-message", (_event, level, ...args) => {
+  import_electron4.ipcMain.on("log-message", (_event, level, ...args) => {
     if (typeof import_electron_log.default[level] === "function") {
       import_electron_log.default[level](...args);
     } else {
       import_electron_log.default.info(...args);
     }
   });
-  import_electron3.ipcMain.handle("get-log-content", async () => {
+  import_electron4.ipcMain.handle("get-log-content", async () => {
     try {
       const logPath = import_electron_log.default.transports.file.getFile().path;
       if (await lockedFs.pathExists(logPath)) {
@@ -3644,7 +4941,7 @@ async function createWindow(options) {
         const start = Math.max(0, size - READ_SIZE);
         return await withFileLock(logPath, () => {
           return new Promise((resolve, reject) => {
-            const stream = import_fs_extra4.default.createReadStream(logPath, {
+            const stream = import_fs_extra5.default.createReadStream(logPath, {
               start,
               encoding: "utf8"
             });
@@ -3661,7 +4958,7 @@ async function createWindow(options) {
       return `Failed to read log file: ${error instanceof Error ? error.message : String(error)}`;
     }
   });
-  import_electron3.ipcMain.handle("open-external", async (_event, rawUrl) => {
+  import_electron4.ipcMain.handle("open-external", async (_event, rawUrl) => {
     try {
       if (typeof rawUrl !== "string") {
         return { success: false, error: "Invalid URL" };
@@ -3670,7 +4967,7 @@ async function createWindow(options) {
       if (url.protocol !== "http:" && url.protocol !== "https:") {
         return { success: false, error: "Unsupported URL protocol" };
       }
-      await import_electron3.shell.openExternal(url.toString());
+      await import_electron4.shell.openExternal(url.toString());
       return { success: true };
     } catch (error) {
       return {
@@ -3717,15 +5014,15 @@ function registerShortcut(accelerator, currentVar, updateVar, action, checkSetti
   };
   try {
     if (prev !== next) {
-      import_electron3.globalShortcut.unregister(prev);
+      import_electron4.globalShortcut.unregister(prev);
     } else {
-      import_electron3.globalShortcut.unregister(prev);
+      import_electron4.globalShortcut.unregister(prev);
     }
-    const ok = import_electron3.globalShortcut.register(next, handler);
+    const ok = import_electron4.globalShortcut.register(next, handler);
     if (!ok) {
       if (prev !== next) {
-        import_electron3.globalShortcut.unregister(next);
-        import_electron3.globalShortcut.register(prev, handler);
+        import_electron4.globalShortcut.unregister(next);
+        import_electron4.globalShortcut.register(prev, handler);
       }
       return {
         success: false,
@@ -3737,8 +5034,8 @@ function registerShortcut(accelerator, currentVar, updateVar, action, checkSetti
     return { success: true, accelerator: next };
   } catch (e) {
     if (prev !== next) {
-      import_electron3.globalShortcut.unregister(next);
-      import_electron3.globalShortcut.register(prev, handler);
+      import_electron4.globalShortcut.unregister(next);
+      import_electron4.globalShortcut.register(prev, handler);
     }
     return {
       success: false,
@@ -3759,20 +5056,20 @@ function registerToggleWindowShortcut(accelerator) {
   );
 }
 function getModelDir() {
-  return import_path5.default.join(getStorageDir(), "model");
+  return import_path6.default.join(getStorageDir(), "model");
 }
 async function hasRequiredModelFiles(modelDir) {
   const hasConfig = await lockedFs.pathExists(
-    import_path5.default.join(modelDir, "config.json")
+    import_path6.default.join(modelDir, "config.json")
   );
   const hasWeights = await lockedFs.pathExists(
-    import_path5.default.join(modelDir, "model.safetensors")
+    import_path6.default.join(modelDir, "model.safetensors")
   );
   const hasProcessor = await lockedFs.pathExists(
-    import_path5.default.join(modelDir, "preprocessor_config.json")
+    import_path6.default.join(modelDir, "preprocessor_config.json")
   );
   const hasTokenizer = await lockedFs.pathExists(
-    import_path5.default.join(modelDir, "tokenizer.json")
+    import_path6.default.join(modelDir, "tokenizer.json")
   );
   return hasConfig && hasWeights && hasProcessor && hasTokenizer;
 }
@@ -3794,42 +5091,9 @@ function getUvCandidates() {
   }
   return uniq;
 }
-function spawnUvPython(args, cwd, env) {
-  const candidates = getUvCandidates();
-  return new Promise((resolve, reject) => {
-    const trySpawn = async (index) => {
-      if (index >= candidates.length) {
-        reject(new Error("uv not found"));
-        return;
-      }
-      const command = candidates[index];
-      if (import_path5.default.isAbsolute(command)) {
-        const exists = await lockedFs.pathExists(command);
-        if (!exists) {
-          trySpawn(index + 1);
-          return;
-        }
-      }
-      const proc = (0, import_child_process2.spawn)(command, args, {
-        stdio: ["ignore", "pipe", "pipe"],
-        cwd,
-        env
-      });
-      proc.once("error", (err) => {
-        if (err.code === "ENOENT") {
-          trySpawn(index + 1);
-          return;
-        }
-        reject(err);
-      });
-      resolve(proc);
-    };
-    trySpawn(0);
-  });
-}
 function getManagedUvPath() {
-  return import_path5.default.join(
-    import_electron3.app.getPath("userData"),
+  return import_path6.default.join(
+    import_electron4.app.getPath("userData"),
     "uv",
     process.platform === "win32" ? "uv.exe" : "uv"
   );
@@ -3837,8 +5101,8 @@ function getManagedUvPath() {
 function getBundledUvPath() {
   const executable = process.platform === "win32" ? "uv.exe" : "uv";
   const target = `${process.platform}-${process.arch}`;
-  const root = import_electron3.app.isPackaged ? import_path5.default.join(process.resourcesPath, "uv") : import_path5.default.join(__dirname, "../resources/uv");
-  return import_path5.default.join(root, target, executable);
+  const root = import_electron4.app.isPackaged ? import_path6.default.join(process.resourcesPath, "uv") : import_path6.default.join(__dirname, "../resources/uv");
+  return import_path6.default.join(root, target, executable);
 }
 var UV_VERSION = "latest";
 function resolveUvReleaseAsset() {
@@ -3982,31 +5246,45 @@ function downloadBuffer(url, onProgress) {
     fetch(url, 0);
   });
 }
+var currentEnvInitProgress = {
+  isOpen: false,
+  statusKey: "envInit.preparing",
+  progress: 0,
+  percentText: "0%"
+};
 function sendEnvInitProgress(parent, payload) {
+  currentEnvInitProgress = payload;
   if (parent.isDestroyed()) return;
   parent.webContents.send("env-init-progress", payload);
 }
 function makeEnvInitReporter(parent) {
-  return (statusKey, progress, statusParams) => {
+  return (statusKey, progress, statusParams, detailText) => {
     const normalized = Math.max(0, Math.min(1, progress));
     sendEnvInitProgress(parent, {
       isOpen: true,
       statusKey,
       statusParams,
+      detailText,
       progress: normalized,
       percentText: `${Math.round(normalized * 100)}%`
     });
   };
 }
 function closeEnvInitProgress(parent) {
+  currentEnvInitProgress = {
+    isOpen: false,
+    statusKey: "envInit.preparing",
+    progress: 0,
+    percentText: "0%"
+  };
   if (parent.isDestroyed()) return;
-  parent.webContents.send("env-init-progress", { isOpen: false });
+  parent.webContents.send("env-init-progress", currentEnvInitProgress);
 }
 function createStageReporter(report, start, end) {
   const span = Math.max(0, end - start);
-  return (statusKey, progress, statusParams) => {
+  return (statusKey, progress, statusParams, detailText) => {
     const normalized = Math.max(0, Math.min(1, progress));
-    report(statusKey, start + span * normalized, statusParams);
+    report(statusKey, start + span * normalized, statusParams, detailText);
   };
 }
 var delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -4015,7 +5293,7 @@ async function ensureUvInstalled(onProgress) {
   let existing = "";
   onProgress == null ? void 0 : onProgress("envInit.checkingUv", 0.08);
   for (const c of candidates) {
-    if (import_path5.default.isAbsolute(c) && await lockedFs.pathExists(c)) {
+    if (import_path6.default.isAbsolute(c) && await lockedFs.pathExists(c)) {
       existing = c;
       break;
     }
@@ -4026,7 +5304,7 @@ async function ensureUvInstalled(onProgress) {
     process.env.PROREF_UV_PATH = uvPath;
     return uvPath;
   }
-  await lockedFs.ensureDir(import_path5.default.dirname(uvPath));
+  await lockedFs.ensureDir(import_path6.default.dirname(uvPath));
   const { url, kind } = resolveUvReleaseAsset();
   import_electron_log.default.info(`Downloading uv from: ${url}`);
   onProgress == null ? void 0 : onProgress("envInit.downloadingUv", 0.18);
@@ -4056,80 +5334,42 @@ async function ensureUvInstalled(onProgress) {
   }
   await lockedFs.writeFile(uvPath, binary);
   if (process.platform !== "win32") {
-    await withFileLock(uvPath, () => import_fs_extra4.default.chmod(uvPath, 493));
+    await withFileLock(uvPath, () => import_fs_extra5.default.chmod(uvPath, 493));
   }
   process.env.PROREF_UV_PATH = uvPath;
   return uvPath;
 }
-function getUnpackedPath(originalPath) {
-  if (import_electron3.app.isPackaged) {
-    return originalPath.replace("app.asar", "app.asar.unpacked");
-  }
-  return originalPath;
-}
 async function preparePythonRuntime(parent, reportEnvInit) {
   const modelDir = getModelDir();
   process.env.PROREF_MODEL_DIR = modelDir;
-  const scriptPath = getUnpackedPath(
-    import_path5.default.join(__dirname, "../backend/python/tagger.py")
-  );
-  const pythonDir = import_path5.default.dirname(scriptPath);
   reportEnvInit("envInit.preparing", 0);
   console.log("Ensuring uv installation...");
-  await ensureUvInstalled((statusKey, progress) => {
+  const uvPath = await ensureUvInstalled((statusKey, progress) => {
     reportEnvInit(statusKey, progress);
   });
-  const venvPath = import_path5.default.join(pythonDir, ".venv");
-  if (import_electron3.app.isPackaged && await lockedFs.pathExists(venvPath)) {
-    console.log("Found pre-packaged python environment, skipping uv sync");
-    reportEnvInit("envInit.pythonEnvReady", 1);
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    return;
-  }
-  reportEnvInit("envInit.initializingPythonEnv", 0.42);
-  const syncProc = await spawnUvPython(["sync", "--frozen"], pythonDir, {
-    ...process.env,
-    PROREF_MODEL_DIR: modelDir,
-    UV_NO_COLOR: "1"
-  });
-  if (syncProc.stderr) {
-    syncProc.stderr.on("data", (chunk) => {
-      const text = chunk.toString();
-      const lower = text.toLowerCase();
-      console.log({ text: lower });
-      if (lower.includes("resolved")) {
-        reportEnvInit("envInit.resolvingDependencies", 0.58);
-        return;
-      }
-      if (lower.includes("downloading")) {
-        reportEnvInit("envInit.downloadingPackages", 0.72);
-        return;
-      }
-      if (lower.includes("installed") || lower.includes("installing") || lower.includes("prepared")) {
-        reportEnvInit("envInit.installingPackages", 0.88);
-        return;
-      }
-    });
-  }
-  const syncExit = await new Promise(
-    (resolve) => syncProc.once("exit", resolve)
-  );
-  if (syncExit !== 0) {
+  import_electron_log.default.info("[python-init] uv ready:", uvPath);
+  try {
+    import_electron_log.default.info("[python-init] ensuring managed runtime...");
+    await ensurePythonRuntime(uvPath, reportEnvInit);
+    import_electron_log.default.info("[python-init] managed runtime ready.");
+  } catch (error) {
     const locale = await getLocale();
+    const pythonDir = getManagedPythonRuntimeDir();
+    const detail = error instanceof Error && error.message ? `${error.message}
+Dir: ${pythonDir}` : t(locale, "dialog.pythonSetupFailedDetail", {
+      code: -1,
+      dir: pythonDir
+    });
+    import_electron_log.default.error("[python-init] runtime setup failed", error);
     closeEnvInitProgress(parent);
-    await import_electron3.dialog.showMessageBox(parent, {
+    await import_electron4.dialog.showMessageBox(parent, {
       type: "error",
       title: t(locale, "dialog.pythonSetupFailedTitle"),
       message: t(locale, "dialog.pythonSetupFailedMessage"),
-      detail: t(locale, "dialog.pythonSetupFailedDetail", {
-        code: syncExit,
-        dir: pythonDir
-      })
+      detail
     });
-    throw new Error("Python setup failed");
+    throw error instanceof Error ? error : new Error("Python setup failed");
   }
-  reportEnvInit("envInit.verifyingEnvironment", 0.96);
-  reportEnvInit("envInit.pythonEnvReady", 1);
 }
 async function ensureModelReady(parent, options = {}) {
   const { reportProgress } = options;
@@ -4173,19 +5413,26 @@ async function ensureModelReady(parent, options = {}) {
   };
   sendProgress("model.preparingDownload", "0%", 0);
   parent.setProgressBar(0);
-  const scriptPath = getUnpackedPath(
-    import_path5.default.join(__dirname, "../backend/python/tagger.py")
-  );
-  const pythonDir = import_path5.default.dirname(scriptPath);
+  const uvPath = await ensureUvInstalled();
+  const { runtimeDir: pythonDir, scriptPath, pythonPath } = await ensurePythonRuntime(uvPath);
   let percentText = "0%";
   let progress = 0;
   sendProgress("model.downloading", percentText, progress);
-  const proc = await spawnUvPython(
-    ["run", "python", scriptPath, "--download-model"],
-    pythonDir,
+  const proc = (0, import_child_process3.spawn)(
+    pythonPath,
+    [scriptPath, "--download-model"],
     {
-      ...process.env,
-      PROREF_MODEL_DIR: modelDir
+      stdio: ["ignore", "pipe", "pipe"],
+      cwd: pythonDir,
+      env: {
+        ...process.env,
+        PROREF_MODEL_DIR: modelDir,
+        PYTHONIOENCODING: "utf-8",
+        PYTHONUTF8: "1",
+        TRANSFORMERS_VERBOSITY: "error",
+        HF_HUB_DISABLE_PROGRESS_BARS: "1",
+        HF_ENDPOINT: "https://hf-mirror.com"
+      }
     }
   );
   if (proc.stderr) {
@@ -4297,7 +5544,7 @@ async function ensureModelReady(parent, options = {}) {
   if (debug) console.log("[model] download exit:", exitCode, "ok:", ok);
   if (exitCode !== 0 || !ok) {
     const locale = await getLocale();
-    await import_electron3.dialog.showMessageBox(parent, {
+    await import_electron4.dialog.showMessageBox(parent, {
       type: "error",
       title: t(locale, "dialog.modelDownloadFailedTitle"),
       message: t(locale, "dialog.modelDownloadFailedMessage"),
@@ -4326,6 +5573,16 @@ async function ensureStartupInitialization(parent) {
     closeEnvInitProgress(parent);
   }
 }
+function scheduleVectorServiceWarmup() {
+  void (async () => {
+    try {
+      await warmupVectorService();
+      import_electron_log.default.info("[vector-service] warmup ready.");
+    } catch (error) {
+      import_electron_log.default.warn("[vector-service] warmup failed:", error);
+    }
+  })();
+}
 async function startServer2() {
   const port = await startServer((channel, data) => {
     mainWindow == null ? void 0 : mainWindow.webContents.send(channel, data);
@@ -4334,7 +5591,7 @@ async function startServer2() {
   isLocalServerReady = true;
   return port;
 }
-import_electron3.app.on("second-instance", () => {
+import_electron4.app.on("second-instance", () => {
   const restoreOrCreateWindow = () => {
     if (!mainWindow) {
       if (!isLocalServerReady) {
@@ -4346,10 +5603,10 @@ import_electron3.app.on("second-instance", () => {
     }
     restoreMainWindowVisibility();
   };
-  if (!import_electron3.app.isReady()) {
+  if (!import_electron4.app.isReady()) {
     if (hasPendingSecondInstanceRestore) return;
     hasPendingSecondInstanceRestore = true;
-    import_electron3.app.once("ready", () => {
+    import_electron4.app.once("ready", () => {
       hasPendingSecondInstanceRestore = false;
       restoreOrCreateWindow();
     });
@@ -4357,20 +5614,23 @@ import_electron3.app.on("second-instance", () => {
   }
   restoreOrCreateWindow();
 });
-import_electron3.ipcMain.handle("get-storage-dir", async () => {
+import_electron4.ipcMain.handle("get-storage-dir", async () => {
   return getStorageDir();
 });
-import_electron3.ipcMain.handle("open-storage-dir", async () => {
+import_electron4.ipcMain.handle("get-env-init-progress", async () => {
+  return currentEnvInitProgress;
+});
+import_electron4.ipcMain.handle("open-storage-dir", async () => {
   const target = getStorageDir();
-  const result = await import_electron3.shell.openPath(target);
+  const result = await import_electron4.shell.openPath(target);
   if (result) {
     return { success: false, error: result };
   }
   return { success: true };
 });
-import_electron3.ipcMain.handle("choose-storage-dir", async () => {
+import_electron4.ipcMain.handle("choose-storage-dir", async () => {
   const locale = await getLocale();
-  const result = await import_electron3.dialog.showOpenDialog({
+  const result = await import_electron4.dialog.showOpenDialog({
     title: t(locale, "dialog.chooseStorageFolderTitle"),
     properties: ["openDirectory", "createDirectory"]
   });
@@ -4379,14 +5639,79 @@ import_electron3.ipcMain.handle("choose-storage-dir", async () => {
   }
   const dir = result.filePaths[0];
   await setStorageRoot(dir);
-  import_electron3.app.relaunch();
-  import_electron3.app.exit(0);
+  import_electron4.app.relaunch();
+  import_electron4.app.exit(0);
 });
-import_electron3.app.whenReady().then(async () => {
+import_electron4.ipcMain.handle("choose-search-image", async () => {
+  const result = await import_electron4.dialog.showOpenDialog({
+    properties: ["openFile"],
+    filters: [
+      {
+        name: "Images",
+        extensions: [
+          "jpg",
+          "jpeg",
+          "png",
+          "webp",
+          "gif",
+          "bmp",
+          "tiff",
+          "tif",
+          "heic",
+          "heif",
+          "avif"
+        ]
+      }
+    ]
+  });
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+  const filePath = result.filePaths[0];
+  return {
+    path: filePath,
+    name: import_path6.default.basename(filePath)
+  };
+});
+import_electron4.ipcMain.handle(
+  "start-image-drag",
+  async (event, payload) => {
+    var _a, _b;
+    try {
+      const rawImagePath = (_a = payload == null ? void 0 : payload.imagePath) == null ? void 0 : _a.trim();
+      if (!rawImagePath) {
+        return { success: false, error: "Missing image path" };
+      }
+      const filePath = resolveDragImagePath(rawImagePath);
+      const fileExists = await lockedFs.pathExists(filePath);
+      if (!fileExists) {
+        return { success: false, error: "Image file does not exist" };
+      }
+      const preferredIconPath = ((_b = payload == null ? void 0 : payload.fallbackIconPath) == null ? void 0 : _b.trim()) ? resolveDragImagePath(payload.fallbackIconPath.trim()) : filePath;
+      const iconPath = await lockedFs.pathExists(preferredIconPath) ? preferredIconPath : WINDOW_ICON_PATH;
+      const icon = createDragPreviewIcon(iconPath);
+      event.sender.startDrag({
+        file: filePath,
+        icon
+      });
+      return { success: true };
+    } catch (error) {
+      import_electron_log.default.error("Failed to start image drag", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+);
+import_electron4.app.whenReady().then(async () => {
   import_electron_log.default.info("App starting...");
   import_electron_log.default.info("Log file location:", import_electron_log.default.transports.file.getFile().path);
-  import_electron_log.default.info("App path:", import_electron3.app.getAppPath());
-  import_electron_log.default.info("User data:", import_electron3.app.getPath("userData"));
+  import_electron_log.default.info("App path:", import_electron4.app.getAppPath());
+  import_electron_log.default.info("User data:", import_electron4.app.getPath("userData"));
+  if (process.platform === "win32") {
+    import_electron4.app.setAppUserModelId(APP_ID);
+  }
   const taskLoadShortcuts = loadShortcuts();
   const taskStartServer = startServer2();
   try {
@@ -4397,38 +5722,39 @@ import_electron3.app.whenReady().then(async () => {
       import_electron_log.default.info("Ensuring startup initialization...");
       await ensureStartupInitialization(mainWindow);
       import_electron_log.default.info("Startup initialization ready.");
+      scheduleVectorServiceWarmup();
     }
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     console.error("[startup] initialization failed:", message);
     import_electron_log.default.error("[startup] initialization failed:", message);
-    import_electron3.app.quit();
+    import_electron4.app.quit();
     return;
   }
   if (hasPendingSecondInstanceRestore) {
     hasPendingSecondInstanceRestore = false;
     restoreMainWindowVisibility();
   }
-  import_electron3.app.on("activate", () => {
-    if (import_electron3.BrowserWindow.getAllWindows().length === 0) {
+  import_electron4.app.on("activate", () => {
+    if (import_electron4.BrowserWindow.getAllWindows().length === 0) {
       void createWindow();
       return;
     }
     restoreMainWindowVisibility();
   });
 });
-import_electron3.ipcMain.handle(
+import_electron4.ipcMain.handle(
   "set-toggle-window-shortcut",
   async (_event, accelerator) => {
     return registerToggleWindowShortcut(accelerator);
   }
 );
-import_electron3.ipcMain.on("settings-open-changed", (_event, open) => {
+import_electron4.ipcMain.on("settings-open-changed", (_event, open) => {
   isSettingsOpen = Boolean(open);
 });
-import_electron3.app.on("will-quit", () => {
-  import_electron3.globalShortcut.unregisterAll();
+import_electron4.app.on("will-quit", () => {
+  import_electron4.globalShortcut.unregisterAll();
 });
-import_electron3.app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") import_electron3.app.quit();
+import_electron4.app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") import_electron4.app.quit();
 });

@@ -4,20 +4,20 @@
   Push $R8
   Push $R9
 
-  ; Preserve the install-local data directory only during update installs.
-  ; A normal uninstall should keep its current semantics.
+  ; 仅在“更新安装”时保留安装目录下的 data 文件夹。
+  ; 常规卸载保持原行为，避免改变用户主动卸载语义。
   StrCpy $R6 "0"
   StrCpy $R7 "$INSTDIR\..\${APP_FILENAME}.data.keep"
 
   ${if} ${isUpdated}
-    IfFileExists "$INSTDIR\data\*.*" 0 skipPreserveData
+    ${if} ${FileExists} "$INSTDIR\data\*.*"
       RMDir /r "$R7"
       ClearErrors
       Rename "$INSTDIR\data" "$R7"
       ${ifNot} ${Errors}
         StrCpy $R6 "1"
       ${endif}
-    skipPreserveData:
+    ${endif}
 
     CreateDirectory "$PLUGINSDIR\old-install"
 

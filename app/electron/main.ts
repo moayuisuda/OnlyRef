@@ -6,12 +6,13 @@ import {
   dialog,
   shell,
   globalShortcut,
+  nativeImage,
 } from "electron";
 import path from "path";
 import fs from "fs-extra";
 import log from "electron-log";
 import { autoUpdater } from "electron-updater";
-import { spawn, type ChildProcess } from "child_process";
+import { spawn } from "child_process";
 import { lockedFs, withFileLock } from "../backend/fileLock";
 
 // Ensure app name is correct for log paths
@@ -43,37 +44,45 @@ import {
   startServer as startApiServer,
   DEFAULT_SERVER_PORT,
   getStorageDir,
+  readSettings as readSharedSettings,
   setStorageRoot,
+  writeSettings as writeSharedSettings,
+  warmupVectorService,
   type RendererChannel,
 } from "../backend/server";
+import { configureSettingsStore } from "../backend/settingsStore";
+import {
+  ensurePythonRuntime,
+  getManagedPythonRuntimeDir,
+} from "../backend/pythonRuntime";
 import { t as translate } from "../shared/i18n/t";
 import type { I18nKey, I18nParams, Locale } from "../shared/i18n/types";
 import { debounce } from "radash";
 
+const DEFAULT_WINDOW_ALWAYS_ON_TOP = false;
+
 let mainWindow: BrowserWindow | null = null;
 let isAppHidden = false;
-let localeCache: { locale: Locale; mtimeMs: number } | null = null;
 let localServerApiBaseUrl = `http://localhost:${DEFAULT_SERVER_PORT}`;
 let isLocalServerReady = false;
 const DEFAULT_TOGGLE_WINDOW_SHORTCUT =
   process.platform === "darwin" ? "Command+L" : "Ctrl+L";
+const APP_ID = "com.picaptain.app";
+const WINDOW_ICON_PATH = path.join(__dirname, "../resources/icon.png");
 
 let toggleWindowShortcut = DEFAULT_TOGGLE_WINDOW_SHORTCUT;
 
 let isSettingsOpen = false;
 let hasPendingSecondInstanceRestore = false;
-let isFloatingWindowMode = false;
+let windowAlwaysOnTop = DEFAULT_WINDOW_ALWAYS_ON_TOP;
+let cachedWindowBounds: Electron.Rectangle | null = null;
 
 const NORMAL_WINDOW_MIN_WIDTH = 400;
 const NORMAL_WINDOW_MIN_HEIGHT = 300;
-const FLOATING_WINDOW_SIZE = 50;
-
-type WindowMode = "normal" | "floating";
 
 type PersistedSettings = Record<string, unknown> & {
   windowBounds?: Partial<Electron.Rectangle>;
-  floatingWindowBounds?: Partial<Electron.Rectangle>;
-  floatingWindowMode?: boolean;
+  windowAlwaysOnTop?: boolean;
 };
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -84,21 +93,15 @@ if (!hasSingleInstanceLock) {
 const isLocale = (value: unknown): value is Locale =>
   value === "en" || value === "zh";
 
+const ensureSettingsStoreConfigured = (): void => {
+  configureSettingsStore(path.join(getStorageDir(), "settings.json"));
+};
+
 async function getLocale(): Promise<Locale> {
   try {
-    const settingsPath = path.join(getStorageDir(), "settings.json");
-    const stat = await lockedFs.stat(settingsPath).catch(() => null);
-    if (!stat) return "en";
-    if (localeCache && localeCache.mtimeMs === stat.mtimeMs)
-      return localeCache.locale;
-    const settings = await lockedFs.readJson(settingsPath).catch(() => null);
-    const raw =
-      settings && typeof settings === "object"
-        ? (settings as { language?: unknown }).language
-        : undefined;
-    const locale = isLocale(raw) ? raw : "en";
-    localeCache = { locale, mtimeMs: stat.mtimeMs };
-    return locale;
+    const settings = await readPersistedSettings();
+    const raw = settings.language;
+    return isLocale(raw) ? raw : "en";
   } catch {
     return "en";
   }
@@ -106,12 +109,8 @@ async function getLocale(): Promise<Locale> {
 
 async function loadShortcuts(): Promise<void> {
   try {
-    const settingsPath = path.join(getStorageDir(), "settings.json");
-    const settings = await lockedFs.readJson(settingsPath).catch(() => null);
-    if (!settings || typeof settings !== "object") return;
-
-    const rawToggle = (settings as Record<string, unknown>)
-      .toggleWindowShortcut;
+    const settings = await readPersistedSettings();
+    const rawToggle = settings.toggleWindowShortcut;
     if (typeof rawToggle === "string" && rawToggle.trim()) {
       toggleWindowShortcut = rawToggle.trim();
     }
@@ -122,8 +121,8 @@ async function loadShortcuts(): Promise<void> {
 
 async function readPersistedSettings(): Promise<PersistedSettings> {
   try {
-    const settingsPath = path.join(getStorageDir(), "settings.json");
-    const settings = await lockedFs.readJson(settingsPath).catch(() => null);
+    ensureSettingsStoreConfigured();
+    const settings = await readSharedSettings();
     if (settings && typeof settings === "object") {
       return settings as PersistedSettings;
     }
@@ -137,9 +136,9 @@ async function writePersistedSettings(
   patch: Partial<PersistedSettings>,
 ): Promise<void> {
   try {
-    const settingsPath = path.join(getStorageDir(), "settings.json");
+    ensureSettingsStoreConfigured();
     const current = await readPersistedSettings();
-    await lockedFs.writeJson(settingsPath, {
+    await writeSharedSettings({
       ...current,
       ...patch,
     });
@@ -148,11 +147,7 @@ async function writePersistedSettings(
   }
 }
 
-function getWindowMode(): WindowMode {
-  return isFloatingWindowMode ? "floating" : "normal";
-}
-
-function normalizeNormalBounds(
+function normalizeWindowBounds(
   bounds: Partial<Electron.Rectangle> | undefined,
 ): Electron.Rectangle {
   const workArea = screen.getPrimaryDisplay().workArea;
@@ -190,118 +185,113 @@ function normalizeNormalBounds(
   };
 }
 
-function normalizeFloatingBounds(
-  bounds: Partial<Electron.Rectangle> | undefined,
-  fallbackBounds?: Partial<Electron.Rectangle>,
-): Electron.Rectangle {
-  const width = FLOATING_WINDOW_SIZE;
-  const height = FLOATING_WINDOW_SIZE;
-  const fallbackX =
-    typeof fallbackBounds?.x === "number" && typeof fallbackBounds?.width === "number"
-      ? fallbackBounds.x + Math.round((fallbackBounds.width - width) / 2)
-      : undefined;
-  const fallbackY =
-    typeof fallbackBounds?.y === "number" && typeof fallbackBounds?.height === "number"
-      ? fallbackBounds.y + Math.round((fallbackBounds.height - height) / 2)
-      : undefined;
-  const display = screen.getDisplayMatching({
-    x: typeof bounds?.x === "number" ? bounds.x : fallbackX ?? screen.getPrimaryDisplay().workArea.x,
-    y: typeof bounds?.y === "number" ? bounds.y : fallbackY ?? screen.getPrimaryDisplay().workArea.y,
-    width,
-    height,
-  });
-  const area = display.workArea;
-  const defaultX = area.x + area.width - width - 24;
-  const defaultY = area.y + Math.max(24, Math.round(area.height * 0.18));
-  const maxX = area.x + Math.max(0, area.width - width);
-  const maxY = area.y + Math.max(0, area.height - height);
-
-  return {
-    width,
-    height,
-    x: Math.min(
-      Math.max(typeof bounds?.x === "number" ? bounds.x : fallbackX ?? defaultX, area.x),
-      maxX,
-    ),
-    y: Math.min(
-      Math.max(typeof bounds?.y === "number" ? bounds.y : fallbackY ?? defaultY, area.y),
-      maxY,
-    ),
-  };
-}
-
-function resolveBoundsForMode(
-  mode: WindowMode,
-  settings: PersistedSettings,
-  fallbackBounds?: Partial<Electron.Rectangle>,
-): Electron.Rectangle {
-  if (mode === "floating") {
-    return normalizeFloatingBounds(settings.floatingWindowBounds, fallbackBounds);
+const resolveDragImagePath = (imagePath: string): string => {
+  if (path.isAbsolute(imagePath)) {
+    return path.normalize(imagePath);
   }
-  return normalizeNormalBounds(settings.windowBounds);
-}
+  const normalizedRelativePath = imagePath.replace(/^[/\\]+/, "");
+  return path.join(getStorageDir(), normalizedRelativePath);
+};
 
-async function persistWindowBounds(
-  mode: WindowMode,
-  bounds: Electron.Rectangle,
-): Promise<void> {
-  if (mode === "normal") {
-    const nextBounds =
-      mainWindow && mainWindow.isMaximized()
-        ? mainWindow.getNormalBounds()
-        : bounds;
-    await writePersistedSettings({
-      windowBounds: normalizeNormalBounds(nextBounds),
+const createDragPreviewIcon = (iconPath: string) => {
+  const maxSide = 72;
+  const source = nativeImage.createFromPath(iconPath);
+  const icon = source.isEmpty()
+    ? nativeImage.createFromPath(WINDOW_ICON_PATH)
+    : source;
+  const size = icon.getSize();
+
+  if (size.width <= 0 || size.height <= 0) {
+    return icon.resize({
+      width: maxSide,
+      height: maxSide,
+      quality: "good",
     });
-    return;
   }
 
-  await writePersistedSettings({
-    floatingWindowBounds: normalizeFloatingBounds(bounds),
+  const scale = Math.min(maxSide / size.width, maxSide / size.height, 1);
+  const width = Math.max(1, Math.round(size.width * scale));
+  const height = Math.max(1, Math.round(size.height * scale));
+
+  return icon.resize({
+    width,
+    height,
+    quality: "good",
   });
+};
+
+function cacheWindowBounds(bounds: Electron.Rectangle): Electron.Rectangle {
+  const sourceBounds = mainWindow?.isMaximized()
+    ? mainWindow.getNormalBounds()
+    : bounds;
+  const normalized = normalizeWindowBounds(sourceBounds);
+  cachedWindowBounds = normalized;
+  return normalized;
+}
+
+function resolveWindowBounds(settings: PersistedSettings): Electron.Rectangle {
+  return normalizeWindowBounds(cachedWindowBounds ?? settings.windowBounds);
+}
+
+/*
+// 当前只保留主窗口形态，窗口位置与尺寸始终按主窗口规则归一化。
+function resolveWindowBounds(settings: PersistedSettings): Electron.Rectangle {
+  return normalizeWindowBounds(cachedWindowBounds ?? settings.windowBounds);
+}
+
+*/
+
+async function saveWindowBounds(
+  bounds: Electron.Rectangle,
+): Promise<Electron.Rectangle> {
+  const nextBounds = cacheWindowBounds(bounds);
+  await writePersistedSettings({
+    windowBounds: nextBounds,
+  });
+  return nextBounds;
 }
 
 const debouncedSaveWindowBounds = debounce(
   { delay: 1000 },
-  (mode: WindowMode, bounds: Electron.Rectangle) => {
-    void persistWindowBounds(mode, bounds);
+  (bounds: Electron.Rectangle) => {
+    void saveWindowBounds(bounds);
   },
 );
 
-function syncWindowAppearance(mode: WindowMode): void {
+function notifyWindowAlwaysOnTop(): void {
   if (!mainWindow) return;
-
-  const floating = mode === "floating";
-  // Use Electron's default floating level for top-most windows.
-  // Higher levels like screen-saver can interfere with native drag/drop targeting.
-  mainWindow.setAlwaysOnTop(floating);
-  mainWindow.setVisibleOnAllWorkspaces(floating, {
-    visibleOnFullScreen: floating,
-  });
-  mainWindow.setResizable(!floating);
-  mainWindow.setMaximizable(!floating);
-  mainWindow.setFullScreenable(!floating);
-  mainWindow.setMinimizable(true);
-  mainWindow.setMinimumSize(
-    floating ? FLOATING_WINDOW_SIZE : NORMAL_WINDOW_MIN_WIDTH,
-    floating ? FLOATING_WINDOW_SIZE : NORMAL_WINDOW_MIN_HEIGHT,
+  mainWindow.webContents.send(
+    "renderer-event",
+    "window-always-on-top",
+    windowAlwaysOnTop,
   );
 }
 
-async function applyWindowMode(mode: WindowMode): Promise<void> {
+function syncWindowAppearance(alwaysOnTop: boolean): void {
   if (!mainWindow) return;
 
-  const previousMode = getWindowMode();
-  const currentBounds = mainWindow.getBounds();
-  await persistWindowBounds(previousMode, currentBounds);
+  // 使用 Electron 默认的浮层级别即可，过高层级会影响原生拖拽投放。
+  mainWindow.setAlwaysOnTop(alwaysOnTop);
+  mainWindow.setAlwaysOnTop(alwaysOnTop);
+  mainWindow.setVisibleOnAllWorkspaces(alwaysOnTop, {
+    visibleOnFullScreen: alwaysOnTop,
+  });
+  mainWindow.setResizable(true);
+  mainWindow.setMaximizable(true);
+  mainWindow.setFullScreenable(true);
+  mainWindow.setMinimizable(true);
+  mainWindow.setMinimumSize(
+    NORMAL_WINDOW_MIN_WIDTH,
+    NORMAL_WINDOW_MIN_HEIGHT,
+  );
+}
 
-  isFloatingWindowMode = mode === "floating";
-  const settings = await readPersistedSettings();
-  const nextBounds = resolveBoundsForMode(mode, settings, currentBounds);
+function applyWindowAlwaysOnTop(alwaysOnTop: boolean): void {
+  if (!mainWindow || windowAlwaysOnTop === alwaysOnTop) return;
 
-  syncWindowAppearance(mode);
-  mainWindow.setBounds(nextBounds, true);
-  await persistWindowBounds(mode, nextBounds);
+  windowAlwaysOnTop = alwaysOnTop;
+  syncWindowAppearance(alwaysOnTop);
+  notifyWindowAlwaysOnTop();
 }
 
 function loadMainWindow() {
@@ -386,16 +376,18 @@ async function createWindow(options?: { load?: boolean }) {
   log.info("Creating main window...");
   isAppHidden = false;
   const settings = await readPersistedSettings();
-  isFloatingWindowMode = settings.floatingWindowMode === true;
-  const mode = getWindowMode();
-  const windowState = resolveBoundsForMode(mode, settings);
+  cachedWindowBounds = settings.windowBounds
+    ? normalizeWindowBounds(settings.windowBounds)
+    : null;
+  windowAlwaysOnTop = settings.windowAlwaysOnTop === true;
+  const windowState = resolveWindowBounds(settings);
 
   mainWindow = new BrowserWindow({
     width: windowState.width,
     height: windowState.height,
     x: windowState.x,
     y: windowState.y,
-    icon: path.join(__dirname, "../resources/icon.svg"),
+    icon: WINDOW_ICON_PATH,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -404,26 +396,31 @@ async function createWindow(options?: { load?: boolean }) {
     frame: false,
     transparent: false,
     backgroundColor: "#0a0a0a",
-    alwaysOnTop: isFloatingWindowMode,
+    alwaysOnTop: windowAlwaysOnTop,
     hasShadow: true,
   });
 
-  syncWindowAppearance(mode);
+  syncWindowAppearance(windowAlwaysOnTop);
 
   mainWindow.on("resize", () => {
     if (!mainWindow) return;
-    if (!isFloatingWindowMode && (mainWindow.isMinimized() || mainWindow.isMaximized())) {
+    if (mainWindow.isMinimized() || mainWindow.isMaximized()) {
       return;
     }
-    debouncedSaveWindowBounds(getWindowMode(), mainWindow.getBounds());
+    const bounds = mainWindow.getBounds();
+    cacheWindowBounds(bounds);
+    debouncedSaveWindowBounds(bounds);
   });
   mainWindow.on("move", () => {
     if (!mainWindow) return;
-    debouncedSaveWindowBounds(getWindowMode(), mainWindow.getBounds());
+    const bounds = mainWindow.getBounds();
+    cacheWindowBounds(bounds);
+    debouncedSaveWindowBounds(bounds);
   });
 
   mainWindow.webContents.on("did-finish-load", () => {
     log.info("Renderer process finished loading");
+    notifyWindowAlwaysOnTop();
   });
 
   // Open DevTools in development
@@ -433,7 +430,7 @@ async function createWindow(options?: { load?: boolean }) {
 
   mainWindow.webContents.on(
     "did-fail-load",
-    (event, errorCode, errorDescription, validatedURL) => {
+    (_event, errorCode, errorDescription, validatedURL) => {
       log.error(
         "Renderer process failed to load:",
         errorCode,
@@ -443,7 +440,7 @@ async function createWindow(options?: { load?: boolean }) {
     },
   );
 
-  mainWindow.webContents.on("render-process-gone", (event, details) => {
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
     log.error("Renderer process gone:", details.reason, details.exitCode);
   });
 
@@ -477,25 +474,29 @@ async function createWindow(options?: { load?: boolean }) {
         height: bounds.height ?? current.height,
       };
 
-      if (isFloatingWindowMode) {
-        const normalized = normalizeFloatingBounds(nextBounds);
-        mainWindow.setBounds(normalized);
-        return;
-      }
-
-      mainWindow.setBounds(normalizeNormalBounds(nextBounds));
+      const normalized = normalizeWindowBounds(nextBounds);
+      mainWindow.setBounds(normalized);
+      cacheWindowBounds(normalized);
     },
   );
 
-  ipcMain.handle("set-floating-window-mode", async (_event, enabled: boolean) => {
+  ipcMain.handle("set-window-always-on-top", async (_event, value: unknown) => {
     try {
-      await applyWindowMode(enabled ? "floating" : "normal");
-      return { success: true };
+      if (typeof value !== "boolean") {
+        throw new Error("Invalid always-on-top value");
+      }
+
+      applyWindowAlwaysOnTop(value);
+      await writePersistedSettings({
+        windowAlwaysOnTop: windowAlwaysOnTop,
+      });
+      return { success: true, alwaysOnTop: windowAlwaysOnTop };
     } catch (error) {
-      log.error("Failed to switch floating window mode", error);
+      log.error("Failed to switch always-on-top state", error);
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error),
+        alwaysOnTop: windowAlwaysOnTop,
       };
     }
   });
@@ -702,45 +703,6 @@ function getUvCandidates(): string[] {
   return uniq;
 }
 
-function spawnUvPython(
-  args: string[],
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-): Promise<ChildProcess> {
-  const candidates = getUvCandidates();
-  return new Promise((resolve, reject) => {
-    const trySpawn = async (index: number) => {
-      if (index >= candidates.length) {
-        reject(new Error("uv not found"));
-        return;
-      }
-      const command = candidates[index];
-      if (path.isAbsolute(command)) {
-        const exists = await lockedFs.pathExists(command);
-        if (!exists) {
-          trySpawn(index + 1);
-          return;
-        }
-      }
-
-      const proc = spawn(command, args, {
-        stdio: ["ignore", "pipe", "pipe"],
-        cwd,
-        env,
-      });
-      proc.once("error", (err: NodeJS.ErrnoException) => {
-        if (err.code === "ENOENT") {
-          trySpawn(index + 1);
-          return;
-        }
-        reject(err);
-      });
-      resolve(proc);
-    };
-    trySpawn(0);
-  });
-}
-
 function getManagedUvPath(): string {
   return path.join(
     app.getPath("userData"),
@@ -938,12 +900,21 @@ type EnvInitProgressPayload = {
   progress: number;
   percentText: string;
   statusParams?: I18nParams;
+  detailText?: string;
+};
+
+let currentEnvInitProgress: EnvInitProgressPayload = {
+  isOpen: false,
+  statusKey: "envInit.preparing",
+  progress: 0,
+  percentText: "0%",
 };
 
 function sendEnvInitProgress(
   parent: BrowserWindow,
   payload: EnvInitProgressPayload,
 ): void {
+  currentEnvInitProgress = payload;
   if (parent.isDestroyed()) return;
   parent.webContents.send("env-init-progress", payload);
 }
@@ -953,12 +924,14 @@ function makeEnvInitReporter(parent: BrowserWindow) {
     statusKey: I18nKey,
     progress: number,
     statusParams?: I18nParams,
+    detailText?: string,
   ) => {
     const normalized = Math.max(0, Math.min(1, progress));
     sendEnvInitProgress(parent, {
       isOpen: true,
       statusKey,
       statusParams,
+      detailText,
       progress: normalized,
       percentText: `${Math.round(normalized * 100)}%`,
     });
@@ -966,12 +939,23 @@ function makeEnvInitReporter(parent: BrowserWindow) {
 }
 
 function closeEnvInitProgress(parent: BrowserWindow): void {
+  currentEnvInitProgress = {
+    isOpen: false,
+    statusKey: "envInit.preparing",
+    progress: 0,
+    percentText: "0%",
+  };
   if (parent.isDestroyed()) return;
-  parent.webContents.send("env-init-progress", { isOpen: false });
+  parent.webContents.send("env-init-progress", currentEnvInitProgress);
 }
 
 function createStageReporter(
-  report: (statusKey: I18nKey, progress: number, statusParams?: I18nParams) => void,
+  report: (
+    statusKey: I18nKey,
+    progress: number,
+    statusParams?: I18nParams,
+    detailText?: string,
+  ) => void,
   start: number,
   end: number,
 ) {
@@ -980,9 +964,10 @@ function createStageReporter(
     statusKey: I18nKey,
     progress: number,
     statusParams?: I18nParams,
+    detailText?: string,
   ) => {
     const normalized = Math.max(0, Math.min(1, progress));
-    report(statusKey, start + span * normalized, statusParams);
+    report(statusKey, start + span * normalized, statusParams, detailText);
   };
 }
 
@@ -1047,13 +1032,6 @@ async function ensureUvInstalled(
   return uvPath;
 }
 
-function getUnpackedPath(originalPath: string): string {
-  if (app.isPackaged) {
-    return originalPath.replace("app.asar", "app.asar.unpacked");
-  }
-  return originalPath;
-}
-
 async function preparePythonRuntime(
   parent: BrowserWindow,
   reportEnvInit: (
@@ -1064,83 +1042,40 @@ async function preparePythonRuntime(
 ): Promise<void> {
   const modelDir = getModelDir();
   process.env.PROREF_MODEL_DIR = modelDir; // Ensure env is set for sync if needed
-  const scriptPath = getUnpackedPath(
-    path.join(__dirname, "../backend/python/tagger.py"),
-  );
-  const pythonDir = path.dirname(scriptPath);
-
   reportEnvInit("envInit.preparing", 0);
 
   // 1. Ensure uv
   console.log("Ensuring uv installation...");
-  await ensureUvInstalled((statusKey, progress) => {
+  const uvPath = await ensureUvInstalled((statusKey, progress) => {
     reportEnvInit(statusKey, progress);
   });
+  log.info("[python-init] uv ready:", uvPath);
 
-  // Check if we have a pre-packaged environment
-  const venvPath = path.join(pythonDir, ".venv");
-  if (app.isPackaged && (await lockedFs.pathExists(venvPath))) {
-    console.log("Found pre-packaged python environment, skipping uv sync");
-    reportEnvInit("envInit.pythonEnvReady", 1);
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    return;
-  }
-
-  reportEnvInit("envInit.initializingPythonEnv", 0.42);
-
-  // 2. uv sync
-  const syncProc = await spawnUvPython(["sync", "--frozen"], pythonDir, {
-    ...process.env,
-    PROREF_MODEL_DIR: modelDir,
-    UV_NO_COLOR: "1",
-  });
-
-  if (syncProc.stderr) {
-    syncProc.stderr.on("data", (chunk: Buffer) => {
-      const text = chunk.toString();
-      const lower = text.toLowerCase();
-      console.log({ text: lower });
-
-      if (lower.includes("resolved")) {
-        reportEnvInit("envInit.resolvingDependencies", 0.58);
-        return;
-      }
-      if (lower.includes("downloading")) {
-        reportEnvInit("envInit.downloadingPackages", 0.72);
-        return;
-      }
-      if (
-        lower.includes("installed") ||
-        lower.includes("installing") ||
-        lower.includes("prepared")
-      ) {
-        reportEnvInit("envInit.installingPackages", 0.88);
-        return;
-      }
-    });
-  }
-
-  const syncExit: number = await new Promise((resolve) =>
-    syncProc.once("exit", resolve),
-  );
-
-  if (syncExit !== 0) {
+  try {
+    log.info("[python-init] ensuring managed runtime...");
+    await ensurePythonRuntime(uvPath, reportEnvInit);
+    log.info("[python-init] managed runtime ready.");
+  } catch (error) {
     const locale = await getLocale();
+    const pythonDir = getManagedPythonRuntimeDir();
+    const detail =
+      error instanceof Error && error.message
+        ? `${error.message}\nDir: ${pythonDir}`
+        : translate(locale, "dialog.pythonSetupFailedDetail", {
+            code: -1,
+            dir: pythonDir,
+          });
+    log.error("[python-init] runtime setup failed", error);
     closeEnvInitProgress(parent);
     await dialog.showMessageBox(parent, {
       type: "error",
       title: translate(locale, "dialog.pythonSetupFailedTitle"),
       message: translate(locale, "dialog.pythonSetupFailedMessage"),
-      detail: translate(locale, "dialog.pythonSetupFailedDetail", {
-        code: syncExit,
-        dir: pythonDir,
-      }),
+      detail,
     });
-    throw new Error("Python setup failed");
+    throw error instanceof Error ? error : new Error("Python setup failed");
   }
 
-  reportEnvInit("envInit.verifyingEnvironment", 0.96);
-  reportEnvInit("envInit.pythonEnvReady", 1);
 }
 
 type EnsureModelReadyOptions = {
@@ -1209,22 +1144,30 @@ async function ensureModelReady(
   sendProgress("model.preparingDownload", "0%", 0);
   parent.setProgressBar(0);
 
-  const scriptPath = getUnpackedPath(
-    path.join(__dirname, "../backend/python/tagger.py"),
-  );
-  const pythonDir = path.dirname(scriptPath);
+  const uvPath = await ensureUvInstalled();
+  const { runtimeDir: pythonDir, scriptPath, pythonPath } =
+    await ensurePythonRuntime(uvPath);
 
   let percentText = "0%";
   let progress = 0;
 
   sendProgress("model.downloading", percentText, progress);
 
-  const proc = await spawnUvPython(
-    ["run", "python", scriptPath, "--download-model"],
-    pythonDir,
+  const proc = spawn(
+    pythonPath,
+    [scriptPath, "--download-model"],
     {
-      ...process.env,
-      PROREF_MODEL_DIR: modelDir,
+      stdio: ["ignore", "pipe", "pipe"],
+      cwd: pythonDir,
+      env: {
+        ...process.env,
+        PROREF_MODEL_DIR: modelDir,
+        PYTHONIOENCODING: "utf-8",
+        PYTHONUTF8: "1",
+        TRANSFORMERS_VERBOSITY: "error",
+        HF_HUB_DISABLE_PROGRESS_BARS: "1",
+        HF_ENDPOINT: "https://hf-mirror.com",
+      },
     },
   );
 
@@ -1412,6 +1355,17 @@ async function ensureStartupInitialization(parent: BrowserWindow): Promise<void>
   }
 }
 
+function scheduleVectorServiceWarmup(): void {
+  void (async () => {
+    try {
+      await warmupVectorService();
+      log.info("[vector-service] warmup ready.");
+    } catch (error) {
+      log.warn("[vector-service] warmup failed:", error);
+    }
+  })();
+}
+
 async function startServer() {
   const port = await startApiServer((channel: RendererChannel, data: unknown) => {
     mainWindow?.webContents.send(channel, data);
@@ -1451,6 +1405,10 @@ ipcMain.handle("get-storage-dir", async () => {
   return getStorageDir();
 });
 
+ipcMain.handle("get-env-init-progress", async () => {
+  return currentEnvInitProgress;
+});
+
 ipcMain.handle("open-storage-dir", async () => {
   const target = getStorageDir();
   const result = await shell.openPath(target);
@@ -1477,11 +1435,91 @@ ipcMain.handle("choose-storage-dir", async () => {
   app.exit(0);
 });
 
+ipcMain.handle("choose-search-image", async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ["openFile"],
+    filters: [
+      {
+        name: "Images",
+        extensions: [
+          "jpg",
+          "jpeg",
+          "png",
+          "webp",
+          "gif",
+          "bmp",
+          "tiff",
+          "tif",
+          "heic",
+          "heif",
+          "avif",
+        ],
+      },
+    ],
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+
+  const filePath = result.filePaths[0];
+  return {
+    path: filePath,
+    name: path.basename(filePath),
+  };
+});
+
+ipcMain.handle(
+  "start-image-drag",
+  async (
+    event,
+    payload: { imagePath?: string; fallbackIconPath?: string } | null,
+  ) => {
+    try {
+      const rawImagePath = payload?.imagePath?.trim();
+      if (!rawImagePath) {
+        return { success: false, error: "Missing image path" };
+      }
+
+      const filePath = resolveDragImagePath(rawImagePath);
+      const fileExists = await lockedFs.pathExists(filePath);
+      if (!fileExists) {
+        return { success: false, error: "Image file does not exist" };
+      }
+
+      const preferredIconPath = payload?.fallbackIconPath?.trim()
+        ? resolveDragImagePath(payload.fallbackIconPath.trim())
+        : filePath;
+      const iconPath = (await lockedFs.pathExists(preferredIconPath))
+        ? preferredIconPath
+        : WINDOW_ICON_PATH;
+      const icon = createDragPreviewIcon(iconPath);
+
+      event.sender.startDrag({
+        file: filePath,
+        icon,
+      });
+
+      return { success: true };
+    } catch (error) {
+      log.error("Failed to start image drag", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  },
+);
+
 app.whenReady().then(async () => {
   log.info("App starting...");
   log.info("Log file location:", log.transports.file.getFile().path);
   log.info("App path:", app.getAppPath());
   log.info("User data:", app.getPath("userData"));
+
+  if (process.platform === "win32") {
+    app.setAppUserModelId(APP_ID);
+  }
 
   const taskLoadShortcuts = loadShortcuts();
   // Start server early, but handle errors later
@@ -1495,6 +1533,7 @@ app.whenReady().then(async () => {
       log.info("Ensuring startup initialization...");
       await ensureStartupInitialization(mainWindow);
       log.info("Startup initialization ready.");
+      scheduleVectorServiceWarmup();
     }
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);

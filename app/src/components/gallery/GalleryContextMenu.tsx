@@ -1,5 +1,5 @@
 import React, { useState, useLayoutEffect, useMemo, useRef } from "react";
-import { Link, FolderOpen, RefreshCw, Trash2 } from "lucide-react";
+import { Copy, Image as ImageMenuIcon, Link, FolderOpen, RefreshCw, Trash2 } from "lucide-react";
 import { type ImageMeta, deriveNameFromFilename } from "../../store/galleryStore";
 import { Tag } from "../Tag";
 import { THEME, hexToRgba } from "../../theme";
@@ -54,7 +54,9 @@ interface GalleryContextMenuProps {
   allTags: string[];
   enableVectorSearch: boolean;
   onClose: () => void;
+  onCopyImage: () => void;
   onOpenFile: () => void;
+  onSearchByImage: () => void;
   onDelete: () => void;
   onReindex: () => void;
   onOpenDominantColorPicker: (anchor: { x: number; y: number }) => void;
@@ -72,7 +74,9 @@ export const GalleryContextMenu: React.FC<GalleryContextMenuProps> = ({
   allTags,
   enableVectorSearch,
   onClose,
+  onCopyImage,
   onOpenFile,
+  onSearchByImage,
   onDelete,
   onReindex,
   onOpenDominantColorPicker,
@@ -348,10 +352,30 @@ export const GalleryContextMenu: React.FC<GalleryContextMenuProps> = ({
 
       <div
         className="flex items-center gap-2 px-4 py-2 text-white hover:bg-neutral-800 cursor-pointer transition-colors"
+        onClick={onCopyImage}
+      >
+        <Copy size={14} />
+        <span>{t("gallery.contextMenu.copyImage")}</span>
+      </div>
+
+      <div className="border-t border-neutral-800 my-1"></div>
+
+      <div
+        className="flex items-center gap-2 px-4 py-2 text-white hover:bg-neutral-800 cursor-pointer transition-colors"
         onClick={onOpenFile}
       >
         <FolderOpen size={14} />
         <span>{t("gallery.contextMenu.showInFolder")}</span>
+      </div>
+
+      <div className="border-t border-neutral-800 my-1"></div>
+
+      <div
+        className="flex items-center gap-2 px-4 py-2 text-white hover:bg-neutral-800 cursor-pointer transition-colors"
+        onClick={onSearchByImage}
+      >
+        <ImageMenuIcon size={14} />
+        <span>{t("gallery.contextMenu.searchByImage")}</span>
       </div>
 
       <div className="border-t border-neutral-800 my-1"></div>

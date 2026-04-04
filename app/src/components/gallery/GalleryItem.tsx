@@ -9,7 +9,6 @@ import { Sparkles } from "lucide-react";
 interface SortableGalleryItemProps {
   image: ImageMeta;
   enableVectorSearch: boolean;
-  onDragStart: (e: React.DragEvent, image: ImageMeta) => void;
   onContextMenu: (e: React.MouseEvent, image: ImageMeta) => void;
   onClick: (image: ImageMeta) => void;
 }
@@ -20,7 +19,6 @@ const ensureTags = (tags: string[] | undefined | null): string[] =>
 export const SortableGalleryItem: React.FC<SortableGalleryItemProps> = ({
   image,
   enableVectorSearch,
-  onDragStart,
   onContextMenu,
   onClick,
 }) => {
@@ -55,8 +53,6 @@ export const SortableGalleryItem: React.FC<SortableGalleryItemProps> = ({
       className="mb-4 group overflow-hidden relative rounded hover:z-10 cursor-grab active:cursor-grabbing"
     >
       <div
-        draggable
-        onDragStart={(e) => onDragStart(e, image)}
         onContextMenu={(e) => onContextMenu(e, image)}
         onClick={() => onClick(image)}
       >

@@ -5,6 +5,10 @@ import {
   isHttpUrl,
   normalizeDroppedImageUrl,
 } from './droppedImageUrl';
+import {
+  clearExternalDragSession,
+  isExternalDragSessionMatch,
+} from './externalDragSession';
 
 type NativePathFile = File & {
   path?: string;
@@ -55,6 +59,37 @@ const mapWithConcurrency = async <T, R>(
 const getNativeFilePath = (file: File): string => {
   const path = (file as NativePathFile).path;
   return typeof path === 'string' ? path.trim() : '';
+};
+
+const normalizeNativePath = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const normalized = trimmed.replace(/\\/g, '/').replace(/\/+/g, '/');
+  return normalized.toLowerCase();
+};
+
+const filterOutExistingLibraryFiles = async (files: File[]): Promise<File[]> => {
+  let hasSelfDragMatch = false;
+
+  const filteredFiles = files.filter((file) => {
+    const nativePath = normalizeNativePath(getNativeFilePath(file));
+    if (
+      isExternalDragSessionMatch({
+        fileName: file.name,
+        nativePath,
+      })
+    ) {
+      hasSelfDragMatch = true;
+      return false;
+    }
+    return true;
+  });
+
+  if (hasSelfDragMatch) {
+    clearExternalDragSession();
+  }
+
+  return filteredFiles;
 };
 
 const getDroppedFileKeys = (file: File): string[] => {
@@ -253,9 +288,14 @@ export const importDroppedData = async (
   dataTransfer: DataTransfer,
 ): Promise<ImageMeta[]> => {
   const files = await resolveDroppedFiles(dataTransfer);
+  const filteredFiles = await filterOutExistingLibraryFiles(files);
+
+  if (filteredFiles.length > 0) {
+    return importFiles(filteredFiles);
+  }
 
   if (files.length > 0) {
-    return importFiles(files);
+    return [];
   }
 
   const imageUrl = extractDroppedImageUrl(dataTransfer);

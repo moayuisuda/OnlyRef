@@ -67,10 +67,14 @@ export const en = {
   'toast.deleteCanvasFailed': 'Failed to delete canvas',
   'toast.vectorIndexed': 'Vector indexed',
   'toast.vectorIndexFailed': 'Failed to index vector',
+  'toast.imageVectorSearchFailed': 'Image search failed',
+  'toast.imageCopied': 'Image copied',
+  'toast.copyImageFailed': 'Failed to copy image',
   'toast.openFileFailed': 'Failed to open file',
   'toast.shortcutInvalid': 'Invalid shortcut',
   'toast.shortcutUpdateFailed': 'Failed to update shortcut: {{error}}',
-  'toast.floatingWindowModeUpdateFailed': 'Failed to switch floating mode: {{error}}',
+  'toast.windowDisplayModeUpdateFailed': 'Failed to switch floating mode: {{error}}',
+  'toast.windowAlwaysOnTopUpdateFailed': 'Failed to update always-on-top: {{error}}',
 
   'envInit.brandTitle': 'PiCaptain',
   'envInit.heading': 'Preparing PiCaptain...',
@@ -80,9 +84,25 @@ export const en = {
   'envInit.checkingUv': 'Checking uv...',
   'envInit.downloadingUv': 'Downloading uv...',
   'envInit.initializingPythonEnv': 'Initializing Python environment...',
+  'envInit.detectingGpu': 'Detecting GPU support...',
+  'envInit.creatingVirtualEnv': 'Creating Python virtual environment...',
   'envInit.resolvingDependencies': 'Resolving dependencies...',
+  'envInit.resolvedPackages': 'Resolved {{total}} packages',
+  'envInit.preparingPackagesElapsed':
+    'Preparing {{total}} packages ({{elapsedSeconds}}s)...',
   'envInit.downloadingPackages': 'Downloading packages...',
+  'envInit.downloadingPackagesDetailed': 'Downloading packages ({{current}}/{{total}})...',
+  'envInit.downloadingPackageNamed':
+    'Downloading package {{current}}/{{total}}: {{name}} ({{size}})',
+  'envInit.downloadedPackageNamed':
+    'Downloaded package {{current}}/{{total}}: {{name}}',
   'envInit.installingPackages': 'Installing packages...',
+  'envInit.installingPackagesDetailed': 'Installing packages ({{current}}/{{total}})...',
+  'envInit.installingPackageNamed': 'Installing package {{current}}/{{total}}: {{name}}',
+  'envInit.installingLargePackages':
+    'Downloading large packages like torch ({{elapsedSeconds}}s)...',
+  'envInit.installingPackagesElapsed':
+    'Installing dependencies ({{elapsedSeconds}}s)...',
   'envInit.verifyingEnvironment': 'Verifying environment...',
   'envInit.pythonEnvReady': 'Python environment ready',
 
@@ -108,6 +128,7 @@ export const en = {
   'errors.reloadApplication': 'Reload Application',
 
   'gallery.searchPlaceholder': 'Search in English',
+  'gallery.searchPlaceholderImage': 'Image search is active',
   'gallery.filter': 'Filter',
   'gallery.filterSummary.color': 'Color: {{color}}',
   'gallery.filterSummary.tone': 'Tone: {{tone}}',
@@ -118,6 +139,8 @@ export const en = {
   'gallery.referenceAlt': 'Reference',
   'gallery.notIndexed': 'Not Indexed',
   'gallery.vectorResult': 'AI Search Result',
+  'gallery.searchImage.pick': 'Choose image',
+  'gallery.searchImage.defaultName': 'Image query',
   'gallery.contextMenu.nameLabel': 'Name',
   'gallery.contextMenu.imageNamePlaceholder': 'Image name',
   'gallery.contextMenu.linkLabel': 'Link',
@@ -125,7 +148,9 @@ export const en = {
   'gallery.contextMenu.addTagPlaceholder': 'Add tag...',
   'gallery.contextMenu.dominantColorLabel': 'Dominant Color',
   'gallery.contextMenu.toneLabel': 'Tone',
+  'gallery.contextMenu.copyImage': 'Copy image',
   'gallery.contextMenu.showInFolder': 'Show in Folder',
+  'gallery.contextMenu.searchByImage': 'Search by image',
   'gallery.contextMenu.indexVector': 'Index Vector',
   'gallery.contextMenu.deleteImage': 'Delete Image',
   'gallery.dominantColor.title': 'Dominant Color',

@@ -5,7 +5,6 @@ import { TitleBar } from "./components/TitleBar";
 import { Gallery } from "./components/Gallery";
 import { EnvInitModal } from "./components/EnvInitModal";
 import { WindowResizer } from "./components/WindowResizer";
-import { FloatingOrb } from "./components/FloatingOrb";
 import { actions as galleryActions, type ImageMeta } from "./store/galleryStore";
 import {
   envInitActions,
@@ -26,6 +25,15 @@ function App() {
   const { t } = useT();
 
   useEffect(() => {
+    let disposed = false;
+
+    void window.electron?.getEnvInitProgress?.().then((data) => {
+      if (disposed) return;
+      if (isRecord(data)) {
+        envInitActions.update(data as Partial<EnvInitState>);
+      }
+    });
+
     const cleanupUpdate = window.electron?.onImageUpdated((data) => {
       if (isRecord(data) && typeof data.id === "string") {
         galleryActions.updateImage(data.id, data as Partial<ImageMeta>);
@@ -57,11 +65,17 @@ function App() {
       (event: string, ...args: unknown[]) => {
         if (event === "app-visibility") {
           globalActions.setAppHidden(!(args[0] as boolean));
+          return;
+        }
+
+        if (event === "window-always-on-top" && typeof args[0] === "boolean") {
+          globalActions.syncWindowAlwaysOnTop(args[0]);
         }
       },
     );
 
     return () => {
+      disposed = true;
       cleanupUpdate?.();
       cleanupEnv?.();
       cleanupToast?.();
@@ -94,24 +108,21 @@ function App() {
   return (
     <div
       className={clsx(
-        globalSnap.floatingWindowMode
-          ? "relative h-screen overflow-hidden bg-neutral-950 text-white"
-          : "relative flex h-screen flex-col overflow-hidden bg-neutral-950 text-white",
+        "relative h-screen overflow-hidden bg-neutral-950 text-white",
         globalSnap.isAppHidden && "hidden",
       )}
     >
-      {!globalSnap.floatingWindowMode && <WindowResizer />}
-      {!globalSnap.floatingWindowMode && <TitleBar />}
+      <div className="absolute inset-0 flex flex-col">
+        <WindowResizer />
+        <TitleBar />
+        <div className="flex-1 overflow-hidden">
+          <Gallery />
+        </div>
+      </div>
+
       <EnvInitModal />
       {globalSnap.toasts.length > 0 && (
-        <div
-          className={clsx(
-            "fixed z-[9999] flex flex-col gap-2 no-drag",
-            globalSnap.floatingWindowMode
-              ? "bottom-2 left-1/2 w-[92px] -translate-x-1/2"
-              : "right-4 top-14",
-          )}
-        >
+        <div className="fixed right-4 top-14 z-[9999] flex flex-col gap-2 no-drag">
           {globalSnap.toasts.map((toast) => {
             const tone =
               toast.type === "success"
@@ -128,9 +139,7 @@ function App() {
                 type="button"
                 className={clsx(
                   "rounded border text-left text-xs shadow-lg backdrop-blur transition-colors hover:bg-neutral-800/90",
-                  globalSnap.floatingWindowMode
-                    ? "w-full px-2 py-1.5 text-[10px]"
-                    : "max-w-[320px] px-3 py-2",
+                  "max-w-[320px] px-3 py-2",
                   tone,
                 )}
                 onClick={() => globalActions.removeToast(toast.id)}
@@ -139,13 +148,6 @@ function App() {
               </button>
             );
           })}
-        </div>
-      )}
-      {globalSnap.floatingWindowMode ? (
-        <FloatingOrb />
-      ) : (
-        <div className="flex-1 overflow-hidden">
-          <Gallery />
         </div>
       )}
     </div>

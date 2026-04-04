@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
-  Circle,
   FolderOpen,
   Minus,
+  Pin,
   Settings,
   Square,
   X,
@@ -20,6 +20,7 @@ import { actions as galleryActions, state as galleryState } from "../store/galle
 import { indexImages } from "../service";
 import { useClickOutside } from "../hooks/useClickOutside";
 import { ShortcutInput } from "./ShortcutInput";
+import { BrandWheelIcon } from "./BrandWheelIcon";
 import type { I18nKey, I18nParams } from "../../shared/i18n/types";
 import { isI18nKey } from "../../shared/i18n/guards";
 
@@ -54,6 +55,7 @@ export const TitleBar: React.FC = () => {
   const gallerySnap = useSnapshot(galleryState);
   const indexingSnap = useSnapshot(indexingState);
   const { t, locale, setLocale } = useT();
+  const isAlwaysOnTop = snap.windowAlwaysOnTop;
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [storageDir, setStorageDir] = useState("");
@@ -240,8 +242,13 @@ export const TitleBar: React.FC = () => {
     <div className="draggable relative z-30 border-b border-white/6 bg-neutral-950/92 backdrop-blur-xl">
       <div className="relative flex h-9 items-center gap-3 px-3">
         <div className="flex min-w-0 flex-1 items-center gap-3">
-          <div className="flex items-center">
-            <div className="text-sm font-semibold text-[var(--color-primary)]">PiCaptain</div>
+          <div className="flex items-center gap-2">
+            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[radial-gradient(circle_at_35%_30%,rgba(57,197,187,0.24),rgba(57,197,187,0.08)_62%,rgba(57,197,187,0)_100%)] text-[var(--color-primary)] shadow-[0_0_18px_rgba(57,197,187,0.18)]">
+              <BrandWheelIcon size={15} title="PiCaptain" />
+            </div>
+            <div className="text-sm font-semibold tracking-[0.02em] text-white">
+              <span className="text-[var(--color-primary)]">Pi</span>Captain
+            </div>
           </div>
 
           <div className="hidden min-w-0 flex-1 items-center gap-2 text-xs md:flex">
@@ -262,15 +269,15 @@ export const TitleBar: React.FC = () => {
             type="button"
             className={clsx(
               iconButtonClass,
-              snap.floatingWindowMode && "bg-white/[0.08] text-[var(--color-primary)]",
+              isAlwaysOnTop && "bg-white/[0.08] text-[var(--color-primary)]",
             )}
-            title={t("titleBar.floatingMode")}
+            title={t("titleBar.alwaysOnTop")}
             onClick={() => {
               setSettingsOpen(false);
-              void globalActions.setFloatingWindowMode(!snap.floatingWindowMode);
+              void globalActions.toggleWindowAlwaysOnTop();
             }}
           >
-            <Circle size={14} className={clsx(snap.floatingWindowMode && "fill-current")} />
+            <Pin size={14} className={clsx(isAlwaysOnTop && "text-[var(--color-primary)]")} />
           </button>
           <button
             ref={settingsButtonRef}

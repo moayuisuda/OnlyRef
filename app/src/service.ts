@@ -83,6 +83,14 @@ export const settingStorage = {
   },
 };
 
+export const syncSettingsSnapshotValue = <T>(key: string, value: T): void => {
+  if (!settingsSnapshot) return;
+  settingsSnapshot = {
+    ...settingsSnapshot,
+    [key]: value,
+  };
+};
+
 const isLocale = (value: unknown): value is Locale => value === "en" || value === "zh";
 
 export async function getLanguage(): Promise<Locale> {
@@ -122,6 +130,30 @@ export type ImageSearchParams = {
   cursorRowid?: number;
   cursorCreatedAt?: number;
   cursorGalleryOrder?: number | null;
+};
+
+export type VectorSearchSource =
+  | {
+      type: "text";
+      query: string;
+    }
+  | {
+      type: "imageId";
+      imageId: string;
+    }
+  | {
+      type: "localPath";
+      localPath: string;
+    };
+
+export type VectorImageSearchPayload = {
+  source: VectorSearchSource;
+  tags?: string[];
+  color?: string | null;
+  tone?: string | null;
+  limit?: number;
+  cursorDistance?: number;
+  cursorRowid?: number;
 };
 
 export type RequestOptions = {
@@ -169,6 +201,23 @@ export async function fetchImages<T = unknown>(
   }
   const data = (await res.json()) as T;
   return data;
+}
+
+export async function searchImagesByVectorSource<T = unknown>(
+  payload: VectorImageSearchPayload,
+  options: RequestOptions = {}
+): Promise<T> {
+  return localApi<T>("/api/images/vector-search", payload, {
+    method: "POST",
+    signal: options.signal,
+  });
+}
+
+export function getLocalImagePreviewUrl(localPath: string): string {
+  const searchParams = new URLSearchParams({
+    path: localPath,
+  });
+  return `${API_BASE_URL}/api/local-image-preview?${searchParams.toString()}`;
 }
 
 export type ImageUpdatePayload = {

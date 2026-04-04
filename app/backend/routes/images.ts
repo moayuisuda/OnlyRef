@@ -1,6 +1,6 @@
 import path from "path";
 import express from "express";
-import { shell } from "electron";
+import { clipboard, nativeImage, shell } from "electron";
 import { v4 as uuidv4 } from "uuid";
 import type { ImageDb, ImageMeta, StorageIncompatibleError } from "../db";
 import type { SendToRenderer } from "../server";
@@ -44,6 +44,20 @@ type ImagePostProcessOptions = {
   notifyVectorFailure?: boolean;
   onVectorProgress?: (current: number, total: number) => void;
 };
+
+type VectorSearchSourcePayload =
+  | {
+      type: "text";
+      query: string;
+    }
+  | {
+      type: "imageId";
+      imageId: string;
+    }
+  | {
+      type: "localPath";
+      localPath: string;
+    };
 
 const VECTOR_INDEX_BATCH_SIZE = 8;
 const IMPORT_BATCH_CONCURRENCY = 4;
@@ -94,6 +108,54 @@ const parseVectorCursor = (query: Record<string, unknown>) => {
   const rowid = parseNumber(query.cursorRowid);
   if (typeof distance !== "number" || typeof rowid !== "number") return null;
   return { distance, rowid };
+};
+
+const parseVectorSearchSource = (
+  raw: unknown
+): VectorSearchSourcePayload | null => {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const payload = raw as Record<string, unknown>;
+  const type = typeof payload.type === "string" ? payload.type.trim() : "";
+  if (type === "text") {
+    const query =
+      typeof payload.query === "string" ? payload.query.trim() : "";
+    if (!query) {
+      return null;
+    }
+    return {
+      type: "text",
+      query,
+    };
+  }
+
+  if (type === "imageId") {
+    const imageId =
+      typeof payload.imageId === "string" ? payload.imageId.trim() : "";
+    if (!imageId) {
+      return null;
+    }
+    return {
+      type: "imageId",
+      imageId,
+    };
+  }
+
+  if (type === "localPath") {
+    const localPath =
+      typeof payload.localPath === "string" ? payload.localPath.trim() : "";
+    if (!localPath) {
+      return null;
+    }
+    return {
+      type: "localPath",
+      localPath,
+    };
+  }
+
+  return null;
 };
 
 const buildTextCursor = (items: ImageMeta[]) => {
@@ -359,6 +421,98 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
       code: "STORAGE_INCOMPATIBLE",
     });
     return true;
+  };
+
+  const resolveVectorSearchLocalPath = async (
+    imageDb: ImageDb,
+    source: VectorSearchSourcePayload
+  ): Promise<{ mode: VectorMode; arg: string } | null> => {
+    if (source.type === "text") {
+      return {
+        mode: "encode-text",
+        arg: source.query,
+      };
+    }
+
+    if (source.type === "imageId") {
+      const row = imageDb.getImageRowById(source.imageId);
+      if (!row) {
+        return null;
+      }
+      return {
+        mode: "encode-image",
+        arg: path.join(deps.getStorageDir(), row.imagePath),
+      };
+    }
+
+    const resolvedPath = path.resolve(source.localPath);
+    const exists = await withFileLock(resolvedPath, async () =>
+      fs.pathExists(resolvedPath)
+    );
+    if (!exists) {
+      return null;
+    }
+
+    return {
+      mode: "encode-image",
+      arg: resolvedPath,
+    };
+  };
+
+  const runVectorSearch = async (
+    imageDb: ImageDb,
+    params: {
+      source: VectorSearchSourcePayload;
+      tags: string[];
+      tone: string | null;
+      color: OklchColor | null;
+      effectiveLimit: number;
+      cursor: { distance: number; rowid: number } | null;
+    }
+  ) => {
+    if (params.source.type === "text" && !params.source.query.trim()) {
+      return { items: [], nextCursor: null };
+    }
+
+    const settings = await deps.readSettings();
+    const enableVectorSearch = Boolean(settings.enableVectorSearch);
+    if (!enableVectorSearch) {
+      return { items: [], nextCursor: null };
+    }
+
+    const resolved = await resolveVectorSearchLocalPath(imageDb, params.source);
+    if (!resolved) {
+      return { items: [], nextCursor: null };
+    }
+
+    const vector =
+      resolved.mode === "encode-image"
+        ? await withFileLock(resolved.arg, async () =>
+            deps.runPythonVector(resolved.mode, resolved.arg)
+          )
+        : await deps.runPythonVector(resolved.mode, resolved.arg);
+
+    if (!vector) {
+      return { items: [], nextCursor: null };
+    }
+
+    const tagIds = imageDb.getTagIdsByNames(params.tags);
+    const tagCount = params.tags.length;
+    const results = imageDb.searchImages({
+      vector,
+      limit: params.effectiveLimit,
+      tagIds,
+      tagCount,
+      tone: params.tone,
+      color: params.color,
+      afterDistance: params.cursor?.distance ?? null,
+      afterRowid: params.cursor?.rowid ?? null,
+    });
+    const nextCursor = buildVectorCursor(results);
+    return {
+      items: results.map((item) => ({ ...item, isVectorResult: true })),
+      nextCursor,
+    };
   };
 
   const indexImageVector = async (
@@ -802,37 +956,19 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
       const color = colorHex ? hexToOklch(colorHex) : null;
       const effectiveLimit = parseLimit(req.query.limit) ?? 100;
       if (mode === "vector") {
-        if (!query) {
-          res.json({ items: [], nextCursor: null });
-          return;
-        }
-        const settings = await deps.readSettings();
-        const enableVectorSearch = Boolean(settings.enableVectorSearch);
-        if (!enableVectorSearch) {
-          res.json({ items: [], nextCursor: null });
-          return;
-        }
         const vectorCursor = parseVectorCursor(req.query as Record<string, unknown>);
-        const tagIds = imageDb.getTagIdsByNames(tags);
-        const tagCount = tags.length;
-        const vector = await deps.runPythonVector("encode-text", query);
-        if (!vector) {
-          res.json({ items: [], nextCursor: null });
-          return;
-        }
-        const results = imageDb.searchImages({
-          vector,
-          limit: effectiveLimit,
-          tagIds,
-          tagCount,
+        const data = await runVectorSearch(imageDb, {
+          source: {
+            type: "text",
+            query,
+          },
+          tags,
           tone,
           color,
-          afterDistance: vectorCursor?.distance ?? null,
-          afterRowid: vectorCursor?.rowid ?? null,
+          effectiveLimit,
+          cursor: vectorCursor,
         });
-        const nextCursor = buildVectorCursor(results);
-        const items = results.map((item) => ({ ...item, isVectorResult: true }));
-        res.json({ items, nextCursor });
+        res.json(data);
         return;
       }
 
@@ -864,6 +1000,81 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
 
       const nextCursor = buildTextCursor(results);
       res.json({ items: results, nextCursor });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    }
+  });
+
+  router.post("/api/images/vector-search", async (req, res) => {
+    try {
+      if (guardStorage(res)) return;
+      const imageDb = deps.getImageDb();
+      const body = req.body as {
+        source?: unknown;
+        tags?: unknown;
+        tone?: unknown;
+        color?: unknown;
+        limit?: unknown;
+        cursorDistance?: unknown;
+        cursorRowid?: unknown;
+      };
+      const source = parseVectorSearchSource(body.source);
+      if (!source) {
+        res.status(400).json({ error: "Invalid vector search source" });
+        return;
+      }
+
+      const tone =
+        typeof body.tone === "string" && body.tone.trim()
+          ? body.tone.trim()
+          : null;
+      const colorHex = normalizeHexColor(body.color);
+      const color = colorHex ? hexToOklch(colorHex) : null;
+      const effectiveLimit = parseLimit(String(body.limit ?? "")) ?? 100;
+      const vectorCursor = parseVectorCursor({
+        cursorDistance: String(body.cursorDistance ?? ""),
+        cursorRowid: String(body.cursorRowid ?? ""),
+      });
+      const tags = parseTags(body.tags);
+
+      const data = await runVectorSearch(imageDb, {
+        source,
+        tags,
+        tone,
+        color,
+        effectiveLimit,
+        cursor: vectorCursor,
+      });
+      res.json(data);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    }
+  });
+
+  router.get("/api/local-image-preview", async (req, res) => {
+    try {
+      if (guardStorage(res)) return;
+
+      const rawPath =
+        typeof req.query.path === "string" ? req.query.path.trim() : "";
+      if (!rawPath) {
+        res.status(400).json({ error: "Path is required" });
+        return;
+      }
+
+      const resolvedPath = path.resolve(rawPath);
+      const exists = await withFileLock(resolvedPath, async () =>
+        fs.pathExists(resolvedPath)
+      );
+
+      if (!exists) {
+        res.status(404).json({ error: "Image not found" });
+        return;
+      }
+
+      res.sendFile(resolvedPath);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       res.status(500).json({ error: message });
@@ -1412,6 +1623,45 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
       }
       const targetPath = path.join(deps.getStorageDir(), meta.imagePath);
       await shell.openPath(targetPath);
+      res.json({ success: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    }
+  });
+
+  router.post("/api/copy-image", async (req, res) => {
+    try {
+      if (guardStorage(res)) return;
+      const imageDb = deps.getImageDb();
+      const { id } = req.body as { id?: unknown };
+      if (typeof id !== "string" || !id.trim()) {
+        res.status(400).json({ error: "Image id is required" });
+        return;
+      }
+
+      const meta = imageDb.getImageRowById(id);
+      if (!meta) {
+        res.status(404).json({ error: "Image not found" });
+        return;
+      }
+
+      const targetPath = path.join(deps.getStorageDir(), meta.imagePath);
+      const exists = await withFileLock(targetPath, async () =>
+        fs.pathExists(targetPath)
+      );
+      if (!exists) {
+        res.status(404).json({ error: "Image file not found" });
+        return;
+      }
+
+      const image = nativeImage.createFromPath(targetPath);
+      if (image.isEmpty()) {
+        res.status(500).json({ error: "Failed to load image" });
+        return;
+      }
+
+      clipboard.writeImage(image);
       res.json({ success: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

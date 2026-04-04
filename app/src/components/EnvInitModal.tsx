@@ -27,11 +27,18 @@ export const EnvInitModal: React.FC = () => {
           />
         </div>
 
-        <div className="flex justify-between items-center text-xs">
-          <div className="text-white/70 font-mono truncate max-w-[380px]">
-            {t(snap.statusKey, snap.statusParams)}
+        <div className="flex items-start justify-between gap-3 text-xs">
+          <div className="min-w-0 flex-1">
+            <div className="text-white/70 font-mono break-words leading-5">
+              {t(snap.statusKey, snap.statusParams)}
+            </div>
+            {snap.detailText ? (
+              <div className="mt-1 break-words font-mono text-[11px] leading-5 text-white/45">
+                {snap.detailText}
+              </div>
+            ) : null}
           </div>
-          <div className="text-[#39C5BB] font-medium tabular-nums">
+          <div className="shrink-0 text-[#39C5BB] font-medium tabular-nums">
             {snap.percentText}
           </div>
         </div>

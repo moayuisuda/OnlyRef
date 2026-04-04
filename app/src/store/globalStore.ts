@@ -1,7 +1,14 @@
 import { proxy } from "valtio";
 import { THEME } from "../theme";
-import { getSettingsSnapshot, readSetting, settingStorage } from "../service";
+import {
+  getSettingsSnapshot,
+  readSetting,
+  settingStorage,
+  syncSettingsSnapshotValue,
+} from "../service";
 import type { I18nKey, I18nMessage, I18nParams } from "../../shared/i18n/types";
+
+const DEFAULT_WINDOW_ALWAYS_ON_TOP = false;
 
 export interface EnvInitState {
   isOpen: boolean;
@@ -9,6 +16,7 @@ export interface EnvInitState {
   statusKey: I18nKey;
   statusParams?: I18nParams;
   percentText: string;
+  detailText?: string;
 }
 
 export const envInitState = proxy<EnvInitState>({
@@ -58,6 +66,7 @@ export const envInitActions = {
     envInitState.statusKey = "envInit.preparing";
     envInitState.statusParams = undefined;
     envInitState.percentText = "0%";
+    envInitState.detailText = undefined;
   },
 };
 
@@ -85,7 +94,7 @@ export interface GlobalState {
   enableVectorSearch: boolean;
   llmSettings: LLMSettings;
   isAppHidden: boolean;
-  floatingWindowMode: boolean;
+  windowAlwaysOnTop: boolean;
 }
 
 const DEFAULT_COLOR_SWATCHES = [
@@ -142,7 +151,7 @@ export const globalState = proxy<GlobalState>({
     model: "",
   },
   isAppHidden: false,
-  floatingWindowMode: false,
+  windowAlwaysOnTop: DEFAULT_WINDOW_ALWAYS_ON_TOP,
 });
 
 export const globalActions = {
@@ -164,10 +173,10 @@ export const globalActions = {
         "toggleWindowShortcut",
         DEFAULT_TOGGLE_WINDOW_SHORTCUT,
       );
-      const rawFloatingWindowMode = readSetting<unknown>(
+      const rawWindowAlwaysOnTop = readSetting<unknown>(
         settings,
-        "floatingWindowMode",
-        false,
+        "windowAlwaysOnTop",
+        DEFAULT_WINDOW_ALWAYS_ON_TOP,
       );
       const rawLlmSettings = readSetting<unknown>(settings, "llmSettings", {});
 
@@ -191,7 +200,7 @@ export const globalActions = {
 
       globalState.enableVectorSearch = true;
       void settingStorage.set("enableVectorSearch", true);
-      globalState.floatingWindowMode = rawFloatingWindowMode === true;
+      globalState.windowAlwaysOnTop = rawWindowAlwaysOnTop === true;
 
       if (isRecord(rawLlmSettings)) {
         globalState.llmSettings = {
@@ -298,18 +307,23 @@ export const globalActions = {
     globalState.isAppHidden = hidden;
   },
 
-  setFloatingWindowMode: async (enabled: boolean) => {
-    const previous = globalState.floatingWindowMode;
-    globalState.floatingWindowMode = enabled;
-    await settingStorage.set("floatingWindowMode", enabled);
+  syncWindowAlwaysOnTop: (alwaysOnTop: boolean) => {
+    globalState.windowAlwaysOnTop = alwaysOnTop;
+    syncSettingsSnapshotValue("windowAlwaysOnTop", alwaysOnTop);
+  },
 
-    const result = await window.electron?.setFloatingWindowMode?.(enabled);
-    if (result && result.success !== true) {
-      globalState.floatingWindowMode = previous;
-      await settingStorage.set("floatingWindowMode", previous);
+  setWindowAlwaysOnTop: async (alwaysOnTop: boolean) => {
+    if (globalState.windowAlwaysOnTop === alwaysOnTop) return true;
+    if (!window.electron?.setWindowAlwaysOnTop) {
+      console.error("setWindowAlwaysOnTop bridge is unavailable");
+      return false;
+    }
+
+    const result = await window.electron.setWindowAlwaysOnTop(alwaysOnTop);
+    if (result.success !== true) {
       globalActions.pushToast(
         {
-          key: "toast.floatingWindowModeUpdateFailed",
+          key: "toast.windowAlwaysOnTopUpdateFailed",
           params: { error: result.error ?? "" },
         },
         "error",
@@ -317,6 +331,11 @@ export const globalActions = {
       return false;
     }
 
+    globalActions.syncWindowAlwaysOnTop(result.alwaysOnTop);
     return true;
+  },
+
+  toggleWindowAlwaysOnTop: async () => {
+    return globalActions.setWindowAlwaysOnTop(!globalState.windowAlwaysOnTop);
   },
 };

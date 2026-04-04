@@ -7,13 +7,18 @@ import fs from "fs-extra";
 import { spawn, ChildProcess } from "child_process";
 import readline from "readline";
 import { createDatabase, StorageIncompatibleError, type ImageDb } from "./db";
-import { debounce } from "radash";
 import { createImagesRouter } from "./routes/images";
 import { createTagsRouter } from "./routes/tags";
 import { createSettingsRouter } from "./routes/settings";
 import { createModelRouter } from "./routes/model";
 import { lockedFs, withFileLock } from "./fileLock";
+import {
+  configureSettingsStore,
+  readSettings,
+  writeSettings,
+} from "./settingsStore";
 import { getDominantColor, calculateTone } from "./imageAnalysis";
+import { ensurePythonRuntime } from "./pythonRuntime";
 
 export type RendererChannel =
   | "image-updated"
@@ -90,12 +95,13 @@ const loadStorageRoot = async (): Promise<string> => {
 let STORAGE_DIR = DEFAULT_STORAGE_DIR;
 let IMAGE_DIR = path.join(STORAGE_DIR, "images");
 let SETTINGS_FILE = path.join(STORAGE_DIR, "settings.json");
-let settingsCache: Record<string, unknown> | null = null;
+configureSettingsStore(SETTINGS_FILE);
 
 const updateStoragePaths = (root: string) => {
   STORAGE_DIR = root;
   IMAGE_DIR = path.join(STORAGE_DIR, "images");
   SETTINGS_FILE = path.join(STORAGE_DIR, "settings.json");
+  configureSettingsStore(SETTINGS_FILE);
 };
 
 const ensureStorageDirs = async (root: string) => {
@@ -106,62 +112,24 @@ const ensureStorageDirs = async (root: string) => {
   ]);
 };
 
+const persistStorageRootConfig = async (root: string) => {
+  await withFileLock(CONFIG_FILE, async () => {
+    await fs.writeJson(CONFIG_FILE, { storageDir: root });
+  });
+};
+
 export const getStorageDir = (): string => STORAGE_DIR;
+export { readSettings, writeSettings };
 
 export const setStorageRoot = async (root: string) => {
   const trimmed = root.trim();
   if (!trimmed) return;
 
   updateStoragePaths(trimmed);
-  settingsCache = null;
 
   await ensureStorageDirs(STORAGE_DIR);
-  await withFileLock(CONFIG_FILE, async () => {
-    await fs.writeJson(CONFIG_FILE, { storageDir: STORAGE_DIR });
-  });
+  await persistStorageRootConfig(STORAGE_DIR);
   initDatabase();
-};
-
-const readSettings = async (): Promise<Record<string, unknown>> => {
-  if (settingsCache) return settingsCache;
-
-  return withFileLock(SETTINGS_FILE, async () => {
-    if (!(await fs.pathExists(SETTINGS_FILE))) {
-      settingsCache = {};
-      return settingsCache;
-    }
-    try {
-      const raw = await fs.readJson(SETTINGS_FILE);
-      if (raw && typeof raw === "object") {
-        settingsCache = raw as Record<string, unknown>;
-        return settingsCache;
-      }
-    } catch (error) {
-      console.error("Failed to read settings file", error);
-    }
-    settingsCache = {};
-    return settingsCache;
-  });
-};
-
-const persistSettings = debounce(
-  { delay: 500 },
-  async (settings: Record<string, unknown>) => {
-    await withFileLock(SETTINGS_FILE, async () => {
-      try {
-        await fs.writeJson(SETTINGS_FILE, settings);
-      } catch (error) {
-        console.error("Failed to write settings file", error);
-      }
-    });
-  },
-);
-
-const writeSettings = async (
-  settings: Record<string, unknown>,
-): Promise<void> => {
-  settingsCache = settings;
-  persistSettings(settings);
 };
 
 let imageDb: ImageDb | null = null;
@@ -181,13 +149,15 @@ const initDatabase = () => {
 const initializeStorage = async () => {
   const root = await loadStorageRoot();
   updateStoragePaths(root);
-  settingsCache = null;
   await ensureStorageDirs(STORAGE_DIR);
+  // 固化当前存储根目录，避免后续启动再次依赖安装目录位置做推断。
+  await persistStorageRootConfig(STORAGE_DIR);
   initDatabase();
 };
 
 class BasePythonService {
   protected process: ChildProcess | null = null;
+  protected startupPromise: Promise<void> | null = null;
   protected queue: {
     resolve: (val: unknown) => void;
     reject: (err: Error) => void;
@@ -230,6 +200,21 @@ class BasePythonService {
       uniq.push(c);
     }
     return uniq;
+  }
+
+  protected async resolveUvCommand(): Promise<string> {
+    const candidates = this.getUvCandidates();
+
+    for (const candidate of candidates) {
+      if (!path.isAbsolute(candidate)) {
+        return candidate;
+      }
+      if (await lockedFs.pathExists(candidate)) {
+        return candidate;
+      }
+    }
+
+    throw new Error(`Failed to spawn ${this.serviceName}: uv not found`);
   }
 
   protected attachProcess(proc: ChildProcess) {
@@ -311,8 +296,10 @@ class BasePythonService {
     command: string,
     args: string[],
     cwd: string,
+    envOverrides: NodeJS.ProcessEnv = {},
+    attachListeners: boolean = true,
   ): ChildProcess {
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       PROREF_MODEL_DIR: path.join(getStorageDir(), "model"),
       PYTHONIOENCODING: "utf-8",
@@ -325,6 +312,7 @@ class BasePythonService {
       PIP_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
       // Use HF mirror for model downloads
       HF_ENDPOINT: "https://hf-mirror.com",
+      ...envOverrides,
     };
 
     const proc = spawn(command, args, {
@@ -332,62 +320,93 @@ class BasePythonService {
       cwd,
       env,
     });
-    this.attachProcess(proc);
+    if (attachListeners) {
+      this.attachProcess(proc);
+    }
     return proc;
   }
 
-  start() {
-    if (this.process) return;
-    let scriptPath = path.join(__dirname, "../backend/python/tagger.py");
-    if (app.isPackaged) {
-      scriptPath = scriptPath.replace("app.asar", "app.asar.unpacked");
-    }
-    const pythonDir = path.dirname(scriptPath);
-
-    const uvArgs = ["run", "python", scriptPath];
+  protected async spawnUvProcess(
+    args: string[],
+    cwd: string,
+    envOverrides: NodeJS.ProcessEnv = {},
+    attachListeners: boolean = true,
+  ): Promise<ChildProcess> {
     const uvCandidates = this.getUvCandidates();
 
-    const trySpawn = async (index: number) => {
+    const trySpawn = async (index: number): Promise<ChildProcess> => {
       console.log(`Trying uv candidate ${index}: ${uvCandidates[index]}`);
       if (index >= uvCandidates.length) {
-        console.error(`Failed to spawn ${this.serviceName}: uv not found`);
-        this.process = null;
-        return;
+        throw new Error(`Failed to spawn ${this.serviceName}: uv not found`);
       }
 
       const command = uvCandidates[index];
       if (path.isAbsolute(command)) {
         const exists = await lockedFs.pathExists(command);
         if (!exists) {
-          await trySpawn(index + 1);
-          return;
+          return trySpawn(index + 1);
         }
       }
 
-      const proc = this.spawnProcess(command, uvArgs, pythonDir);
-      this.process = proc;
-      proc.once("error", (err) => {
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code === "ENOENT") {
-          if (this.process === proc) {
-            this.process = null;
+      return new Promise<ChildProcess>((resolve, reject) => {
+        const proc = this.spawnProcess(
+          command,
+          args,
+          cwd,
+          envOverrides,
+          attachListeners,
+        );
+        let settled = false;
+
+        proc.once("spawn", () => {
+          settled = true;
+          resolve(proc);
+        });
+
+        proc.once("error", (err) => {
+          const code = (err as NodeJS.ErrnoException).code;
+          if (!settled && code === "ENOENT") {
+            void trySpawn(index + 1).then(resolve).catch(reject);
+            return;
           }
-          trySpawn(index + 1);
-          return;
-        }
-        console.error(`Failed to spawn ${this.serviceName}`, err);
-        if (this.process === proc) {
-          this.process = null;
-        }
+          reject(err);
+        });
       });
     };
 
-    void trySpawn(0);
+    return trySpawn(0);
+  }
+
+  async start(): Promise<void> {
+    if (this.process) return;
+    if (this.startupPromise) {
+      await this.startupPromise;
+      return;
+    }
+
+    this.startupPromise = (async () => {
+      const uvPath = await this.resolveUvCommand();
+      const { runtimeDir, scriptPath, pythonPath } = await ensurePythonRuntime(
+        uvPath,
+      );
+      const proc = this.spawnProcess(pythonPath, [scriptPath], runtimeDir);
+      this.process = proc;
+    })();
+
+    try {
+      await this.startupPromise;
+    } finally {
+      this.startupPromise = null;
+      if (!this.process) {
+        // Keep the next start attempt retryable when spawn failed.
+        this.startupPromise = null;
+      }
+    }
   }
 
   protected async sendRequest(req: unknown): Promise<unknown> {
     if (!this.process) {
-      this.start();
+      await this.start();
     }
     return new Promise<unknown>((resolve, reject) => {
       this.queue.push({ resolve, reject });
@@ -401,54 +420,60 @@ class BasePythonService {
 }
 
 class PythonVectorService extends BasePythonService {
+  private warmupPromise: Promise<void> | null = null;
+  private warmedUp = false;
+
   constructor() {
     super();
     this.serviceName = "Python Vector Service";
   }
 
+  protected override attachProcess(proc: ChildProcess) {
+    super.attachProcess(proc);
+    proc.once("exit", () => {
+      this.warmedUp = false;
+      this.warmupPromise = null;
+    });
+  }
+
+  async warmup(): Promise<void> {
+    if (this.warmedUp) {
+      return;
+    }
+    if (this.warmupPromise) {
+      await this.warmupPromise;
+      return;
+    }
+
+    this.warmupPromise = (async () => {
+      await this.start();
+      await this.run("encode-text", "warmup");
+      this.warmedUp = true;
+    })();
+
+    try {
+      await this.warmupPromise;
+    } finally {
+      if (!this.warmedUp) {
+        this.warmupPromise = null;
+      }
+    }
+  }
+
   downloadModel(onProgress: (data: unknown) => void): Promise<void> {
     return new Promise((resolve, reject) => {
-      let scriptPath = path.join(__dirname, "../backend/python/tagger.py");
-      if (app.isPackaged) {
-        scriptPath = scriptPath.replace("app.asar", "app.asar.unpacked");
-      }
-      const pythonDir = path.dirname(scriptPath);
-
-      const uvArgs = ["run", "python", scriptPath, "--download-model"];
-      const uvCandidates = this.getUvCandidates();
-
-      const trySpawn = async (index: number) => {
-        if (index >= uvCandidates.length) {
-          reject(new Error("Failed to spawn python service: uv not found"));
-          return;
-        }
-
-        const command = uvCandidates[index];
-        if (path.isAbsolute(command)) {
-          const exists = await lockedFs.pathExists(command);
-          if (!exists) {
-            await trySpawn(index + 1);
-            return;
-          }
-        }
-
-        const env = {
-          ...process.env,
-          PROREF_MODEL_DIR: path.join(getStorageDir(), "model"),
-          PYTHONIOENCODING: "utf-8",
-          PYTHONUTF8: "1",
-          TRANSFORMERS_VERBOSITY: "error",
-          HF_HUB_DISABLE_PROGRESS_BARS: "1",
-          UV_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
-          PIP_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
-          HF_ENDPOINT: "https://hf-mirror.com",
-        };
-
-        const proc = spawn(command, uvArgs, {
-          stdio: ["pipe", "pipe", "pipe"],
-          cwd: pythonDir,
-          env,
-        });
+      const startDownload = async () => {
+        const uvPath = await this.resolveUvCommand();
+        const { runtimeDir, scriptPath, pythonPath } = await ensurePythonRuntime(
+          uvPath,
+        );
+        const proc = this.spawnProcess(
+          pythonPath,
+          [scriptPath, "--download-model"],
+          runtimeDir,
+          {},
+          false,
+        );
 
         if (proc.stdout) {
           const rl = readline.createInterface({ input: proc.stdout });
@@ -473,18 +498,9 @@ class PythonVectorService extends BasePythonService {
             reject(new Error(`Download process exited with code ${code}`));
           }
         });
-
-        proc.on("error", (err) => {
-          const code = (err as NodeJS.ErrnoException).code;
-          if (code === "ENOENT") {
-            void trySpawn(index + 1);
-            return;
-          }
-          reject(err);
-        });
       };
 
-      void trySpawn(0);
+      void startDownload().catch(reject);
     });
   }
 
@@ -579,6 +595,19 @@ const mapModelDownloadProgress = (data: unknown): unknown => {
     };
   }
   return data;
+};
+
+let vectorServiceSingleton: PythonVectorService | null = null;
+
+const getVectorService = (): PythonVectorService => {
+  if (!vectorServiceSingleton) {
+    vectorServiceSingleton = new PythonVectorService();
+  }
+  return vectorServiceSingleton;
+};
+
+export const warmupVectorService = async (): Promise<void> => {
+  await getVectorService().warmup();
 };
 
 function downloadImage(url: string, dest: string): Promise<void> {
@@ -736,9 +765,7 @@ export async function startServer(
   server.use(cors());
   server.use(bodyParser.json({ limit: "25mb" }));
 
-  const vectorService = new PythonVectorService();
-  // Start vector service first and wait for it to be ready (includes env installation)
-  await vectorService.start();
+  const vectorService = getVectorService();
 
   const runPythonVector = async (
     mode: "encode-image" | "encode-text",

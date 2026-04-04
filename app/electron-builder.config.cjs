@@ -48,6 +48,17 @@ module.exports = {
     "package.json",
     "backend/python",
     "resources",
+    "!backend/python/.venv{,/**}",
+    "!backend/python/.venv.next{,/**}",
+    "!backend/python/.venv.prev{,/**}",
+    "!backend/python/.verify-runtime{,/**}",
+    "!backend/python/.uv-cache{,/**}",
+    "!backend/python/.uv-cache-verify{,/**}",
+    "!backend/python/**/__pycache__{,/**}",
+    "!backend/python/**/*.pyc",
+    "!backend/python/**/*.pyo",
+    "!backend/python/**/.pytest_cache{,/**}",
+    "!backend/python/**/.mypy_cache{,/**}",
     "!resources/uv/**",
     "!**/.uv",
     "!**/__pycache__",
@@ -55,6 +66,7 @@ module.exports = {
   extraResources: getUvExtraResources(),
   asarUnpack: [
     "backend/python/**",
+    "node_modules/@lydell/node-pty*/**",
     "node_modules/better-sqlite3/**",
     "node_modules/sqlite-vec/**",
   ],
@@ -63,6 +75,10 @@ module.exports = {
       target: "dmg",
       arch: ["x64", "arm64"],
     },
+  },
+  win: {
+    target: "nsis",
+    electronLanguages: ["zh-CN", "en-US"],
   },
   publish: [
     {

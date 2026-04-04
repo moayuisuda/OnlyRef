@@ -6,8 +6,10 @@ import {
   saveGalleryOrder,
   fetchImages,
   fetchTags,
+  searchImagesByVectorSource,
   updateImage,
   deleteImage,
+  type VectorSearchSource,
 } from '../service';
 import { API_BASE_URL } from '../../config';
 import { globalActions, globalState, type LLMSettings } from './globalStore';
@@ -33,6 +35,21 @@ export interface ImageMeta {
 export type SearchResult = ImageMeta & {
   score?: number;
 };
+
+export type SearchImageSource =
+  | {
+      type: 'library';
+      imageId: string;
+      previewUrl: string;
+      previewName: string;
+    }
+  | {
+      type: 'local';
+      localPath: string;
+      previewUrl: string;
+      previewName: string;
+      revokePreviewUrl?: boolean;
+    };
 
 export const getImageUrl = (imagePath: string) => {
   let normalized = imagePath.replace(/\\/g, '/');
@@ -64,7 +81,7 @@ interface AppState {
   searchTags: string[];
   searchColor: string | null;
   searchTone: string | null;
-  searchImage: ImageMeta | null;
+  searchImage: SearchImageSource | null;
 
   tagSortOrder: string[];
   gallerySort: GallerySort;
@@ -115,6 +132,41 @@ let translationCache: {
 } | null = null;
 let vectorCursor: VectorCursor | null = null;
 let textCursor: TextCursor | null = null;
+
+const releaseSearchImageSource = (image: SearchImageSource | null) => {
+  if (!image || image.type !== 'local' || image.revokePreviewUrl !== true) {
+    return;
+  }
+  URL.revokeObjectURL(image.previewUrl);
+};
+
+const resolveVectorSearchSource = (
+  query: string,
+  searchImage: SearchImageSource | null,
+): VectorSearchSource | null => {
+  if (searchImage?.type === 'library') {
+    return {
+      type: 'imageId',
+      imageId: searchImage.imageId,
+    };
+  }
+
+  if (searchImage?.type === 'local') {
+    return {
+      type: 'localPath',
+      localPath: searchImage.localPath,
+    };
+  }
+
+  if (!query) {
+    return null;
+  }
+
+  return {
+    type: 'text',
+    query,
+  };
+};
 
 const startRequestSession = () => {
   requestSession?.controller.abort();
@@ -293,6 +345,10 @@ export const actions = {
   },
   
   setSearchQuery: (query: string) => {
+    if (query.trim() && state.searchImage) {
+      releaseSearchImageSource(state.searchImage);
+      state.searchImage = null;
+    }
     state.searchQuery = query;
   },
 
@@ -308,8 +364,24 @@ export const actions = {
     state.searchTone = tone && tone.trim() ? tone.trim() : null;
   },
 
-  setSearchImage: (image: ImageMeta | null) => {
-    state.searchImage = image;
+  setSearchImageSource: (image: SearchImageSource | null) => {
+    releaseSearchImageSource(state.searchImage);
+    state.searchImage = image ? { ...image } : null;
+    state.searchQuery = '';
+  },
+
+  clearSearchImageSource: () => {
+    releaseSearchImageSource(state.searchImage);
+    state.searchImage = null;
+  },
+
+  clearSearch: () => {
+    releaseSearchImageSource(state.searchImage);
+    state.searchImage = null;
+    state.searchQuery = '';
+    state.searchTags = [];
+    state.searchColor = null;
+    state.searchTone = null;
   },
 
   resetSearchResults: () => {
@@ -333,39 +405,53 @@ export const actions = {
     const searchTags = state.searchTags;
     const searchColor = state.searchColor;
     const searchTone = state.searchTone;
+    const searchImage = state.searchImage;
+    const vectorSource = resolveVectorSearchSource(query, searchImage);
+    const vectorSearchByImage = Boolean(
+      vectorSource && vectorSource.type !== 'text',
+    );
 
-    const shouldVectorSearch = Boolean(query && globalState.enableVectorSearch);
+    const shouldVectorSearch = Boolean(vectorSource && globalState.enableVectorSearch);
     state.vectorLoading = shouldVectorSearch;
 
+    const shouldRunTextSearch = !vectorSearchByImage;
     const textCursorSnapshot = isReload ? null : textCursor;
-    const textPromise = fetchImages<{
-      items: ImageMeta[];
-      nextCursor: TextCursor | null;
-    }>(
-      {
-        query,
-        tags: [...searchTags],
-        color: searchColor,
-        tone: searchTone,
-        limit: currentLimit,
-        cursorCreatedAt: textCursorSnapshot?.createdAt,
-        cursorRowid: textCursorSnapshot?.rowid,
-        cursorGalleryOrder: textCursorSnapshot?.galleryOrder ?? null,
-      },
-      { signal: controller.signal },
-    );
+    const textPromise = shouldRunTextSearch
+      ? fetchImages<{
+          items: ImageMeta[];
+          nextCursor: TextCursor | null;
+        }>(
+          {
+            query,
+            tags: [...searchTags],
+            color: searchColor,
+            tone: searchTone,
+            limit: currentLimit,
+            cursorCreatedAt: textCursorSnapshot?.createdAt,
+            cursorRowid: textCursorSnapshot?.rowid,
+            cursorGalleryOrder: textCursorSnapshot?.galleryOrder ?? null,
+          },
+          { signal: controller.signal },
+        )
+      : null;
 
     if (shouldVectorSearch) {
       void (async () => {
-        let searchQ = query;
+        let nextVectorSource = vectorSource;
 
-        if (globalState.llmSettings?.enabled) {
+        if (
+          nextVectorSource?.type === 'text' &&
+          globalState.llmSettings?.enabled
+        ) {
           const fingerprint = getLlmFingerprint(globalState.llmSettings);
           if (
             translationCache?.original === query &&
             translationCache?.llmFingerprint === fingerprint
           ) {
-            searchQ = translationCache.translated;
+            nextVectorSource = {
+              type: 'text',
+              query: translationCache.translated,
+            };
           } else {
             try {
               const translated = await translateToClipFriendly(
@@ -381,7 +467,10 @@ export const actions = {
                 translated,
                 llmFingerprint: fingerprint,
               };
-              searchQ = translated;
+              nextVectorSource = {
+                type: 'text',
+                query: translated,
+              };
             } catch (e) {
               if (!isActive()) return;
               if (
@@ -408,13 +497,12 @@ export const actions = {
 
         try {
           const cursor = isReload ? null : vectorCursor;
-          const data = await fetchImages<{
+          const vectorData = await searchImagesByVectorSource<{
             items: ImageMeta[];
             nextCursor: VectorCursor | null;
           }>(
             {
-              mode: 'vector',
-              query: searchQ,
+              source: nextVectorSource as VectorSearchSource,
               tags: [...searchTags],
               color: searchColor,
               tone: searchTone,
@@ -425,24 +513,34 @@ export const actions = {
             { signal: controller.signal },
           );
           if (!isActive()) return;
-          if (data && Array.isArray(data.items)) {
-            if (data.nextCursor) {
+          if (vectorData && Array.isArray(vectorData.items)) {
+            if (vectorData.nextCursor) {
               vectorCursor = {
-                distance: data.nextCursor.distance,
-                rowid: data.nextCursor.rowid,
+                distance: vectorData.nextCursor.distance,
+                rowid: vectorData.nextCursor.rowid,
               };
             } else {
               vectorCursor = null;
             }
-            if (data.items.length > 0) {
-              const vectorData = data.items.map((i) => ({
+            if (vectorData.items.length > 0) {
+              const items = vectorData.items.map((i) => ({
                 ...i,
                 isVectorResult: true,
               }));
-              actions.mergeImages(vectorData);
+              if (vectorSearchByImage) {
+                if (isReload) {
+                  actions.setImages(items);
+                } else {
+                  actions.appendImages(items);
+                }
+              } else {
+                actions.mergeImages(items);
+              }
             }
             if (isActive()) {
-              state.hasMore = Boolean(textCursor || vectorCursor);
+              state.hasMore = vectorSearchByImage
+                ? Boolean(vectorCursor)
+                : Boolean(textCursor || vectorCursor);
             }
           }
         } catch (err) {
@@ -456,8 +554,15 @@ export const actions = {
             return;
           }
           console.error('Vector search failed', err);
+          if (vectorSearchByImage) {
+            state.hasMore = false;
+            globalActions.pushToast({ key: 'toast.imageVectorSearchFailed' }, 'error');
+          }
         } finally {
           if (isActive()) {
+            if (!textPromise) {
+              state.loading = false;
+            }
             state.vectorLoading = false;
           }
         }
@@ -465,6 +570,14 @@ export const actions = {
     }
 
     try {
+      if (!textPromise) {
+        if (!shouldVectorSearch && isActive()) {
+          state.hasMore = false;
+          state.loading = false;
+        }
+        return;
+      }
+
       const data = await textPromise;
       if (!isActive()) return;
 
