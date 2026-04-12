@@ -81,6 +81,11 @@ export const en = {
   'envInit.subheading':
     'First run may download tools, install dependencies, and fetch the local model. This is a one-time step.',
   'envInit.preparing': 'Preparing...',
+  'envInit.selectStorage': 'Choose a data folder to continue initialization.',
+  'envInit.selectStorageTitle': 'Choose data folder',
+  'envInit.selectStorageDetail':
+    'Pick a dedicated data folder first. PiCaptain will store its database, images, and models there.',
+  'envInit.selectStorageAction': 'Choose folder',
   'envInit.checkingUv': 'Checking uv...',
   'envInit.downloadingUv': 'Downloading uv...',
   'envInit.initializingPythonEnv': 'Initializing Python environment...',
@@ -217,6 +222,11 @@ export const en = {
   'dialog.modelDownloadFailedDetail':
     'Exit code: {{code}}\nProgress: {{progress}}%\nModel dir: {{dir}}',
   'dialog.chooseStorageFolderTitle': 'Choose PiCaptain storage folder',
+  'dialog.invalidStorageFolderTitle': 'Storage folder unavailable',
+  'dialog.invalidStorageFolderMessage':
+    'The storage folder cannot be inside the app installation directory.',
+  'dialog.invalidStorageFolderDetail':
+    'Please choose another location outside:\n{{dir}}',
 
   'toast.globalError': 'Error: {{message}}',
   'toast.unhandledRejection': 'Unhandled Promise Rejection: {{reason}}',

@@ -250,4 +250,14 @@ export const zh: I18nDict = {
   'gallery.searchImage.defaultName': '\u56fe\u7247\u68c0\u7d22',
   'gallery.contextMenu.copyImage': '\u590d\u5236\u56fe\u7247',
   'gallery.contextMenu.searchByImage': '\u4ee5\u56fe\u641c\u56fe',
+  'envInit.selectStorage': '\u8bf7\u5148\u9009\u62e9\u6570\u636e\u76ee\u5f55\uff0c\u7136\u540e\u7ee7\u7eed\u521d\u59cb\u5316\u3002',
+  'envInit.selectStorageTitle': '\u9009\u62e9\u6570\u636e\u76ee\u5f55',
+  'envInit.selectStorageDetail':
+    '\u8bf7\u5148\u9009\u4e00\u4e2a\u72ec\u7acb\u7684\u6570\u636e\u76ee\u5f55\uff0cPiCaptain \u4f1a\u5728\u5176\u4e2d\u5b58\u653e\u6570\u636e\u5e93\u3001\u56fe\u7247\u548c\u6a21\u578b\u3002',
+  'envInit.selectStorageAction': '\u9009\u62e9\u76ee\u5f55',
+  'dialog.invalidStorageFolderTitle': '\u65e0\u6cd5\u4f7f\u7528\u8be5\u76ee\u5f55',
+  'dialog.invalidStorageFolderMessage':
+    '\u6570\u636e\u76ee\u5f55\u4e0d\u80fd\u4f4d\u4e8e\u5e94\u7528\u5b89\u88c5\u76ee\u5f55\u5185\u3002',
+  'dialog.invalidStorageFolderDetail':
+    '\u8bf7\u9009\u62e9\u4e0b\u9762\u76ee\u5f55\u4e4b\u5916\u7684\u5176\u4ed6\u4f4d\u7f6e\uff1a\n{{dir}}',
 };

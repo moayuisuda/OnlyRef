@@ -17,9 +17,11 @@ import_electron.contextBridge.exposeInMainWorld("electron", {
   getStorageDir: () => import_electron.ipcRenderer.invoke("get-storage-dir"),
   openStorageDir: () => import_electron.ipcRenderer.invoke("open-storage-dir"),
   chooseStorageDir: () => import_electron.ipcRenderer.invoke("choose-storage-dir"),
+  chooseInitialStorageDir: () => import_electron.ipcRenderer.invoke("choose-initial-storage-dir"),
   chooseSearchImage: () => import_electron.ipcRenderer.invoke("choose-search-image"),
   startImageDrag: (payload) => import_electron.ipcRenderer.invoke("start-image-drag", payload),
   getEnvInitProgress: () => import_electron.ipcRenderer.invoke("get-env-init-progress"),
+  hasPersistedStorageRoot: () => import_electron.ipcRenderer.invoke("has-persisted-storage-root"),
   openExternal: (url) => import_electron.ipcRenderer.invoke("open-external", url),
   onImageUpdated: (callback) => {
     const handler = (_, data) => callback(data);

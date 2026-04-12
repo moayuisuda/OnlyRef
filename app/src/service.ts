@@ -1,4 +1,5 @@
 import { API_BASE_URL } from "../config";
+import { normalizeLocale } from "../shared/i18n/locale";
 import type { Locale } from "../shared/i18n/types";
 
 export interface settingStorageGetOptions<T> {
@@ -91,12 +92,22 @@ export const syncSettingsSnapshotValue = <T>(key: string, value: T): void => {
   };
 };
 
-const isLocale = (value: unknown): value is Locale => value === "en" || value === "zh";
+export const resetSettingsSnapshot = (): void => {
+  settingsSnapshot = null;
+  settingsSnapshotPromise = null;
+};
+
+export const getSystemLocale = (): Locale => {
+  if (typeof navigator === "undefined") {
+    return "en";
+  }
+  return normalizeLocale(navigator.language);
+};
 
 export async function getLanguage(): Promise<Locale> {
   const settings = await getSettingsSnapshot();
-  const raw = readSetting<unknown>(settings, "language", "en");
-  return isLocale(raw) ? raw : "en";
+  const raw = readSetting<unknown>(settings, "language", undefined);
+  return normalizeLocale(raw, getSystemLocale());
 }
 
 export async function setLanguage(locale: Locale): Promise<void> {

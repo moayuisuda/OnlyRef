@@ -17,6 +17,7 @@ export interface EnvInitState {
   statusParams?: I18nParams;
   percentText: string;
   detailText?: string;
+  mode: "progress" | "selectStorage";
 }
 
 export const envInitState = proxy<EnvInitState>({
@@ -24,6 +25,7 @@ export const envInitState = proxy<EnvInitState>({
   progress: 0,
   statusKey: "envInit.preparing",
   percentText: "0%",
+  mode: "progress",
 });
 
 export interface IndexingState {
@@ -67,6 +69,7 @@ export const envInitActions = {
     envInitState.statusParams = undefined;
     envInitState.percentText = "0%";
     envInitState.detailText = undefined;
+    envInitState.mode = "progress";
   },
 };
 

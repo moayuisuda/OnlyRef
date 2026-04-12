@@ -56,6 +56,7 @@ import {
   getManagedPythonRuntimeDir,
 } from "../backend/pythonRuntime";
 import { t as translate } from "../shared/i18n/t";
+import { normalizeLocale } from "../shared/i18n/locale";
 import type { I18nKey, I18nParams, Locale } from "../shared/i18n/types";
 import { debounce } from "radash";
 
@@ -69,6 +70,10 @@ const DEFAULT_TOGGLE_WINDOW_SHORTCUT =
   process.platform === "darwin" ? "Command+L" : "Ctrl+L";
 const APP_ID = "com.picaptain.app";
 const WINDOW_ICON_PATH = path.join(__dirname, "../resources/icon.png");
+const STORAGE_ROOT_CONFIG_PATH = path.join(
+  app.getPath("userData"),
+  "picaptain_config.json",
+);
 
 let toggleWindowShortcut = DEFAULT_TOGGLE_WINDOW_SHORTCUT;
 
@@ -90,20 +95,98 @@ if (!hasSingleInstanceLock) {
   app.quit();
 }
 
-const isLocale = (value: unknown): value is Locale =>
-  value === "en" || value === "zh";
-
 const ensureSettingsStoreConfigured = (): void => {
   configureSettingsStore(path.join(getStorageDir(), "settings.json"));
 };
 
+async function hasPersistedStorageRoot(): Promise<boolean> {
+  if (!(await lockedFs.pathExists(STORAGE_ROOT_CONFIG_PATH))) {
+    return false;
+  }
+
+  try {
+    const raw = await lockedFs.readJson<{ storageDir?: unknown }>(
+      STORAGE_ROOT_CONFIG_PATH,
+    );
+    return typeof raw?.storageDir === "string" && raw.storageDir.trim().length > 0;
+  } catch (error) {
+    log.warn("Failed to read storage root config", error);
+    return false;
+  }
+}
+
+const normalizeComparablePath = (targetPath: string): string => {
+  const resolved = path.resolve(targetPath).replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+};
+
+const isSameOrNestedPath = (parentPath: string, childPath: string): boolean => {
+  const normalizedParent = normalizeComparablePath(parentPath);
+  const normalizedChild = normalizeComparablePath(childPath);
+
+  if (normalizedParent === normalizedChild) {
+    return true;
+  }
+
+  const relative = path.relative(normalizedParent, normalizedChild);
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+};
+
+const validateStorageRoot = (
+  candidatePath: string,
+): { valid: true } | { valid: false; installDir: string } => {
+  const installDir = path.dirname(app.getPath("exe"));
+  if (isSameOrNestedPath(installDir, candidatePath)) {
+    return { valid: false, installDir };
+  }
+  return { valid: true };
+};
+
+async function chooseStorageRoot(
+  locale: Locale = normalizeLocale(app.getLocale()),
+  defaultPath?: string,
+): Promise<string | null> {
+  let nextDefaultPath = defaultPath;
+
+  while (true) {
+    const result = await dialog.showOpenDialog({
+      title: translate(locale, "dialog.chooseStorageFolderTitle"),
+      defaultPath: nextDefaultPath,
+      properties: ["openDirectory", "createDirectory"],
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return null;
+    }
+
+    const dir = result.filePaths[0];
+    const validation = validateStorageRoot(dir);
+    if (!validation.valid) {
+      await dialog.showMessageBox({
+        type: "error",
+        title: translate(locale, "dialog.invalidStorageFolderTitle"),
+        message: translate(locale, "dialog.invalidStorageFolderMessage"),
+        detail: translate(locale, "dialog.invalidStorageFolderDetail", {
+          dir: validation.installDir,
+        }),
+      });
+      nextDefaultPath = dir;
+      continue;
+    }
+
+    await setStorageRoot(dir);
+    return dir;
+  }
+}
+
 async function getLocale(): Promise<Locale> {
+  const systemLocale = normalizeLocale(app.getLocale());
   try {
     const settings = await readPersistedSettings();
     const raw = settings.language;
-    return isLocale(raw) ? raw : "en";
+    return normalizeLocale(raw, systemLocale);
   } catch {
-    return "en";
+    return systemLocale;
   }
 }
 
@@ -901,6 +984,7 @@ type EnvInitProgressPayload = {
   percentText: string;
   statusParams?: I18nParams;
   detailText?: string;
+  mode?: "progress" | "selectStorage";
 };
 
 let currentEnvInitProgress: EnvInitProgressPayload = {
@@ -908,7 +992,10 @@ let currentEnvInitProgress: EnvInitProgressPayload = {
   statusKey: "envInit.preparing",
   progress: 0,
   percentText: "0%",
+  mode: "progress",
 };
+
+let startupInitializationPromise: Promise<void> | null = null;
 
 function sendEnvInitProgress(
   parent: BrowserWindow,
@@ -934,6 +1021,7 @@ function makeEnvInitReporter(parent: BrowserWindow) {
       detailText,
       progress: normalized,
       percentText: `${Math.round(normalized * 100)}%`,
+      mode: "progress",
     });
   };
 }
@@ -944,9 +1032,21 @@ function closeEnvInitProgress(parent: BrowserWindow): void {
     statusKey: "envInit.preparing",
     progress: 0,
     percentText: "0%",
+    mode: "progress",
   };
   if (parent.isDestroyed()) return;
   parent.webContents.send("env-init-progress", currentEnvInitProgress);
+}
+
+function openStorageSelectionProgress(parent: BrowserWindow): void {
+  sendEnvInitProgress(parent, {
+    isOpen: true,
+    statusKey: "envInit.selectStorage",
+    progress: 0,
+    percentText: "",
+    detailText: "",
+    mode: "selectStorage",
+  });
 }
 
 function createStageReporter(
@@ -1355,6 +1455,26 @@ async function ensureStartupInitialization(parent: BrowserWindow): Promise<void>
   }
 }
 
+async function runStartupInitialization(parent: BrowserWindow): Promise<void> {
+  if (startupInitializationPromise) {
+    await startupInitializationPromise;
+    return;
+  }
+
+  startupInitializationPromise = (async () => {
+    log.info("Ensuring startup initialization...");
+    await ensureStartupInitialization(parent);
+    log.info("Startup initialization ready.");
+    scheduleVectorServiceWarmup();
+  })();
+
+  try {
+    await startupInitializationPromise;
+  } finally {
+    startupInitializationPromise = null;
+  }
+}
+
 function scheduleVectorServiceWarmup(): void {
   void (async () => {
     try {
@@ -1409,6 +1529,10 @@ ipcMain.handle("get-env-init-progress", async () => {
   return currentEnvInitProgress;
 });
 
+ipcMain.handle("has-persisted-storage-root", async () => {
+  return hasPersistedStorageRoot();
+});
+
 ipcMain.handle("open-storage-dir", async () => {
   const target = getStorageDir();
   const result = await shell.openPath(target);
@@ -1420,19 +1544,42 @@ ipcMain.handle("open-storage-dir", async () => {
 
 ipcMain.handle("choose-storage-dir", async () => {
   const locale = await getLocale();
-  const result = await dialog.showOpenDialog({
-    title: translate(locale, "dialog.chooseStorageFolderTitle"),
-    properties: ["openDirectory", "createDirectory"],
-  });
-
-  if (result.canceled || result.filePaths.length === 0) {
+  const dir = await chooseStorageRoot(locale, getStorageDir());
+  if (!dir) {
     return null;
   }
 
-  const dir = result.filePaths[0];
-  await setStorageRoot(dir);
   app.relaunch();
   app.exit(0);
+});
+
+ipcMain.handle("choose-initial-storage-dir", async () => {
+  const locale = normalizeLocale(app.getLocale());
+  const dir = await chooseStorageRoot(locale);
+  if (!dir) {
+    if (mainWindow) {
+      openStorageSelectionProgress(mainWindow);
+    }
+    return null;
+  }
+
+  if (!isLocalServerReady) {
+    await startServer();
+    if (mainWindow) {
+      loadMainWindow();
+    }
+  }
+
+  if (mainWindow) {
+    void runStartupInitialization(mainWindow).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[startup] initialization failed:", message);
+      log.error("[startup] initialization failed:", message);
+      app.quit();
+    });
+  }
+
+  return dir;
 });
 
 ipcMain.handle("choose-search-image", async () => {
@@ -1521,19 +1668,24 @@ app.whenReady().then(async () => {
     app.setAppUserModelId(APP_ID);
   }
 
+  const hasStorageRoot = await hasPersistedStorageRoot();
   const taskLoadShortcuts = loadShortcuts();
-  // Start server early, but handle errors later
-  const taskStartServer = startServer();
   try {
-    await Promise.all([taskLoadShortcuts, taskStartServer]);
+    if (hasStorageRoot) {
+      await Promise.all([taskLoadShortcuts, startServer()]);
+    } else {
+      await taskLoadShortcuts;
+    }
+
     await createWindow();
     registerToggleWindowShortcut(toggleWindowShortcut);
 
     if (mainWindow) {
-      log.info("Ensuring startup initialization...");
-      await ensureStartupInitialization(mainWindow);
-      log.info("Startup initialization ready.");
-      scheduleVectorServiceWarmup();
+      if (hasStorageRoot) {
+        await runStartupInitialization(mainWindow);
+      } else {
+        openStorageSelectionProgress(mainWindow);
+      }
     }
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);

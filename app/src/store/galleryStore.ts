@@ -56,10 +56,15 @@ export const getImageUrl = (imagePath: string) => {
   if (normalized.startsWith('/')) {
     normalized = normalized.slice(1);
   }
+  const encodedPath = normalized
+    .split('/')
+    .filter((segment) => segment.length > 0)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
   if (normalized.startsWith('images/')) {
-    return `${API_BASE_URL}/images/${normalized}`;
+    return `${API_BASE_URL}/images/${encodedPath}`;
   }
-  return `${API_BASE_URL}/${normalized}`;
+  return `${API_BASE_URL}/${encodedPath}`;
 };
 
 export const deriveNameFromFilename = (filename: string): string => {

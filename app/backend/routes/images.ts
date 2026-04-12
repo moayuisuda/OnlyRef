@@ -1,6 +1,7 @@
 import path from "path";
 import express from "express";
 import { clipboard, nativeImage, shell } from "electron";
+import { fileURLToPath } from "url";
 import { v4 as uuidv4 } from "uuid";
 import type { ImageDb, ImageMeta, StorageIncompatibleError } from "../db";
 import type { SendToRenderer } from "../server";
@@ -361,6 +362,14 @@ const resolveImportSource = (payload: ImportPayload): ImportSource | null => {
     };
   }
   return null;
+};
+
+const resolveImportPath = (sourcePath: string): string => {
+  // file:// URL 需要按 URL 语义解码；原始本地路径必须保持原样，避免把合法的 % 文件名误判为转义串。
+  if (!sourcePath.startsWith("file://")) {
+    return sourcePath;
+  }
+  return fileURLToPath(sourcePath);
 };
 
 const chunkItems = <T,>(items: T[], size: number): T[][] => {
@@ -876,18 +885,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
           await fs.writeFile(target.localPath, sourceData as Buffer);
         });
       } else if (sourceType === "path") {
-        let srcPath = sourceData as string;
-        if (srcPath.startsWith("file://")) {
-          srcPath = new URL(srcPath).pathname;
-          if (
-            process.platform === "win32" &&
-            srcPath.startsWith("/") &&
-            srcPath.includes(":")
-          ) {
-            srcPath = srcPath.substring(1);
-          }
-        }
-        srcPath = decodeURIComponent(srcPath);
+        const srcPath = resolveImportPath(sourceData as string);
         await withFileLocks([srcPath, target.localPath], async () => {
           await fs.copy(srcPath, target.localPath);
         });
@@ -1600,7 +1598,10 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
       }
       const targetPath = path.join(deps.getStorageDir(), meta.imagePath);
       const dir = path.dirname(targetPath);
-      await shell.openPath(dir);
+      const openError = await shell.openPath(dir);
+      if (openError) {
+        throw new Error(openError);
+      }
       res.json({ success: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1622,7 +1623,10 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
         return;
       }
       const targetPath = path.join(deps.getStorageDir(), meta.imagePath);
-      await shell.openPath(targetPath);
+      const openError = await shell.openPath(targetPath);
+      if (openError) {
+        throw new Error(openError);
+      }
       res.json({ success: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

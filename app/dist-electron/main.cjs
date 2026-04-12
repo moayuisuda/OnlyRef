@@ -730,6 +730,7 @@ var buildColorFilterSql = (alias, color) => {
 var import_path3 = __toESM(require("path"), 1);
 var import_express = __toESM(require("express"), 1);
 var import_electron = require("electron");
+var import_url = require("url");
 var import_uuid = require("uuid");
 var import_fs_extra2 = __toESM(require("fs-extra"), 1);
 var VECTOR_INDEX_BATCH_SIZE = 8;
@@ -958,6 +959,12 @@ var resolveImportSource = (payload) => {
     };
   }
   return null;
+};
+var resolveImportPath = (sourcePath) => {
+  if (!sourcePath.startsWith("file://")) {
+    return sourcePath;
+  }
+  return (0, import_url.fileURLToPath)(sourcePath);
 };
 var chunkItems = (items, size) => {
   if (items.length === 0) return [];
@@ -1341,14 +1348,7 @@ var createImagesRouter = (deps) => {
           await import_fs_extra2.default.writeFile(target.localPath, sourceData);
         });
       } else if (sourceType === "path") {
-        let srcPath = sourceData;
-        if (srcPath.startsWith("file://")) {
-          srcPath = new URL(srcPath).pathname;
-          if (process.platform === "win32" && srcPath.startsWith("/") && srcPath.includes(":")) {
-            srcPath = srcPath.substring(1);
-          }
-        }
-        srcPath = decodeURIComponent(srcPath);
+        const srcPath = resolveImportPath(sourceData);
         await withFileLocks([srcPath, target.localPath], async () => {
           await import_fs_extra2.default.copy(srcPath, target.localPath);
         });
@@ -1988,7 +1988,10 @@ var createImagesRouter = (deps) => {
       }
       const targetPath = import_path3.default.join(deps.getStorageDir(), meta.imagePath);
       const dir = import_path3.default.dirname(targetPath);
-      await import_electron.shell.openPath(dir);
+      const openError = await import_electron.shell.openPath(dir);
+      if (openError) {
+        throw new Error(openError);
+      }
       res.json({ success: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2009,7 +2012,10 @@ var createImagesRouter = (deps) => {
         return;
       }
       const targetPath = import_path3.default.join(deps.getStorageDir(), meta.imagePath);
-      await import_electron.shell.openPath(targetPath);
+      const openError = await import_electron.shell.openPath(targetPath);
+      if (openError) {
+        throw new Error(openError);
+      }
       res.json({ success: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -3435,29 +3441,6 @@ var loadStorageRoot = async () => {
     }
   } catch {
   }
-  if (import_electron3.app.isPackaged && process.platform !== "darwin") {
-    try {
-      const exeDir = import_path5.default.dirname(import_electron3.app.getPath("exe"));
-      const portableDataDir = import_path5.default.join(exeDir, "data");
-      if (await lockedFs.pathExists(portableDataDir)) {
-        return portableDataDir;
-      }
-      const testFile = import_path5.default.join(exeDir, ".write_test");
-      const writable = await withFileLock(testFile, async () => {
-        try {
-          await import_fs_extra4.default.writeFile(testFile, "test");
-          await import_fs_extra4.default.remove(testFile);
-          return true;
-        } catch {
-          return false;
-        }
-      });
-      if (writable) {
-        return portableDataDir;
-      }
-    } catch {
-    }
-  }
   return DEFAULT_STORAGE_DIR;
 };
 var STORAGE_DIR = DEFAULT_STORAGE_DIR;
@@ -3507,7 +3490,6 @@ var initializeStorage = async () => {
   const root = await loadStorageRoot();
   updateStoragePaths(root);
   await ensureStorageDirs(STORAGE_DIR);
-  await persistStorageRootConfig(STORAGE_DIR);
   initDatabase();
 };
 var BasePythonService = class {
@@ -4155,6 +4137,10 @@ var en = {
   "envInit.heading": "Preparing PiCaptain...",
   "envInit.subheading": "First run may download tools, install dependencies, and fetch the local model. This is a one-time step.",
   "envInit.preparing": "Preparing...",
+  "envInit.selectStorage": "Choose a data folder to continue initialization.",
+  "envInit.selectStorageTitle": "Choose data folder",
+  "envInit.selectStorageDetail": "Pick a dedicated data folder first. PiCaptain will store its database, images, and models there.",
+  "envInit.selectStorageAction": "Choose folder",
   "envInit.checkingUv": "Checking uv...",
   "envInit.downloadingUv": "Downloading uv...",
   "envInit.initializingPythonEnv": "Initializing Python environment...",
@@ -4274,6 +4260,9 @@ var en = {
   "dialog.modelDownloadFailedMessage": "Failed to download model files.",
   "dialog.modelDownloadFailedDetail": "Exit code: {{code}}\nProgress: {{progress}}%\nModel dir: {{dir}}",
   "dialog.chooseStorageFolderTitle": "Choose PiCaptain storage folder",
+  "dialog.invalidStorageFolderTitle": "Storage folder unavailable",
+  "dialog.invalidStorageFolderMessage": "The storage folder cannot be inside the app installation directory.",
+  "dialog.invalidStorageFolderDetail": "Please choose another location outside:\n{{dir}}",
   "toast.globalError": "Error: {{message}}",
   "toast.unhandledRejection": "Unhandled Promise Rejection: {{reason}}",
   "toast.storageIncompatible": "Storage is incompatible. Please reset the data folder.",
@@ -4546,7 +4535,14 @@ var zh = {
   "gallery.searchImage.pick": "\u9009\u62E9\u56FE\u7247",
   "gallery.searchImage.defaultName": "\u56FE\u7247\u68C0\u7D22",
   "gallery.contextMenu.copyImage": "\u590D\u5236\u56FE\u7247",
-  "gallery.contextMenu.searchByImage": "\u4EE5\u56FE\u641C\u56FE"
+  "gallery.contextMenu.searchByImage": "\u4EE5\u56FE\u641C\u56FE",
+  "envInit.selectStorage": "\u8BF7\u5148\u9009\u62E9\u6570\u636E\u76EE\u5F55\uFF0C\u7136\u540E\u7EE7\u7EED\u521D\u59CB\u5316\u3002",
+  "envInit.selectStorageTitle": "\u9009\u62E9\u6570\u636E\u76EE\u5F55",
+  "envInit.selectStorageDetail": "\u8BF7\u5148\u9009\u4E00\u4E2A\u72EC\u7ACB\u7684\u6570\u636E\u76EE\u5F55\uFF0CPiCaptain \u4F1A\u5728\u5176\u4E2D\u5B58\u653E\u6570\u636E\u5E93\u3001\u56FE\u7247\u548C\u6A21\u578B\u3002",
+  "envInit.selectStorageAction": "\u9009\u62E9\u76EE\u5F55",
+  "dialog.invalidStorageFolderTitle": "\u65E0\u6CD5\u4F7F\u7528\u8BE5\u76EE\u5F55",
+  "dialog.invalidStorageFolderMessage": "\u6570\u636E\u76EE\u5F55\u4E0D\u80FD\u4F4D\u4E8E\u5E94\u7528\u5B89\u88C5\u76EE\u5F55\u5185\u3002",
+  "dialog.invalidStorageFolderDetail": "\u8BF7\u9009\u62E9\u4E0B\u9762\u76EE\u5F55\u4E4B\u5916\u7684\u5176\u4ED6\u4F4D\u7F6E\uFF1A\n{{dir}}"
 };
 
 // shared/i18n/t.ts
@@ -4563,6 +4559,22 @@ function t(locale, key, params) {
     return String(value);
   });
 }
+
+// shared/i18n/locale.ts
+var DEFAULT_LOCALE = "en";
+var normalizeLocale = (value, fallback = DEFAULT_LOCALE) => {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized.startsWith("zh")) {
+    return "zh";
+  }
+  if (normalized.startsWith("en")) {
+    return "en";
+  }
+  return fallback;
+};
 
 // electron/main.ts
 var import_radash = require("radash");
@@ -4588,6 +4600,10 @@ var isLocalServerReady = false;
 var DEFAULT_TOGGLE_WINDOW_SHORTCUT = process.platform === "darwin" ? "Command+L" : "Ctrl+L";
 var APP_ID = "com.picaptain.app";
 var WINDOW_ICON_PATH = import_path6.default.join(__dirname, "../resources/icon.png");
+var STORAGE_ROOT_CONFIG_PATH = import_path6.default.join(
+  import_electron4.app.getPath("userData"),
+  "picaptain_config.json"
+);
 var toggleWindowShortcut = DEFAULT_TOGGLE_WINDOW_SHORTCUT;
 var isSettingsOpen = false;
 var hasPendingSecondInstanceRestore = false;
@@ -4599,17 +4615,80 @@ var hasSingleInstanceLock = import_electron4.app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   import_electron4.app.quit();
 }
-var isLocale = (value) => value === "en" || value === "zh";
 var ensureSettingsStoreConfigured = () => {
   configureSettingsStore(import_path6.default.join(getStorageDir(), "settings.json"));
 };
+async function hasPersistedStorageRoot() {
+  if (!await lockedFs.pathExists(STORAGE_ROOT_CONFIG_PATH)) {
+    return false;
+  }
+  try {
+    const raw = await lockedFs.readJson(
+      STORAGE_ROOT_CONFIG_PATH
+    );
+    return typeof (raw == null ? void 0 : raw.storageDir) === "string" && raw.storageDir.trim().length > 0;
+  } catch (error) {
+    import_electron_log.default.warn("Failed to read storage root config", error);
+    return false;
+  }
+}
+var normalizeComparablePath = (targetPath) => {
+  const resolved = import_path6.default.resolve(targetPath).replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+};
+var isSameOrNestedPath = (parentPath, childPath) => {
+  const normalizedParent = normalizeComparablePath(parentPath);
+  const normalizedChild = normalizeComparablePath(childPath);
+  if (normalizedParent === normalizedChild) {
+    return true;
+  }
+  const relative = import_path6.default.relative(normalizedParent, normalizedChild);
+  return relative !== "" && !relative.startsWith("..") && !import_path6.default.isAbsolute(relative);
+};
+var validateStorageRoot = (candidatePath) => {
+  const installDir = import_path6.default.dirname(import_electron4.app.getPath("exe"));
+  if (isSameOrNestedPath(installDir, candidatePath)) {
+    return { valid: false, installDir };
+  }
+  return { valid: true };
+};
+async function chooseStorageRoot(locale = normalizeLocale(import_electron4.app.getLocale()), defaultPath) {
+  let nextDefaultPath = defaultPath;
+  while (true) {
+    const result = await import_electron4.dialog.showOpenDialog({
+      title: t(locale, "dialog.chooseStorageFolderTitle"),
+      defaultPath: nextDefaultPath,
+      properties: ["openDirectory", "createDirectory"]
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return null;
+    }
+    const dir = result.filePaths[0];
+    const validation = validateStorageRoot(dir);
+    if (!validation.valid) {
+      await import_electron4.dialog.showMessageBox({
+        type: "error",
+        title: t(locale, "dialog.invalidStorageFolderTitle"),
+        message: t(locale, "dialog.invalidStorageFolderMessage"),
+        detail: t(locale, "dialog.invalidStorageFolderDetail", {
+          dir: validation.installDir
+        })
+      });
+      nextDefaultPath = dir;
+      continue;
+    }
+    await setStorageRoot(dir);
+    return dir;
+  }
+}
 async function getLocale() {
+  const systemLocale = normalizeLocale(import_electron4.app.getLocale());
   try {
     const settings = await readPersistedSettings();
     const raw = settings.language;
-    return isLocale(raw) ? raw : "en";
+    return normalizeLocale(raw, systemLocale);
   } catch {
-    return "en";
+    return systemLocale;
   }
 }
 async function loadShortcuts() {
@@ -5250,8 +5329,10 @@ var currentEnvInitProgress = {
   isOpen: false,
   statusKey: "envInit.preparing",
   progress: 0,
-  percentText: "0%"
+  percentText: "0%",
+  mode: "progress"
 };
+var startupInitializationPromise = null;
 function sendEnvInitProgress(parent, payload) {
   currentEnvInitProgress = payload;
   if (parent.isDestroyed()) return;
@@ -5266,7 +5347,8 @@ function makeEnvInitReporter(parent) {
       statusParams,
       detailText,
       progress: normalized,
-      percentText: `${Math.round(normalized * 100)}%`
+      percentText: `${Math.round(normalized * 100)}%`,
+      mode: "progress"
     });
   };
 }
@@ -5275,10 +5357,21 @@ function closeEnvInitProgress(parent) {
     isOpen: false,
     statusKey: "envInit.preparing",
     progress: 0,
-    percentText: "0%"
+    percentText: "0%",
+    mode: "progress"
   };
   if (parent.isDestroyed()) return;
   parent.webContents.send("env-init-progress", currentEnvInitProgress);
+}
+function openStorageSelectionProgress(parent) {
+  sendEnvInitProgress(parent, {
+    isOpen: true,
+    statusKey: "envInit.selectStorage",
+    progress: 0,
+    percentText: "",
+    detailText: "",
+    mode: "selectStorage"
+  });
 }
 function createStageReporter(report, start, end) {
   const span = Math.max(0, end - start);
@@ -5573,6 +5666,23 @@ async function ensureStartupInitialization(parent) {
     closeEnvInitProgress(parent);
   }
 }
+async function runStartupInitialization(parent) {
+  if (startupInitializationPromise) {
+    await startupInitializationPromise;
+    return;
+  }
+  startupInitializationPromise = (async () => {
+    import_electron_log.default.info("Ensuring startup initialization...");
+    await ensureStartupInitialization(parent);
+    import_electron_log.default.info("Startup initialization ready.");
+    scheduleVectorServiceWarmup();
+  })();
+  try {
+    await startupInitializationPromise;
+  } finally {
+    startupInitializationPromise = null;
+  }
+}
 function scheduleVectorServiceWarmup() {
   void (async () => {
     try {
@@ -5620,6 +5730,9 @@ import_electron4.ipcMain.handle("get-storage-dir", async () => {
 import_electron4.ipcMain.handle("get-env-init-progress", async () => {
   return currentEnvInitProgress;
 });
+import_electron4.ipcMain.handle("has-persisted-storage-root", async () => {
+  return hasPersistedStorageRoot();
+});
 import_electron4.ipcMain.handle("open-storage-dir", async () => {
   const target = getStorageDir();
   const result = await import_electron4.shell.openPath(target);
@@ -5630,17 +5743,37 @@ import_electron4.ipcMain.handle("open-storage-dir", async () => {
 });
 import_electron4.ipcMain.handle("choose-storage-dir", async () => {
   const locale = await getLocale();
-  const result = await import_electron4.dialog.showOpenDialog({
-    title: t(locale, "dialog.chooseStorageFolderTitle"),
-    properties: ["openDirectory", "createDirectory"]
-  });
-  if (result.canceled || result.filePaths.length === 0) {
+  const dir = await chooseStorageRoot(locale, getStorageDir());
+  if (!dir) {
     return null;
   }
-  const dir = result.filePaths[0];
-  await setStorageRoot(dir);
   import_electron4.app.relaunch();
   import_electron4.app.exit(0);
+});
+import_electron4.ipcMain.handle("choose-initial-storage-dir", async () => {
+  const locale = normalizeLocale(import_electron4.app.getLocale());
+  const dir = await chooseStorageRoot(locale);
+  if (!dir) {
+    if (mainWindow) {
+      openStorageSelectionProgress(mainWindow);
+    }
+    return null;
+  }
+  if (!isLocalServerReady) {
+    await startServer2();
+    if (mainWindow) {
+      loadMainWindow();
+    }
+  }
+  if (mainWindow) {
+    void runStartupInitialization(mainWindow).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[startup] initialization failed:", message);
+      import_electron_log.default.error("[startup] initialization failed:", message);
+      import_electron4.app.quit();
+    });
+  }
+  return dir;
 });
 import_electron4.ipcMain.handle("choose-search-image", async () => {
   const result = await import_electron4.dialog.showOpenDialog({
@@ -5712,17 +5845,22 @@ import_electron4.app.whenReady().then(async () => {
   if (process.platform === "win32") {
     import_electron4.app.setAppUserModelId(APP_ID);
   }
+  const hasStorageRoot = await hasPersistedStorageRoot();
   const taskLoadShortcuts = loadShortcuts();
-  const taskStartServer = startServer2();
   try {
-    await Promise.all([taskLoadShortcuts, taskStartServer]);
+    if (hasStorageRoot) {
+      await Promise.all([taskLoadShortcuts, startServer2()]);
+    } else {
+      await taskLoadShortcuts;
+    }
     await createWindow();
     registerToggleWindowShortcut(toggleWindowShortcut);
     if (mainWindow) {
-      import_electron_log.default.info("Ensuring startup initialization...");
-      await ensureStartupInitialization(mainWindow);
-      import_electron_log.default.info("Startup initialization ready.");
-      scheduleVectorServiceWarmup();
+      if (hasStorageRoot) {
+        await runStartupInitialization(mainWindow);
+      } else {
+        openStorageSelectionProgress(mainWindow);
+      }
     }
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);

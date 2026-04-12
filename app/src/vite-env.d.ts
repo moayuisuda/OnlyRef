@@ -29,9 +29,11 @@ declare global {
       onToast: (callback: (data: unknown) => void) => () => void;
       onRendererEvent: (callback: (channel: string, ...args: unknown[]) => void) => () => void;
       getEnvInitProgress: () => Promise<unknown>;
+      hasPersistedStorageRoot: () => Promise<boolean>;
       getStorageDir: () => Promise<string>;
       openStorageDir: () => Promise<{ success: boolean; error?: string }>;
       chooseStorageDir: () => Promise<string | null>;
+      chooseInitialStorageDir: () => Promise<string | null>;
       chooseSearchImage: () => Promise<{ path: string; name: string } | null>;
       startImageDrag: (payload: {
         imagePath: string;

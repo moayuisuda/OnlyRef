@@ -1,9 +1,9 @@
 import { proxy } from 'valtio';
-import { getLanguage, setLanguage } from '../service';
+import { getLanguage, getSystemLocale, setLanguage } from '../service';
 import type { Locale } from '../../shared/i18n/types';
 
 export const i18nState = proxy<{ locale: Locale; hydrated: boolean }>({
-  locale: 'en',
+  locale: getSystemLocale(),
   hydrated: false,
 });
 

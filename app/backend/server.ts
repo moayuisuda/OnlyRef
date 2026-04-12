@@ -55,40 +55,7 @@ const loadStorageRoot = async (): Promise<string> => {
     // ignore and fallback
   }
 
-  // 2. Check if we are packaged and if the installation directory is writable
-  // If so, default to using a "data" folder next to the executable
-  // Skip on macOS to avoid modifying signed app bundles
-  if (app.isPackaged && process.platform !== "darwin") {
-    try {
-      const exeDir = path.dirname(app.getPath("exe"));
-      const portableDataDir = path.join(exeDir, "data");
-
-      // If it already exists, use it
-      if (await lockedFs.pathExists(portableDataDir)) {
-        return portableDataDir;
-      }
-
-      // If not, check if we can write to the exe directory
-      // We try to write a temporary file
-      const testFile = path.join(exeDir, ".write_test");
-      const writable = await withFileLock(testFile, async () => {
-        try {
-          await fs.writeFile(testFile, "test");
-          await fs.remove(testFile);
-          return true;
-        } catch {
-          return false;
-        }
-      });
-      if (writable) {
-        return portableDataDir;
-      }
-    } catch {
-      // Ignore errors during detection
-    }
-  }
-
-  // 3. Fallback to default userData storage
+  // 2. Fallback to app userData storage
   return DEFAULT_STORAGE_DIR;
 };
 
@@ -150,8 +117,7 @@ const initializeStorage = async () => {
   const root = await loadStorageRoot();
   updateStoragePaths(root);
   await ensureStorageDirs(STORAGE_DIR);
-  // 固化当前存储根目录，避免后续启动再次依赖安装目录位置做推断。
-  await persistStorageRootConfig(STORAGE_DIR);
+  // storageDir 只能在用户显式选择后持久化，启动阶段不做隐式写回。
   initDatabase();
 };
 

@@ -20,10 +20,12 @@ contextBridge.exposeInMainWorld('electron', {
   getStorageDir: () => ipcRenderer.invoke('get-storage-dir'),
   openStorageDir: () => ipcRenderer.invoke('open-storage-dir'),
   chooseStorageDir: () => ipcRenderer.invoke('choose-storage-dir'),
+  chooseInitialStorageDir: () => ipcRenderer.invoke('choose-initial-storage-dir'),
   chooseSearchImage: () => ipcRenderer.invoke('choose-search-image'),
   startImageDrag: (payload: { imagePath: string; fallbackIconPath?: string }) =>
     ipcRenderer.invoke('start-image-drag', payload),
   getEnvInitProgress: () => ipcRenderer.invoke('get-env-init-progress'),
+  hasPersistedStorageRoot: () => ipcRenderer.invoke('has-persisted-storage-root'),
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
   onImageUpdated: (callback: (data: unknown) => void) => {
     const handler = (_: unknown, data: unknown) => callback(data);

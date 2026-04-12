@@ -215,7 +215,8 @@ export const importFiles = async (files: File[]): Promise<ImageMeta[]> => {
       failedCount?: number;
     }>({
       items: pathFiles.map((file) => ({
-        imageUrl: `file://${encodeURI(file.path)}`,
+        type: 'path',
+        data: file.path,
         name: file.name,
         filename: file.name,
       })),

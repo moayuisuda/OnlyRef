@@ -43,8 +43,16 @@ const renderApp = () => {
 };
 
 const bootstrap = async () => {
+  const hasStorageRoot =
+    (await window.electron?.hasPersistedStorageRoot?.()) ?? true;
+
+  await i18nActions.hydrate();
+
+  if (!hasStorageRoot) {
+    return;
+  }
+
   await Promise.all([
-    i18nActions.hydrate(),
     globalActions.hydrateSettings(),
     galleryActions.hydrateSettings(),
     galleryActions.loadTags(),
