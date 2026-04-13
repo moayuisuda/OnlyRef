@@ -30,6 +30,7 @@ import {
 import {
   indexImages,
   localApi,
+  openImageInFolder,
   updateImage,
   moveGalleryOrder,
 } from "../service";
@@ -573,9 +574,7 @@ export const Gallery: React.FC = () => {
     if (!contextMenu) return;
     const targetImageId = contextMenu.image.id;
     try {
-      await localApi<unknown>("/api/open-in-folder", {
-        id: targetImageId,
-      });
+      await openImageInFolder(targetImageId);
     } catch (e) {
       console.error(e);
       globalActions.pushToast({ key: "toast.openFileFailed" }, "error");
@@ -610,15 +609,27 @@ export const Gallery: React.FC = () => {
     closeContextMenuIfMatch(targetImage.id);
   };
 
-  const handleImageClick = async (image: ImageMeta) => {
-    try {
-      await localApi<unknown>("/api/open-with-default", {
-        id: image.id,
-      });
-    } catch (e) {
-      console.error(e);
+  const handleImageClick = (image: ImageMeta) => {
+    const request = window.electron?.openGalleryPreviewWindow?.({
+      activeImageId: image.id,
+      images: sortedImages.map((item) => ({
+        id: item.id,
+        filename: item.filename,
+        imagePath: item.imagePath,
+      })),
+    });
+
+    if (!request) {
       globalActions.pushToast({ key: "toast.openFileFailed" }, "error");
+      return;
     }
+
+    void request.then((result) => {
+      if (result?.success) {
+        return;
+      }
+      globalActions.pushToast({ key: "toast.openFileFailed" }, "error");
+    });
   };
 
   const handleUpdateTags = useCallback(

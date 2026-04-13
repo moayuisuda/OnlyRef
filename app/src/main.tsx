@@ -6,6 +6,7 @@ import { ErrorBoundary } from './components/ErrorBoundary.tsx'
 import { globalActions } from './store/globalStore.ts'
 import { i18nActions } from './store/i18nStore.ts'
 import { actions as galleryActions } from './store/galleryStore.ts'
+import { getRuntimeWindowType } from '../config.ts'
 
 // Global error handlers
 window.addEventListener('error', (event) => {
@@ -43,10 +44,15 @@ const renderApp = () => {
 };
 
 const bootstrap = async () => {
+  const windowType = getRuntimeWindowType();
   const hasStorageRoot =
     (await window.electron?.hasPersistedStorageRoot?.()) ?? true;
 
   await i18nActions.hydrate();
+
+  if (windowType === 'gallery-preview') {
+    return;
+  }
 
   if (!hasStorageRoot) {
     return;

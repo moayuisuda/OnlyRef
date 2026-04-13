@@ -1597,11 +1597,14 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
         return;
       }
       const targetPath = path.join(deps.getStorageDir(), meta.imagePath);
-      const dir = path.dirname(targetPath);
-      const openError = await shell.openPath(dir);
-      if (openError) {
-        throw new Error(openError);
+      const exists = await lockedFs.pathExists(targetPath);
+      if (!exists) {
+        res.status(404).json({ error: "Image file not found" });
+        return;
       }
+
+      // 这里需要直接传入文件路径，资源管理器才会定位并选中目标图片。
+      shell.showItemInFolder(targetPath);
       res.json({ success: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

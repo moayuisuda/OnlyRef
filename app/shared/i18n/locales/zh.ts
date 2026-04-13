@@ -250,6 +250,8 @@ export const zh: I18nDict = {
   'gallery.searchImage.defaultName': '\u56fe\u7247\u68c0\u7d22',
   'gallery.contextMenu.copyImage': '\u590d\u5236\u56fe\u7247',
   'gallery.contextMenu.searchByImage': '\u4ee5\u56fe\u641c\u56fe',
+  'gallery.preview.previous': '\u4e0a\u4e00\u5f20',
+  'gallery.preview.next': '\u4e0b\u4e00\u5f20',
   'envInit.selectStorage': '\u8bf7\u5148\u9009\u62e9\u6570\u636e\u76ee\u5f55\uff0c\u7136\u540e\u7ee7\u7eed\u521d\u59cb\u5316\u3002',
   'envInit.selectStorageTitle': '\u9009\u62e9\u6570\u636e\u76ee\u5f55',
   'envInit.selectStorageDetail':

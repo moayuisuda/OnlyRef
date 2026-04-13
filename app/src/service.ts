@@ -263,6 +263,10 @@ export async function deleteImage(id: string): Promise<void> {
   }
 }
 
+export async function openImageInFolder(id: string): Promise<void> {
+  await localApi<{ success?: boolean }>("/api/open-in-folder", { id });
+}
+
 export type ImportImagePayload = {
   imageBase64?: string;
   imageUrl?: string;

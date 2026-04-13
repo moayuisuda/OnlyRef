@@ -63,6 +63,7 @@ import { debounce } from "radash";
 const DEFAULT_WINDOW_ALWAYS_ON_TOP = false;
 
 let mainWindow: BrowserWindow | null = null;
+let galleryPreviewWindow: BrowserWindow | null = null;
 let isAppHidden = false;
 let localServerApiBaseUrl = `http://localhost:${DEFAULT_SERVER_PORT}`;
 let isLocalServerReady = false;
@@ -89,6 +90,19 @@ type PersistedSettings = Record<string, unknown> & {
   windowBounds?: Partial<Electron.Rectangle>;
   windowAlwaysOnTop?: boolean;
 };
+
+type GalleryPreviewWindowImage = {
+  id: string;
+  filename: string;
+  imagePath: string;
+};
+
+type GalleryPreviewWindowPayload = {
+  images: GalleryPreviewWindowImage[];
+  activeImageId: string;
+};
+
+let galleryPreviewPayload: GalleryPreviewWindowPayload | null = null;
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
@@ -396,6 +410,106 @@ function loadMainWindow() {
   }
 }
 
+function loadGalleryPreviewWindow(targetWindow: BrowserWindow) {
+  const query = new URLSearchParams({
+    apiBaseUrl: localServerApiBaseUrl,
+    windowType: "gallery-preview",
+  }).toString();
+
+  if (!app.isPackaged) {
+    void targetWindow.loadURL(`http://localhost:5173/?${query}`);
+    return;
+  }
+
+  const filePath = path.join(__dirname, "../dist-renderer/index.html");
+  void targetWindow.loadFile(filePath, {
+    query: {
+      apiBaseUrl: localServerApiBaseUrl,
+      windowType: "gallery-preview",
+    },
+  });
+}
+
+function resolveGalleryPreviewBounds(): Electron.Rectangle {
+  const sourceBounds = mainWindow?.getBounds();
+  const display = sourceBounds
+    ? screen.getDisplayMatching(sourceBounds)
+    : screen.getPrimaryDisplay();
+  const area = display.workArea;
+  const width = Math.min(1280, Math.max(960, Math.floor(area.width * 0.72)));
+  const height = Math.min(860, Math.max(680, Math.floor(area.height * 0.8)));
+
+  return {
+    width,
+    height,
+    x: area.x + Math.floor((area.width - width) / 2),
+    y: area.y + Math.floor((area.height - height) / 2),
+  };
+}
+
+function sendGalleryPreviewPayload(): void {
+  if (!galleryPreviewWindow || galleryPreviewWindow.isDestroyed()) {
+    return;
+  }
+
+  galleryPreviewWindow.webContents.send(
+    "renderer-event",
+    "gallery-preview-data",
+    galleryPreviewPayload,
+  );
+}
+
+function createGalleryPreviewWindow(): BrowserWindow {
+  const bounds = resolveGalleryPreviewBounds();
+  const previewWindow = new BrowserWindow({
+    width: bounds.width,
+    height: bounds.height,
+    x: bounds.x,
+    y: bounds.y,
+    minWidth: 720,
+    minHeight: 520,
+    icon: WINDOW_ICON_PATH,
+    show: false,
+    center: true,
+    frame: false,
+    autoHideMenuBar: true,
+    backgroundColor: "#0a0a0a",
+    hasShadow: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, "preload.cjs"),
+    },
+  });
+
+  previewWindow.on("closed", () => {
+    if (galleryPreviewWindow === previewWindow) {
+      galleryPreviewWindow = null;
+      galleryPreviewPayload = null;
+    }
+  });
+
+  previewWindow.webContents.on("did-finish-load", () => {
+    previewWindow.show();
+    sendGalleryPreviewPayload();
+  });
+
+  previewWindow.webContents.on(
+    "did-fail-load",
+    (_event, errorCode, errorDescription, validatedURL) => {
+      log.error(
+        "Gallery preview failed to load:",
+        errorCode,
+        errorDescription,
+        validatedURL,
+      );
+    },
+  );
+
+  loadGalleryPreviewWindow(previewWindow);
+  return previewWindow;
+}
+
 function setupAutoUpdater() {
   autoUpdater.logger = log;
   // autoUpdater.logger.transports.file.level = 'info';
@@ -640,6 +754,10 @@ async function createWindow(options?: { load?: boolean }) {
         error: error instanceof Error ? error.message : String(error),
       };
     }
+  });
+
+  ipcMain.on("close-current-window", (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.close();
   });
 }
 
@@ -1614,6 +1732,111 @@ ipcMain.handle("choose-search-image", async () => {
     path: filePath,
     name: path.basename(filePath),
   };
+});
+
+ipcMain.handle(
+  "open-gallery-preview-window",
+  async (_event, payload: unknown) => {
+    try {
+      if (!payload || typeof payload !== "object") {
+        throw new Error("Invalid preview payload");
+      }
+
+      const raw = payload as {
+        images?: unknown;
+        activeImageId?: unknown;
+      };
+
+      if (
+        !Array.isArray(raw.images) ||
+        typeof raw.activeImageId !== "string" ||
+        !raw.activeImageId.trim()
+      ) {
+        throw new Error("Invalid preview payload");
+      }
+
+      const images = raw.images.filter(
+        (item): item is GalleryPreviewWindowImage =>
+          typeof item === "object" &&
+          item !== null &&
+          typeof (item as GalleryPreviewWindowImage).id === "string" &&
+          typeof (item as GalleryPreviewWindowImage).filename === "string" &&
+          typeof (item as GalleryPreviewWindowImage).imagePath === "string",
+      );
+
+      if (images.length === 0) {
+        throw new Error("Preview images are empty");
+      }
+
+      if (!images.some((image) => image.id === raw.activeImageId)) {
+        throw new Error("Active preview image is missing");
+      }
+
+      galleryPreviewPayload = {
+        images,
+        activeImageId: raw.activeImageId,
+      };
+
+      if (!galleryPreviewWindow || galleryPreviewWindow.isDestroyed()) {
+        galleryPreviewWindow = createGalleryPreviewWindow();
+      } else {
+        sendGalleryPreviewPayload();
+        if (!galleryPreviewWindow.isVisible()) {
+          galleryPreviewWindow.show();
+        }
+        galleryPreviewWindow.focus();
+      }
+
+      return { success: true };
+    } catch (error) {
+      log.error("Failed to open gallery preview window", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  },
+);
+
+ipcMain.handle("get-gallery-preview-data", async () => {
+  return galleryPreviewPayload;
+});
+
+ipcMain.handle("search-main-window-by-image", async (_event, payload: unknown) => {
+  try {
+    if (
+      !payload ||
+      typeof payload !== "object" ||
+      typeof (payload as { imageId?: unknown }).imageId !== "string" ||
+      typeof (payload as { previewUrl?: unknown }).previewUrl !== "string" ||
+      typeof (payload as { previewName?: unknown }).previewName !== "string"
+    ) {
+      throw new Error("Invalid search payload");
+    }
+
+    const data = payload as {
+      imageId: string;
+      previewUrl: string;
+      previewName: string;
+    };
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      restoreMainWindowVisibility();
+      mainWindow.webContents.send(
+        "renderer-event",
+        "gallery-preview-search-image",
+        data,
+      );
+    }
+
+    return { success: true };
+  } catch (error) {
+    log.error("Failed to sync preview image search", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 });
 
 ipcMain.handle(

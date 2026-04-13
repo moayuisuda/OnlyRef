@@ -1,23 +1,43 @@
 const PINTEREST_SIZE_SEGMENT_RE = /^\d+x\d*$/i;
+const X_IMAGE_HOSTNAME = "pbs.twimg.com";
 
 export const isHttpUrl = (value: string) => /^https?:\/\//i.test(value);
+
+const normalizePinterestImageUrl = (parsed: URL): void => {
+  if (!parsed.hostname.toLowerCase().endsWith("pinimg.com")) {
+    return;
+  }
+
+  const segments = parsed.pathname.split("/").filter(Boolean);
+  if (segments.length < 5 || segments[0] === "originals") {
+    return;
+  }
+
+  if (PINTEREST_SIZE_SEGMENT_RE.test(segments[0])) {
+    segments[0] = "originals";
+    parsed.pathname = `/${segments.join("/")}`;
+  }
+};
+
+const normalizeXImageUrl = (parsed: URL): void => {
+  if (parsed.hostname.toLowerCase() !== X_IMAGE_HOSTNAME) {
+    return;
+  }
+
+  const size = parsed.searchParams.get("name")?.trim().toLowerCase();
+  if (!size || size === "orig") {
+    return;
+  }
+
+  // x.com drag-and-drop often yields a pbs.twimg.com thumbnail URL.
+  parsed.searchParams.set("name", "orig");
+};
 
 export const normalizeDroppedImageUrl = (value: string): string => {
   try {
     const parsed = new URL(value);
-    if (!parsed.hostname.toLowerCase().endsWith("pinimg.com")) {
-      return parsed.toString();
-    }
-
-    const segments = parsed.pathname.split("/").filter(Boolean);
-    if (segments.length < 5 || segments[0] === "originals") {
-      return parsed.toString();
-    }
-
-    if (PINTEREST_SIZE_SEGMENT_RE.test(segments[0])) {
-      segments[0] = "originals";
-      parsed.pathname = `/${segments.join("/")}`;
-    }
+    normalizePinterestImageUrl(parsed);
+    normalizeXImageUrl(parsed);
 
     return parsed.toString();
   } catch {

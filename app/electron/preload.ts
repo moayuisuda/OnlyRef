@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('electron', {
   min: () => ipcRenderer.send('window-min'),
   max: () => ipcRenderer.send('window-max'),
   close: () => ipcRenderer.send('window-close'),
+  closeCurrentWindow: () => ipcRenderer.send('close-current-window'),
   focus: () => ipcRenderer.send('window-focus'),
   setWindowBounds: (bounds: { x?: number; y?: number; width?: number; height?: number }) =>
     ipcRenderer.send('set-window-bounds', bounds),
@@ -22,6 +23,16 @@ contextBridge.exposeInMainWorld('electron', {
   chooseStorageDir: () => ipcRenderer.invoke('choose-storage-dir'),
   chooseInitialStorageDir: () => ipcRenderer.invoke('choose-initial-storage-dir'),
   chooseSearchImage: () => ipcRenderer.invoke('choose-search-image'),
+  openGalleryPreviewWindow: (payload: {
+    images: { id: string; filename: string; imagePath: string }[];
+    activeImageId: string;
+  }) => ipcRenderer.invoke('open-gallery-preview-window', payload),
+  getGalleryPreviewData: () => ipcRenderer.invoke('get-gallery-preview-data'),
+  searchMainWindowByImage: (payload: {
+    imageId: string;
+    previewUrl: string;
+    previewName: string;
+  }) => ipcRenderer.invoke('search-main-window-by-image', payload),
   startImageDrag: (payload: { imagePath: string; fallbackIconPath?: string }) =>
     ipcRenderer.invoke('start-image-drag', payload),
   getEnvInitProgress: () => ipcRenderer.invoke('get-env-init-progress'),

@@ -3,11 +3,23 @@
 export {};
 
 declare global {
+  type GalleryPreviewWindowImage = {
+    id: string;
+    filename: string;
+    imagePath: string;
+  };
+
+  type GalleryPreviewWindowPayload = {
+    images: GalleryPreviewWindowImage[];
+    activeImageId: string;
+  };
+
   interface Window {
     electron?: {
       min: () => void;
       max: () => void;
       close: () => void;
+      closeCurrentWindow: () => void;
       focus: () => void;
       setWindowBounds: (bounds: {
         x?: number;
@@ -35,6 +47,15 @@ declare global {
       chooseStorageDir: () => Promise<string | null>;
       chooseInitialStorageDir: () => Promise<string | null>;
       chooseSearchImage: () => Promise<{ path: string; name: string } | null>;
+      openGalleryPreviewWindow: (
+        payload: GalleryPreviewWindowPayload,
+      ) => Promise<{ success: boolean; error?: string }>;
+      getGalleryPreviewData: () => Promise<GalleryPreviewWindowPayload | null>;
+      searchMainWindowByImage: (payload: {
+        imageId: string;
+        previewUrl: string;
+        previewName: string;
+      }) => Promise<{ success: boolean; error?: string }>;
       startImageDrag: (payload: {
         imagePath: string;
         fallbackIconPath?: string;

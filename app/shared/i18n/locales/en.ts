@@ -156,6 +156,8 @@ export const en = {
   'gallery.contextMenu.copyImage': 'Copy image',
   'gallery.contextMenu.showInFolder': 'Show in Folder',
   'gallery.contextMenu.searchByImage': 'Search by image',
+  'gallery.preview.previous': 'Previous image',
+  'gallery.preview.next': 'Next image',
   'gallery.contextMenu.indexVector': 'Index Vector',
   'gallery.contextMenu.deleteImage': 'Delete Image',
   'gallery.dominantColor.title': 'Dominant Color',

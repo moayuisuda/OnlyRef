@@ -1,10 +1,12 @@
 import { useEffect } from "react";
 import { clsx } from "clsx";
 import { useSnapshot } from "valtio";
+import { getRuntimeWindowType } from "../config";
 import { TitleBar } from "./components/TitleBar";
 import { Gallery } from "./components/Gallery";
 import { EnvInitModal } from "./components/EnvInitModal";
 import { WindowResizer } from "./components/WindowResizer";
+import { GalleryPreviewWindow } from "./components/gallery/GalleryPreviewWindow";
 import { actions as galleryActions, type ImageMeta } from "./store/galleryStore";
 import {
   envInitActions,
@@ -21,8 +23,10 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
 function App() {
+  const windowType = getRuntimeWindowType();
   const globalSnap = useSnapshot(globalState);
   const { t } = useT();
+  const isPreviewWindow = windowType === "gallery-preview";
 
   useEffect(() => {
     let disposed = false;
@@ -70,6 +74,22 @@ function App() {
 
         if (event === "window-always-on-top" && typeof args[0] === "boolean") {
           globalActions.syncWindowAlwaysOnTop(args[0]);
+          return;
+        }
+
+        if (
+          event === "gallery-preview-search-image" &&
+          isRecord(args[0]) &&
+          typeof args[0].imageId === "string" &&
+          typeof args[0].previewUrl === "string" &&
+          typeof args[0].previewName === "string"
+        ) {
+          galleryActions.setSearchImageSource({
+            type: "library",
+            imageId: args[0].imageId,
+            previewUrl: args[0].previewUrl,
+            previewName: args[0].previewName,
+          });
         }
       },
     );
@@ -84,6 +104,10 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (isPreviewWindow) {
+      return;
+    }
+
     const handlePaste = async (event: ClipboardEvent) => {
       if (document.hidden) return;
 
@@ -103,7 +127,44 @@ function App() {
 
     window.addEventListener("paste", handlePaste);
     return () => window.removeEventListener("paste", handlePaste);
-  }, []);
+  }, [isPreviewWindow]);
+
+  if (isPreviewWindow) {
+    return (
+      <div className="relative h-screen overflow-hidden bg-neutral-950 text-white">
+        <GalleryPreviewWindow />
+        {globalSnap.toasts.length > 0 && (
+          <div className="fixed right-4 top-4 z-[9999] flex flex-col gap-2">
+            {globalSnap.toasts.map((toast) => {
+              const tone =
+                toast.type === "success"
+                  ? "border-emerald-700/60 bg-emerald-950/80 text-emerald-100"
+                  : toast.type === "error"
+                    ? "border-red-700/60 bg-red-950/80 text-red-100"
+                    : toast.type === "warning"
+                      ? "border-yellow-700/60 bg-yellow-950/80 text-yellow-100"
+                      : "border-neutral-700/70 bg-neutral-900/90 text-neutral-100";
+
+              return (
+                <button
+                  key={toast.id}
+                  type="button"
+                  className={clsx(
+                    "rounded border text-left text-xs shadow-lg backdrop-blur transition-colors hover:bg-neutral-800/90",
+                    "max-w-[320px] px-3 py-2",
+                    tone,
+                  )}
+                  onClick={() => globalActions.removeToast(toast.id)}
+                >
+                  {t(toast.message.key, toast.message.params)}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div
