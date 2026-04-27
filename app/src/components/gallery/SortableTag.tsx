@@ -5,23 +5,35 @@ import { X } from "lucide-react";
 import { Tag, TagColorDot } from "../Tag";
 import { THEME } from "../../theme";
 import { useSnapshot } from "valtio";
-import { globalState } from "../../store/globalStore";
+import { globalActions, globalState } from "../../store/globalStore";
 import { useT } from "../../i18n/useT";
+import { importDroppedData } from "../../utils/import";
 
 interface SortableTagProps {
   tag: string;
+  itemId?: string;
   onClick: () => void;
   onRename?: (oldTag: string, newTag: string) => void;
   onDelete?: (tag: string) => void;
+  isDraft?: boolean;
+  autoEdit?: boolean;
+  onCreate?: (tag: string) => Promise<boolean> | boolean;
+  onCancelDraft?: () => void;
 }
 
 export const SortableTag: React.FC<SortableTagProps> = ({
   tag,
+  itemId,
   onClick,
   onRename,
   onDelete,
+  isDraft = false,
+  autoEdit = false,
+  onCreate,
+  onCancelDraft,
 }) => {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const sortableId = itemId ?? tag;
   const {
     attributes,
     listeners,
@@ -29,13 +41,59 @@ export const SortableTag: React.FC<SortableTagProps> = ({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: tag });
+  } = useSortable({ id: sortableId });
 
   const snap = useSnapshot(globalState);
   const { t } = useT();
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(tag);
   const [showActions, setShowActions] = useState(false);
+  const [isExternalDragOver, setIsExternalDragOver] = useState(false);
+
+  const dragCounterRef = useRef(0);
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    if (isDraft) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current++;
+    if (dragCounterRef.current === 1) {
+      setIsExternalDragOver(true);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    if (isDraft) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current--;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsExternalDragOver(false);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    if (isDraft) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    if (isDraft) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setIsExternalDragOver(false);
+    dragCounterRef.current = 0;
+
+    try {
+      await importDroppedData(e.dataTransfer, [tag]);
+    } catch (error) {
+      console.error("Error importing dropped image to tag", error);
+      globalActions.pushToast({ key: "toast.importImageFailed" }, "error");
+    }
+  };
 
   const isInEditSurface = (target: EventTarget | null) => {
     if (!(target instanceof Node)) return false;
@@ -60,11 +118,13 @@ export const SortableTag: React.FC<SortableTagProps> = ({
 
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (isDraft) return;
     setShowActions(false);
     onClick();
   };
 
   const handleContextMenu = (e: React.MouseEvent) => {
+    if (isDraft) return;
     e.preventDefault();
     e.stopPropagation();
     setShowActions(true);
@@ -74,23 +134,54 @@ export const SortableTag: React.FC<SortableTagProps> = ({
     }
   };
 
-  const commitRename = (closeActions = false) => {
+  const resetDraft = () => {
+    setIsEditing(false);
+    setShowActions(false);
+    setEditValue("");
+    onCancelDraft?.();
+  };
+
+  const commitRename = async (closeActions = false) => {
+    const trimmed = editValue.trim();
+
+    if (isDraft) {
+      if (!trimmed) {
+        resetDraft();
+        return;
+      }
+      const created = await onCreate?.(trimmed);
+      if (created === false) {
+        return;
+      }
+      setIsEditing(false);
+      setShowActions(false);
+      return;
+    }
+
     setIsEditing(false);
     if (closeActions) {
       setShowActions(false);
     }
-    const trimmed = editValue.trim();
     if (trimmed && trimmed !== tag) {
       onRename?.(tag, trimmed);
-    } else {
+      return;
+    }
+    if (!trimmed) {
+      setShowActions(false);
+    }
+    if (trimmed === tag || !trimmed) {
       setEditValue(tag);
     }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
-      commitRename(true);
+      void commitRename(true);
     } else if (e.key === "Escape") {
+      if (isDraft) {
+        resetDraft();
+        return;
+      }
       setIsEditing(false);
       setShowActions(false);
       setEditValue(tag);
@@ -98,12 +189,22 @@ export const SortableTag: React.FC<SortableTagProps> = ({
   };
 
   useEffect(() => {
+    setEditValue(tag);
+  }, [tag]);
+
+  useEffect(() => {
+    if (!autoEdit) return;
+    setShowActions(true);
+    setIsEditing(true);
+  }, [autoEdit]);
+
+  useEffect(() => {
     if (!showActions) return;
 
     const handlePointerDown = (event: PointerEvent) => {
       if (isInEditSurface(event.target)) return;
       if (isEditing) {
-        commitRename(true);
+        void commitRename(true);
         return;
       }
       setShowActions(false);
@@ -111,6 +212,10 @@ export const SortableTag: React.FC<SortableTagProps> = ({
 
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      if (isDraft) {
+        resetDraft();
+        return;
+      }
       setIsEditing(false);
       setShowActions(false);
       setEditValue(tag);
@@ -123,20 +228,23 @@ export const SortableTag: React.FC<SortableTagProps> = ({
       window.removeEventListener("pointerdown", handlePointerDown);
       window.removeEventListener("keydown", handleEscape);
     };
-  }, [showActions, isEditing, editValue, tag]);
+  }, [showActions, isEditing, editValue, tag, isDraft]);
 
   const handleInputBlur = (e: React.FocusEvent<HTMLInputElement>) => {
     if (isInEditSurface(e.relatedTarget)) {
       return;
     }
-    commitRename(true);
+    void commitRename(true);
   };
 
   if (isEditing) {
-    const rawColor = snap.tagColors[tag];
+    const rawColor = isDraft ? undefined : snap.tagColors[tag];
     const normalized = typeof rawColor === "string" ? rawColor.trim() : "";
     const borderColor = normalized.length > 0 ? normalized : THEME.primary;
-    const inputWidthCh = Math.max(4, editValue.trim().length || tag.length || 4);
+    const inputWidthCh = Math.max(
+      4,
+      editValue.trim().length || tag.length || 4,
+    );
 
     return (
       <div
@@ -162,12 +270,14 @@ export const SortableTag: React.FC<SortableTagProps> = ({
             onKeyDown={handleKeyDown}
             onClick={(e) => e.stopPropagation()}
           />
-          <TagColorDot
-            tag={tag}
-            color={rawColor}
-            size="md"
-            className="mx-0.5"
-          />
+          {!isDraft && (
+            <TagColorDot
+              tag={tag}
+              color={rawColor}
+              size="md"
+              className="mx-0.5"
+            />
+          )}
           {onDelete && (
             <button
               type="button"
@@ -202,15 +312,20 @@ export const SortableTag: React.FC<SortableTagProps> = ({
       className="flex-shrink-0"
     >
       <div
-        id={`tag-${tag}`}
+        id={`tag-${sortableId}`}
         {...attributes}
         {...listeners}
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
       >
         <Tag
           tag={tag}
           size="md"
           isEdit={true}
           showEditActions={showActions}
+          highlight={isExternalDragOver}
           onClick={handleClick}
           onContextMenu={handleContextMenu}
           onRemove={onDelete ? () => onDelete(tag) : undefined}

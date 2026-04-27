@@ -207,7 +207,10 @@ const resolveDroppedFiles = async (
   return mergeDroppedFiles(scannedFiles, directFiles);
 };
 
-export const importFiles = async (files: File[]): Promise<ImageMeta[]> => {
+export const importFiles = async (
+  files: File[],
+  tags?: string[],
+): Promise<ImageMeta[]> => {
   const importedImages: ImageMeta[] = [];
   const pathFiles: (File & { path: string })[] = [];
   const bufferFiles: File[] = [];
@@ -233,6 +236,7 @@ export const importFiles = async (files: File[]): Promise<ImageMeta[]> => {
         data: file.path,
         name: file.name,
         filename: file.name,
+        tags,
       })),
     });
 
@@ -263,6 +267,7 @@ export const importFiles = async (files: File[]): Promise<ImageMeta[]> => {
       const data = await importImage<{ success?: boolean; meta?: ImageMeta }>({
         imageBase64,
         filename: file.name,
+        tags,
       });
       if (data.success && data.meta) {
         actions.addImage(data.meta);
@@ -275,12 +280,16 @@ export const importFiles = async (files: File[]): Promise<ImageMeta[]> => {
 
   if (importedImages.length > 0) {
     await actions.loadTags();
+    actions.markImportTagPreview(importedImages.map((image) => image.id));
   }
 
   return importedImages;
 };
 
-export const importImageUrl = async (imageUrl: string): Promise<ImageMeta> => {
+export const importImageUrl = async (
+  imageUrl: string,
+  tags?: string[],
+): Promise<ImageMeta> => {
   const trimmedUrl = normalizeDroppedImageUrl(imageUrl.trim());
   if (!isHttpUrl(trimmedUrl)) {
     throw new Error("Invalid image url");
@@ -288,6 +297,7 @@ export const importImageUrl = async (imageUrl: string): Promise<ImageMeta> => {
 
   const data = await importImage<{ success?: boolean; meta?: ImageMeta }>({
     imageUrl: trimmedUrl,
+    tags,
   });
 
   if (!data.success || !data.meta) {
@@ -296,23 +306,25 @@ export const importImageUrl = async (imageUrl: string): Promise<ImageMeta> => {
 
   actions.addImage(data.meta);
   await actions.loadTags();
+  actions.markImportTagPreview([data.meta.id]);
   return data.meta;
 };
 
 export const importDroppedData = async (
   dataTransfer: DataTransfer,
+  tags?: string[],
 ): Promise<ImageMeta[]> => {
   const files = await resolveDroppedFiles(dataTransfer);
   const filteredFiles = await filterOutExistingLibraryFiles(files);
 
   const imageUrl = extractDroppedImageUrl(dataTransfer);
   if (imageUrl) {
-    const image = await importImageUrl(imageUrl);
+    const image = await importImageUrl(imageUrl, tags);
     return [image];
   }
 
   if (filteredFiles.length > 0) {
-    return importFiles(filteredFiles);
+    return importFiles(filteredFiles, tags);
   }
 
   return [];

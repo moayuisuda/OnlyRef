@@ -6,11 +6,13 @@ import { v4 as uuidv4 } from "uuid";
 import type { ImageDb, ImageMeta, StorageIncompatibleError } from "../db";
 import type { SendToRenderer } from "../server";
 import type { I18nKey, I18nParams } from "../../shared/i18n/types";
+import { normalizeAutoTagThreshold } from "../../shared/clipAutoTag";
 import fs from "fs-extra";
 import { lockedFs, withFileLock, withFileLocks } from "../fileLock";
 
 type VectorMode = "encode-image" | "encode-text";
 type VectorBatchResult = { vector: number[] | null; error?: string };
+type TextBatchResult = { vector: number[] | null; error?: string };
 type ImportSourceType = "url" | "path" | "buffer";
 type ImportPayload = {
   imageBase64?: string;
@@ -37,6 +39,7 @@ type ImagePostProcessItem = {
   rowid: number;
   localPath: string;
   processVector: boolean;
+  processAutoTag: boolean;
   processDominantColor: boolean;
   processTone: boolean;
 };
@@ -61,8 +64,12 @@ type VectorSearchSourcePayload =
     };
 
 const VECTOR_INDEX_BATCH_SIZE = 8;
+const TAG_TEXT_VECTOR_BATCH_SIZE = 64;
 const IMPORT_BATCH_CONCURRENCY = 4;
 const IMAGE_POST_PROCESS_CONCURRENCY = 3;
+
+const isAutoTagEnabled = (settings: Record<string, unknown>): boolean =>
+  settings.autoTagEnabled !== false;
 
 type ImagesRouteDeps = {
   getImageDb: () => ImageDb;
@@ -71,8 +78,13 @@ type ImagesRouteDeps = {
   getImageDir: () => string;
   readSettings: () => Promise<Record<string, unknown>>;
   writeSettings: (settings: Record<string, unknown>) => Promise<void>;
+  readTags: () => Promise<Array<{ name: string; color: string | null }>>;
+  writeTags: (
+    tags: Array<{ name: string; color: string | null }>
+  ) => Promise<void>;
   runPythonVector: (mode: VectorMode, arg: string) => Promise<number[] | null>;
   runPythonVectors: (paths: string[]) => Promise<VectorBatchResult[]>;
+  runPythonTexts: (texts: string[]) => Promise<TextBatchResult[]>;
   runPythonDominantColor: (arg: string) => Promise<string | null>;
   runPythonTone: (arg: string) => Promise<string | null>;
   downloadImage: (url: string, targetPath: string) => Promise<void>;
@@ -410,6 +422,7 @@ const mergeImagePostProcessItems = (
       return;
     }
     current.processVector = current.processVector || item.processVector;
+    current.processAutoTag = current.processAutoTag || item.processAutoTag;
     current.processDominantColor =
       current.processDominantColor || item.processDominantColor;
     current.processTone = current.processTone || item.processTone;
@@ -420,6 +433,7 @@ const mergeImagePostProcessItems = (
 export const createImagesRouter = (deps: ImagesRouteDeps) => {
   const router = express.Router();
   const reservedImportFilenames = new Set<string>();
+  const tagVectorCache = new Map<string, number[]>();
 
   const guardStorage = (res: express.Response): boolean => {
     const incompatibleError = deps.getIncompatibleError();
@@ -507,6 +521,9 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
 
     const tagIds = imageDb.getTagIdsByNames(params.tags);
     const tagCount = params.tags.length;
+    if (tagCount > 0 && tagIds.length !== tagCount) {
+      return { items: [], nextCursor: null };
+    }
     const results = imageDb.searchImages({
       vector,
       limit: params.effectiveLimit,
@@ -524,6 +541,159 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
     };
   };
 
+  const getVectorSimilarity = (left: number[], right: number[]): number => {
+    const length = Math.min(left.length, right.length);
+    let score = 0;
+    for (let index = 0; index < length; index += 1) {
+      score += left[index] * right[index];
+    }
+    return score;
+  };
+
+  const resolveTagVectors = async (tags: string[]): Promise<Map<string, number[]>> => {
+    const result = new Map<string, number[]>();
+    const missingTags: string[] = [];
+
+    tags.forEach((tag) => {
+      const cached = tagVectorCache.get(tag);
+      if (cached && cached.length > 0) {
+        result.set(tag, cached);
+        return;
+      }
+      missingTags.push(tag);
+    });
+
+    for (const chunk of chunkItems(missingTags, TAG_TEXT_VECTOR_BATCH_SIZE)) {
+      if (chunk.length === 0) continue;
+      const batchResults = await deps.runPythonTexts(chunk);
+      chunk.forEach((tag, index) => {
+        const vector = batchResults[index]?.vector;
+        if (!vector || vector.length === 0) {
+          return;
+        }
+        tagVectorCache.set(tag, vector);
+        result.set(tag, vector);
+      });
+    }
+
+    return result;
+  };
+
+  const ensureTagCatalogEntries = async (names: string[]): Promise<void> => {
+    const normalized = Array.from(
+      new Set(
+        names
+          .map((name) => name.trim())
+          .filter((name) => name.length > 0)
+      )
+    );
+
+    if (normalized.length === 0) {
+      return;
+    }
+
+    const currentTags = await deps.readTags();
+    const existing = new Set(currentTags.map((tag) => tag.name));
+    const missing = normalized.filter((name) => !existing.has(name));
+    if (missing.length === 0) {
+      return;
+    }
+
+    await deps.writeTags([
+      ...currentTags,
+      ...missing.map((name) => ({ name, color: null })),
+    ]);
+  };
+
+  const createAutoTagContext = async (
+    imageDb: ImageDb,
+    threshold: number
+  ): Promise<{ threshold: number; tagVectors: Array<{ name: string; vector: number[] }> } | null> => {
+    void imageDb;
+    const currentTags = (await deps.readTags())
+      .map((tag) => tag.name)
+      .map((tag) => tag.trim())
+      .filter((tag) => tag.length > 0);
+
+    if (currentTags.length === 0) {
+      return null;
+    }
+
+    try {
+      const tagVectors = await resolveTagVectors(currentTags);
+      const entries = currentTags
+        .map((name) => {
+          const vector = tagVectors.get(name);
+          if (!vector || vector.length === 0) {
+            return null;
+          }
+          return { name, vector };
+        })
+        .filter(
+          (
+            item
+          ): item is {
+            name: string;
+            vector: number[];
+          } => item !== null
+        );
+
+      if (entries.length === 0) {
+        return null;
+      }
+
+      return {
+        threshold,
+        tagVectors: entries,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("Auto tag vector preparation failed:", message);
+      return null;
+    }
+  };
+
+  const applyAutoTagsToImage = (
+    imageDb: ImageDb,
+    item: ImagePostProcessItem,
+    imageVector: number[],
+    context: { threshold: number; tagVectors: Array<{ name: string; vector: number[] }> }
+  ): boolean => {
+    const current = imageDb.getImageById(item.id);
+    if (!current) {
+      return false;
+    }
+
+    const existingTags = new Set(current.tags);
+    const matchedTags = context.tagVectors
+      .map(({ name, vector }) => ({
+        name,
+        score: getVectorSimilarity(imageVector, vector),
+      }))
+      .filter(
+        ({ name, score }) =>
+          !existingTags.has(name) && score >= context.threshold
+      )
+      .sort((left, right) => right.score - left.score)
+      .map(({ name }) => name);
+
+    if (matchedTags.length === 0) {
+      return false;
+    }
+
+    imageDb.setImageTags(item.id, [...current.tags, ...matchedTags]);
+    const updated = imageDb.getImageById(item.id);
+    if (!updated) {
+      return false;
+    }
+
+    deps.sendToRenderer?.("image-updated", {
+      id: item.id,
+      tags: updated.tags,
+    });
+    return true;
+  };
+
   const indexImageVector = async (
     imageDb: ImageDb,
     params: {
@@ -534,7 +704,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
       current?: number;
       total?: number;
     }
-  ): Promise<boolean> => {
+  ): Promise<number[] | null> => {
     const { id, rowid, localPath, context, current, total } = params;
     console.log(`[VectorIndex] start ${context}`, {
       id,
@@ -552,7 +722,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
         ...(typeof current === "number" ? { current } : {}),
         ...(typeof total === "number" ? { total } : {}),
       });
-      return false;
+      return null;
     }
 
     imageDb.setImageVector(rowid, vector);
@@ -564,7 +734,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
       ...(typeof total === "number" ? { total } : {}),
       length: vector.length,
     });
-    return true;
+    return vector;
   };
 
   const indexImageVectorBatch = async (
@@ -576,8 +746,8 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
       current: number;
       total: number;
     }[]
-  ): Promise<number> => {
-    if (items.length === 0) return 0;
+  ): Promise<Map<string, number[]>> => {
+    if (items.length === 0) return new Map();
 
     console.log("[VectorIndex] start batch-chunk", {
       size: items.length,
@@ -615,6 +785,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
         successfulEntries.map(({ item, vector }) => ({ rowid: item.rowid, vector }))
       )
     );
+    const vectorsByImageId = new Map<string, number[]>();
 
     successfulEntries.forEach(({ item, vector }) => {
       if (!writtenRowids.has(item.rowid)) {
@@ -626,6 +797,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
         });
         return;
       }
+      vectorsByImageId.set(item.id, vector);
       deps.sendToRenderer?.("image-updated", { id: item.id, hasVector: true });
       console.log("[VectorIndex] stored batch", {
         id: item.id,
@@ -636,7 +808,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
       });
     });
 
-    return writtenRowids.size;
+    return vectorsByImageId;
   };
 
   const updateImageDominantColor = async (
@@ -684,34 +856,53 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
     imageDb: ImageDb,
     items: ImagePostProcessItem[],
     options: ImagePostProcessOptions
-  ): Promise<{ updatedVectors: number; totalVectors: number }> => {
+  ): Promise<{
+    updatedVectors: number;
+    totalVectors: number;
+    autoTaggedImages: number;
+  }> => {
     if (items.length === 0) {
-      return { updatedVectors: 0, totalVectors: 0 };
+      return { updatedVectors: 0, totalVectors: 0, autoTaggedImages: 0 };
     }
 
     const vectorCandidates = items.filter((item) => item.processVector);
     let vectorItems: ImagePostProcessItem[] = [];
+    let autoTagContext:
+      | { threshold: number; tagVectors: Array<{ name: string; vector: number[] }> }
+      | null = null;
     if (vectorCandidates.length > 0) {
       const settings = await deps.readSettings();
       if (settings.enableVectorSearch === true) {
         vectorItems = vectorCandidates;
+        if (isAutoTagEnabled(settings)) {
+          autoTagContext = await createAutoTagContext(
+            imageDb,
+            normalizeAutoTagThreshold(settings.autoTagThreshold)
+          );
+        }
       }
     }
 
     let updatedVectors = 0;
     let vectorFailures = 0;
+    let autoTaggedImages = 0;
     let completedVectors = 0;
-    const jobs: Array<() => Promise<void>> = [];
-    const vectorScheduledIds = new Set<string>();
+    const vectorJobs: Array<() => Promise<void>> = [];
+    const derivativeJobs: Array<() => Promise<void>> = [];
+    const vectorResults = new Map<string, number[]>();
 
     const appendDerivativeJobs = (item: ImagePostProcessItem) => {
       if (item.processDominantColor) {
-        jobs.push(() => updateImageDominantColor(imageDb, item));
+        derivativeJobs.push(() => updateImageDominantColor(imageDb, item));
       }
       if (item.processTone) {
-        jobs.push(() => updateImageTone(imageDb, item));
+        derivativeJobs.push(() => updateImageTone(imageDb, item));
       }
     };
+
+    items.forEach((item) => {
+      appendDerivativeJobs(item);
+    });
 
     let vectorBaseIndex = 0;
     for (const chunk of chunkItems(vectorItems, VECTOR_INDEX_BATCH_SIZE)) {
@@ -723,10 +914,10 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
         total: vectorItems.length,
       }));
 
-      jobs.push(async () => {
+      vectorJobs.push(async () => {
         try {
           if (batchItems.length === 1) {
-            const indexed = await indexImageVector(imageDb, {
+            const vector = await indexImageVector(imageDb, {
               id: batchItems[0].id,
               rowid: batchItems[0].rowid,
               localPath: batchItems[0].localPath,
@@ -734,12 +925,19 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
               current: batchItems[0].current,
               total: batchItems[0].total,
             });
-            updatedVectors += indexed ? 1 : 0;
-            vectorFailures += indexed ? 0 : 1;
+            if (vector && vector.length > 0) {
+              vectorResults.set(batchItems[0].id, vector);
+              updatedVectors += 1;
+            } else {
+              vectorFailures += 1;
+            }
           } else {
-            const updated = await indexImageVectorBatch(imageDb, batchItems);
-            updatedVectors += updated;
-            vectorFailures += batchItems.length - updated;
+            const vectors = await indexImageVectorBatch(imageDb, batchItems);
+            vectors.forEach((vector, imageId) => {
+              vectorResults.set(imageId, vector);
+            });
+            updatedVectors += vectors.size;
+            vectorFailures += batchItems.length - vectors.size;
           }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -750,23 +948,51 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
           options.onVectorProgress?.(completedVectors, vectorItems.length);
         }
       });
-
-      chunk.forEach((item) => {
-        vectorScheduledIds.add(item.id);
-        appendDerivativeJobs(item);
-      });
       vectorBaseIndex += chunk.length;
     }
 
-    items.forEach((item) => {
-      if (!vectorScheduledIds.has(item.id)) {
-        appendDerivativeJobs(item);
+    const derivativePromise = runWithConcurrency(
+      derivativeJobs,
+      IMAGE_POST_PROCESS_CONCURRENCY,
+      async (job) => {
+        await job();
       }
-    });
+    );
 
-    await runWithConcurrency(jobs, IMAGE_POST_PROCESS_CONCURRENCY, async (job) => {
-      await job();
-    });
+    await runWithConcurrency(
+      vectorJobs,
+      IMAGE_POST_PROCESS_CONCURRENCY,
+      async (job) => {
+        await job();
+      }
+    );
+
+    const autoTagItems = vectorItems.filter((item) => item.processAutoTag);
+    if (autoTagContext && autoTagItems.length > 0) {
+      const autoTagJobs = autoTagItems
+        .map((item) => {
+          const vector = vectorResults.get(item.id);
+          if (!vector || vector.length === 0) {
+            return null;
+          }
+          return async () => {
+            if (applyAutoTagsToImage(imageDb, item, vector, autoTagContext)) {
+              autoTaggedImages += 1;
+            }
+          };
+        })
+        .filter((job): job is () => Promise<void> => job !== null);
+
+      await runWithConcurrency(
+        autoTagJobs,
+        IMAGE_POST_PROCESS_CONCURRENCY,
+        async (job) => {
+          await job();
+        }
+      );
+    }
+
+    await derivativePromise;
 
     if (vectorFailures > 0 && options.notifyVectorFailure) {
       deps.sendToRenderer?.("toast", {
@@ -775,7 +1001,11 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
       });
     }
 
-    return { updatedVectors, totalVectors: vectorItems.length };
+    return {
+      updatedVectors,
+      totalVectors: vectorItems.length,
+      autoTaggedImages,
+    };
   };
 
   const scheduleImagePostProcessing = (
@@ -880,6 +1110,8 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
     const target = await reserveImportTarget(imageDb, payload, source, timestamp);
 
     try {
+      await ensureTagCatalogEntries(tags);
+
       if (sourceType === "buffer") {
         await withFileLock(target.localPath, async () => {
           await fs.writeFile(target.localPath, sourceData as Buffer);
@@ -985,6 +1217,10 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
 
       const tagIds = imageDb.getTagIdsByNames(tags);
       const tagCount = tags.length;
+      if (tagCount > 0 && tagIds.length !== tagCount) {
+        res.json({ items: [], nextCursor: null });
+        return;
+      }
       const results = imageDb.searchImagesByText({
         query,
         limit: effectiveLimit,
@@ -1226,7 +1462,9 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
       });
 
       if (body.tags !== undefined) {
-        imageDb.setImageTags(id, ensureTags(body.tags));
+        const nextTags = ensureTags(body.tags);
+        await ensureTagCatalogEntries(nextTags);
+        imageDb.setImageTags(id, nextTags);
       }
 
       const updated = imageDb.getImageById(id);
@@ -1318,6 +1556,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
             rowid: imported.rowid,
             localPath: imported.localPath,
             processVector: true,
+            processAutoTag: true,
             processDominantColor: true,
             processTone: true,
           },
@@ -1384,6 +1623,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
           rowid: item.rowid,
           localPath: item.localPath,
           processVector: true,
+          processAutoTag: true,
           processDominantColor: true,
           processTone: true,
         })),
@@ -1432,6 +1672,74 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
           return;
         }
         res.json({ success: true });
+        return;
+      }
+
+      if (mode === "auto-tag-all") {
+        if (!isAutoTagEnabled(settings)) {
+          res.json({ success: true, total: 0, tagged: 0, updated: 0 });
+          return;
+        }
+        const allItems = imageDb.listImages();
+        const candidates = allItems.filter(
+          (
+            item
+          ): item is ImageMeta & {
+            rowid: number;
+          } => typeof item.rowid === "number"
+        );
+        const total = candidates.length;
+
+        if (total === 0) {
+          res.json({ success: true, total: 0, tagged: 0, updated: 0 });
+          return;
+        }
+
+        deps.sendToRenderer?.("indexing-progress", {
+          current: 0,
+          total,
+          statusKey: "autoTagAll.starting" as I18nKey,
+        });
+
+        const { updatedVectors, autoTaggedImages } = await runImagePostProcessing(
+          imageDb,
+          candidates.map((item) => ({
+            id: item.id,
+            rowid: item.rowid,
+            localPath: path.join(deps.getStorageDir(), item.imagePath),
+            processVector: true,
+            processAutoTag: true,
+            processDominantColor: false,
+            processTone: false,
+          })),
+          {
+            vectorContext: "batch",
+            notifyVectorFailure: true,
+            onVectorProgress: (nextCurrent, nextTotal) => {
+              deps.sendToRenderer?.("indexing-progress", {
+                current: nextCurrent,
+                total: nextTotal,
+                statusKey: "autoTagAll.progress" as I18nKey,
+                statusParams: {
+                  current: nextCurrent,
+                  total: nextTotal,
+                } satisfies I18nParams,
+              });
+            },
+          }
+        );
+
+        deps.sendToRenderer?.("indexing-progress", {
+          current: total,
+          total,
+          statusKey: "autoTagAll.completed" as I18nKey,
+        });
+        res.json({
+          success: true,
+          total,
+          tagged: autoTaggedImages,
+          updated: updatedVectors,
+        });
         return;
       }
 
@@ -1516,6 +1824,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
               rowid: item.rowid,
               localPath: item.localPath,
               processVector: false,
+              processAutoTag: false,
               processDominantColor: true,
               processTone: true,
             })),
@@ -1537,6 +1846,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
             rowid: item.rowid,
             localPath: item.localPath,
             processVector: true,
+            processAutoTag: true,
             processDominantColor: true,
             processTone: true,
           })),
@@ -1545,6 +1855,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
             rowid: item.rowid,
             localPath: path.join(deps.getStorageDir(), item.imagePath),
             processVector: true,
+            processAutoTag: false,
             processDominantColor: false,
             processTone: false,
           })),

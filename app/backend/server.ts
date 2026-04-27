@@ -17,6 +17,11 @@ import {
   readSettings,
   writeSettings,
 } from "./settingsStore";
+import {
+  configureTagsStore,
+  readTags,
+  writeTags,
+} from "./tagsStore";
 import { getDominantColor, calculateTone } from "./imageAnalysis";
 import { ensurePythonRuntime } from "./pythonRuntime";
 
@@ -62,13 +67,17 @@ const loadStorageRoot = async (): Promise<string> => {
 let STORAGE_DIR = DEFAULT_STORAGE_DIR;
 let IMAGE_DIR = path.join(STORAGE_DIR, "images");
 let SETTINGS_FILE = path.join(STORAGE_DIR, "settings.json");
+let TAGS_FILE = path.join(STORAGE_DIR, "tags.json");
 configureSettingsStore(SETTINGS_FILE);
+configureTagsStore(TAGS_FILE);
 
 const updateStoragePaths = (root: string) => {
   STORAGE_DIR = root;
   IMAGE_DIR = path.join(STORAGE_DIR, "images");
   SETTINGS_FILE = path.join(STORAGE_DIR, "settings.json");
+  TAGS_FILE = path.join(STORAGE_DIR, "tags.json");
   configureSettingsStore(SETTINGS_FILE);
+  configureTagsStore(TAGS_FILE);
 };
 
 const ensureStorageDirs = async (root: string) => {
@@ -278,6 +287,8 @@ class BasePythonService {
       PIP_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
       // Use HF mirror for model downloads
       HF_ENDPOINT: "https://hf-mirror.com",
+      // Fix CUDA out of memory by avoiding fragmentation
+      PYTORCH_ALLOC_CONF: "expandable_segments:True",
       ...envOverrides,
     };
 
@@ -528,6 +539,45 @@ class PythonVectorService extends BasePythonService {
       };
     });
   }
+
+  async runBatchTexts(
+    texts: string[],
+  ): Promise<{ vector: number[] | null; error?: string }[]> {
+    if (texts.length === 0) return [];
+    const raw = await this.sendRequest({ mode: "encode-texts", arg: texts });
+
+    if (!raw || typeof raw !== "object") {
+      throw new Error("Invalid text batch response");
+    }
+
+    const res = raw as { items?: unknown; error?: unknown };
+    if (res.error) {
+      throw new Error(`Python error: ${String(res.error)}`);
+    }
+    if (!Array.isArray(res.items)) {
+      throw new Error("Text batch items missing");
+    }
+    if (res.items.length !== texts.length) {
+      throw new Error("Text batch item count mismatch");
+    }
+
+    return res.items.map((item) => {
+      if (!item || typeof item !== "object") {
+        return { vector: null, error: "invalid-batch-item" };
+      }
+      const record = item as { vector?: unknown; error?: unknown };
+      if (Array.isArray(record.vector)) {
+        return { vector: record.vector as number[] };
+      }
+      return {
+        vector: null,
+        error:
+          typeof record.error === "string"
+            ? record.error
+            : "vector-missing",
+      };
+    });
+  }
 }
 
 const mapModelDownloadProgress = (data: unknown): unknown => {
@@ -744,6 +794,10 @@ export async function startServer(
     return vectorService.runBatchImages(paths);
   };
 
+  const runPythonTexts = async (texts: string[]) => {
+    return vectorService.runBatchTexts(texts);
+  };
+
   const runPythonDominantColor = async (arg: string) => {
     return getDominantColor(arg);
   };
@@ -795,8 +849,8 @@ export async function startServer(
     createTagsRouter({
       getImageDb,
       getIncompatibleError: () => incompatibleError,
-      readSettings,
-      writeSettings,
+      readTags,
+      writeTags,
     }),
   );
   server.use(
@@ -807,8 +861,11 @@ export async function startServer(
       getImageDir: () => IMAGE_DIR,
       readSettings,
       writeSettings,
+      readTags,
+      writeTags,
       runPythonVector,
       runPythonVectors,
+      runPythonTexts,
       runPythonDominantColor,
       runPythonTone,
       downloadImage,

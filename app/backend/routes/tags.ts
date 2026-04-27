@@ -1,11 +1,35 @@
 import express from "express";
 import type { ImageDb, StorageIncompatibleError } from "../db";
+import type { StoredTag } from "../tagsStore";
 
 type TagsRouteDeps = {
   getImageDb: () => ImageDb;
   getIncompatibleError: () => StorageIncompatibleError | null;
-  readSettings: () => Promise<Record<string, unknown>>;
-  writeSettings: (settings: Record<string, unknown>) => Promise<void>;
+  readTags: () => Promise<StoredTag[]>;
+  writeTags: (tags: StoredTag[]) => Promise<void>;
+};
+
+const normalizeTagName = (value: unknown): string => {
+  if (typeof value !== "string") return "";
+  return value.trim();
+};
+
+const normalizeTagColor = (value: unknown): string | null => {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) return null;
+
+  const withHash = trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
+  if (/^#[0-9a-f]{6}$/.test(withHash)) return withHash;
+  if (/^#[0-9a-f]{3}$/.test(withHash)) {
+    return `#${withHash[1]}${withHash[1]}${withHash[2]}${withHash[2]}${withHash[3]}${withHash[3]}`;
+  }
+  return null;
+};
+
+const sortTags = (tags: StoredTag[]): StoredTag[] => {
+  return [...tags].sort((left, right) => left.name.localeCompare(right.name));
 };
 
 export const createTagsRouter = (deps: TagsRouteDeps) => {
@@ -25,15 +49,31 @@ export const createTagsRouter = (deps: TagsRouteDeps) => {
   router.get("/api/tags", async (_req, res) => {
     try {
       if (guardStorage(res)) return;
-      const imageDb = deps.getImageDb();
-      const tags = imageDb.listTags();
-      const settings = await deps.readSettings();
-      const tagColors = (settings.tagColors || {}) as Record<string, string>;
-      const result = tags.map((tag) => ({
-        name: tag,
-        color: tagColors[tag] || null,
-      }));
-      res.json(result);
+      const tags = await deps.readTags();
+      res.json(sortTags(tags));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    }
+  });
+
+  router.post("/api/tag", async (req, res) => {
+    try {
+      if (guardStorage(res)) return;
+      const name = normalizeTagName((req.body as { name?: unknown }).name);
+      if (!name) {
+        res.status(400).json({ error: "Tag name is required" });
+        return;
+      }
+
+      const tags = await deps.readTags();
+      if (tags.some((tag) => tag.name === name)) {
+        res.json({ success: true });
+        return;
+      }
+
+      await deps.writeTags([...tags, { name, color: null }]);
+      res.json({ success: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       res.status(500).json({ error: message });
@@ -44,30 +84,55 @@ export const createTagsRouter = (deps: TagsRouteDeps) => {
     try {
       if (guardStorage(res)) return;
       const imageDb = deps.getImageDb();
-      const oldName = req.params.name;
-      const { newName } = req.body as { newName?: string };
-      if (!oldName || !newName) {
-        res.status(400).json({ error: "Tag names are required" });
+      const oldName = normalizeTagName(req.params.name);
+      const body = req.body as { newName?: unknown; color?: unknown };
+      const newName = normalizeTagName(body.newName);
+      const hasRename = body.newName !== undefined;
+      const hasColor = Object.prototype.hasOwnProperty.call(body, "color");
+
+      if (!oldName) {
+        res.status(400).json({ error: "Tag name is required" });
         return;
       }
-      const trimmedOld = oldName.trim();
-      const trimmedNew = newName.trim();
-      if (!trimmedOld || !trimmedNew) {
+
+      if (hasRename && !newName) {
         res.status(400).json({ error: "Tags cannot be empty" });
         return;
       }
-      imageDb.renameTag(trimmedOld, trimmedNew);
 
-      const settings = await deps.readSettings();
-      const tagColors = (settings.tagColors || {}) as Record<string, string>;
-      if (Object.prototype.hasOwnProperty.call(tagColors, trimmedOld)) {
-        const color = tagColors[trimmedOld];
-        const nextTagColors = { ...tagColors };
-        delete nextTagColors[trimmedOld];
-        nextTagColors[trimmedNew] = color;
-        await deps.writeSettings({ ...settings, tagColors: nextTagColors });
+      if (!hasRename && !hasColor) {
+        res.status(400).json({ error: "No tag update provided" });
+        return;
       }
 
+      const tags = await deps.readTags();
+      const currentIndex = tags.findIndex((tag) => tag.name === oldName);
+      if (currentIndex === -1) {
+        res.status(404).json({ error: "Tag not found" });
+        return;
+      }
+
+      const targetName = hasRename ? newName : oldName;
+      if (
+        targetName !== oldName &&
+        tags.some((tag, index) => index !== currentIndex && tag.name === targetName)
+      ) {
+        res.status(409).json({ error: "Tag already exists" });
+        return;
+      }
+
+      const nextTags = [...tags];
+      const current = nextTags[currentIndex];
+      nextTags[currentIndex] = {
+        name: targetName,
+        color: hasColor ? normalizeTagColor(body.color) : current.color,
+      };
+
+      if (targetName !== oldName) {
+        imageDb.renameTag(oldName, targetName);
+      }
+
+      await deps.writeTags(nextTags);
       res.json({ success: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -79,23 +144,15 @@ export const createTagsRouter = (deps: TagsRouteDeps) => {
     try {
       if (guardStorage(res)) return;
       const imageDb = deps.getImageDb();
-      const rawName = req.params.name;
-      const name = typeof rawName === "string" ? rawName.trim() : "";
+      const name = normalizeTagName(req.params.name);
       if (!name) {
         res.status(400).json({ error: "Tag name is required" });
         return;
       }
 
+      const tags = await deps.readTags();
+      await deps.writeTags(tags.filter((tag) => tag.name !== name));
       imageDb.deleteTag(name);
-
-      const settings = await deps.readSettings();
-      const tagColors = (settings.tagColors || {}) as Record<string, string>;
-      if (Object.prototype.hasOwnProperty.call(tagColors, name)) {
-        const nextTagColors = { ...tagColors };
-        delete nextTagColors[name];
-        await deps.writeSettings({ ...settings, tagColors: nextTagColors });
-      }
-
       res.json({ success: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

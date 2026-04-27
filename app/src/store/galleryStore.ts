@@ -82,6 +82,7 @@ export type GallerySort = 'manual' | 'createdAtDesc';
 interface AppState {
   images: ImageMeta[];
   tags: string[];
+  importTagPreviewImageIds: string[];
   searchQuery: string;
   searchTags: string[];
   searchColor: string | null;
@@ -99,6 +100,7 @@ interface AppState {
 export const state = proxy<AppState>({
   images: [],
   tags: [],
+  importTagPreviewImageIds: [],
   searchQuery: '',
   searchTags: [],
   searchColor: null,
@@ -135,6 +137,7 @@ let translationCache: {
   translated: string;
   llmFingerprint: string;
 } | null = null;
+const importTagPreviewTimers = new Map<string, number>();
 let vectorCursor: VectorCursor | null = null;
 let textCursor: TextCursor | null = null;
 
@@ -305,7 +308,6 @@ export const actions = {
   reorderImages: (images: ImageMeta[]) => {
     const next = images.map((i) => ({ ...i }));
     state.images = next;
-    actions.saveGalleryOrder(next);
   },
 
   setLimit: (limit: number) => {
@@ -326,9 +328,41 @@ export const actions = {
     }
   },
 
+  markImportTagPreview: (imageIds: string[], durationMs = 15000) => {
+    const uniqueIds = Array.from(
+      new Set(
+        imageIds
+          .map((imageId) => imageId.trim())
+          .filter((imageId) => imageId.length > 0),
+      ),
+    );
+
+    uniqueIds.forEach((imageId) => {
+      const timer = importTagPreviewTimers.get(imageId);
+      if (typeof timer === 'number') {
+        window.clearTimeout(timer);
+      }
+
+      if (!state.importTagPreviewImageIds.includes(imageId)) {
+        state.importTagPreviewImageIds.push(imageId);
+      }
+
+      const nextTimer = window.setTimeout(() => {
+        importTagPreviewTimers.delete(imageId);
+        const index = state.importTagPreviewImageIds.indexOf(imageId);
+        if (index >= 0) {
+          state.importTagPreviewImageIds.splice(index, 1);
+        }
+      }, durationMs);
+
+      importTagPreviewTimers.set(imageId, nextTimer);
+    });
+  },
+
   loadTags: async () => {
     try {
       const tagMetas = await fetchTags();
+      globalActions.setTagMetas(tagMetas);
       const nextTags = tagMetas.map((item) => item.name);
       state.tags = nextTags;
 

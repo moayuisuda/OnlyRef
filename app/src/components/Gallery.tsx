@@ -315,6 +315,10 @@ export const Gallery: React.FC = () => {
     () => sortImagesForGallery(snap.images as ImageMeta[], snap.gallerySort),
     [snap.images, snap.gallerySort],
   );
+  const importTagPreviewSet = useMemo(
+    () => new Set(snap.importTagPreviewImageIds),
+    [snap.importTagPreviewImageIds],
+  );
 
   const handleDragStart = (event: DragStartEvent) => {
     dragOutTriggeredRef.current = false;
@@ -737,6 +741,7 @@ export const Gallery: React.FC = () => {
                     key={image.id}
                     image={image as ImageMeta}
                     enableVectorSearch={appSnap.enableVectorSearch}
+                    showTagsPreview={importTagPreviewSet.has(image.id)}
                     onContextMenu={(e) => {
                       handleContextMenu(e, image as ImageMeta);
                     }}

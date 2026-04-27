@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Input from "rc-input";
-import { Image as ImageIcon, Search, X } from "lucide-react";
+import { Image as ImageIcon, Plus, Search, X } from "lucide-react";
 import { useSnapshot } from "valtio";
 import { SortableContext, rectSortingStrategy } from "@dnd-kit/sortable";
 import { debounce } from "radash";
@@ -14,6 +14,7 @@ import { state, actions } from "../../store/galleryStore";
 import type { ImageMeta } from "../../store/galleryStore";
 import { THEME, hexToRgba } from "../../theme";
 import {
+  createTag,
   deleteTag as deleteTagService,
   getLocalImagePreviewUrl,
   renameTag,
@@ -127,6 +128,7 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
   }, [loading]);
 
   const [pendingDeleteTag, setPendingDeleteTag] = useState<string | null>(null);
+  const [creatingTagId, setCreatingTagId] = useState<string | null>(null);
 
   const [searchColorPicker, setSearchColorPicker] = useState<{
     x: number;
@@ -167,12 +169,6 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
         actions.setTagSortOrder(nextOrder);
       }
 
-      if (Object.prototype.hasOwnProperty.call(globalState.tagColors, oldTag)) {
-        const color = globalState.tagColors[oldTag];
-        globalActions.clearTagColor(oldTag);
-        globalActions.setTagColor(newTag, color);
-      }
-
       globalActions.pushToast({ key: "toast.tagRenamed" }, "success");
       void actions.loadTags();
     } catch (e) {
@@ -201,10 +197,6 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
         );
       }
 
-      if (Object.prototype.hasOwnProperty.call(globalState.tagColors, tag)) {
-        globalActions.clearTagColor(tag);
-      }
-
       globalActions.pushToast({ key: "toast.tagDeleted" }, "success");
       void actions.loadTags();
     } catch (e) {
@@ -212,6 +204,32 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
       globalActions.pushToast({ key: "toast.tagDeleteFailed" }, "error");
     } finally {
       setPendingDeleteTag(null);
+    }
+  };
+
+  const handleCreateTag = async (rawTag: string) => {
+    const tag = rawTag.trim();
+    if (!tag) {
+      setCreatingTagId(null);
+      return true;
+    }
+    if (allTags.includes(tag)) {
+      setCreatingTagId(null);
+      return true;
+    }
+
+    try {
+      await createTag(tag);
+      setCreatingTagId(null);
+      if (!state.tagSortOrder.includes(tag)) {
+        actions.setTagSortOrder([...state.tagSortOrder, tag]);
+      }
+      await actions.loadTags();
+      return true;
+    } catch (e) {
+      console.error(e);
+      globalActions.pushToast({ key: "toast.createTagFailed" }, "error");
+      return false;
     }
   };
 
@@ -441,27 +459,54 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
           </div>
         </div>
 
-        {allTags.length > 0 && (
-          <SortableContext items={allTags} strategy={rectSortingStrategy}>
-            <div className="flex flex-wrap gap-2 mt-3">
-              {allTags.map((tag) => (
-                <SortableTag
-                  key={tag}
-                  tag={tag}
-                  onClick={() => {
-                    const has = snap.searchTags.includes(tag);
-                    const next = has
-                      ? snap.searchTags.filter((t) => t !== tag)
-                      : [...snap.searchTags, tag];
-                    actions.setSearchTags(next);
-                  }}
-                  onRename={handleRenameTag}
-                  onDelete={(nextTag) => setPendingDeleteTag(nextTag)}
-                />
-              ))}
-            </div>
-          </SortableContext>
-        )}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {allTags.length > 0 && (
+            <SortableContext items={allTags} strategy={rectSortingStrategy}>
+              <>
+                {allTags.map((tag) => (
+                  <SortableTag
+                    key={tag}
+                    tag={tag}
+                    onClick={() => {
+                      const has = snap.searchTags.includes(tag);
+                      const next = has
+                        ? snap.searchTags.filter((t) => t !== tag)
+                        : [...snap.searchTags, tag];
+                      actions.setSearchTags(next);
+                    }}
+                    onRename={handleRenameTag}
+                    onDelete={(nextTag) => setPendingDeleteTag(nextTag)}
+                  />
+                ))}
+              </>
+            </SortableContext>
+          )}
+
+          {creatingTagId && (
+            <SortableTag
+              itemId={creatingTagId}
+              tag=""
+              isDraft={true}
+              autoEdit={true}
+              onClick={() => {}}
+              onCreate={handleCreateTag}
+              onCancelDraft={() => setCreatingTagId(null)}
+            />
+          )}
+
+          <button
+            type="button"
+            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-dashed border-white/12 bg-white/[0.03] text-neutral-500 transition-all hover:border-white/24 hover:bg-white/[0.08] hover:text-white disabled:cursor-default disabled:opacity-40"
+            title={t("common.add")}
+            aria-label={t("common.add")}
+            disabled={creatingTagId !== null}
+            onClick={() => {
+              setCreatingTagId(`draft-tag-${Date.now()}`);
+            }}
+          >
+            <Plus size={12} />
+          </button>
+        </div>
       </div>
 
       <ConfirmModal

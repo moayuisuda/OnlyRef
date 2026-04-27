@@ -4,6 +4,7 @@ import {
   Minus,
   Pin,
   Settings,
+  Sparkles,
   Square,
   X,
 } from "lucide-react";
@@ -11,16 +12,22 @@ import { clsx } from "clsx";
 import { useSnapshot } from "valtio";
 import { useT } from "../i18n/useT";
 import {
+  AUTO_TAG_THRESHOLD_MAX,
+  AUTO_TAG_THRESHOLD_MIN,
+  AUTO_TAG_THRESHOLD_STEP,
+} from "../../shared/clipAutoTag";
+import {
   globalActions,
   globalState,
   indexingActions,
   indexingState,
 } from "../store/globalStore";
 import { actions as galleryActions, state as galleryState } from "../store/galleryStore";
-import { indexImages } from "../service";
+import { indexImages, runAutoTagAll } from "../service";
 import { useClickOutside } from "../hooks/useClickOutside";
 import { ShortcutInput } from "./ShortcutInput";
 import { BrandWheelIcon } from "./BrandWheelIcon";
+import { ToggleSwitch } from "./ToggleSwitch";
 import type { I18nKey, I18nParams } from "../../shared/i18n/types";
 import { isI18nKey } from "../../shared/i18n/guards";
 
@@ -61,6 +68,7 @@ export const TitleBar: React.FC = () => {
   const [storageDir, setStorageDir] = useState("");
   const [loadingStorageDir, setLoadingStorageDir] = useState(false);
   const [isIndexing, setIsIndexing] = useState(false);
+  const [isAutoTaggingAll, setIsAutoTaggingAll] = useState(false);
   const indexingResetTimerRef = useRef<number | null>(null);
 
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
@@ -198,6 +206,54 @@ export const TitleBar: React.FC = () => {
     }
   };
 
+  const handleAutoTagAll = async () => {
+    if (indexingResetTimerRef.current !== null) {
+      window.clearTimeout(indexingResetTimerRef.current);
+      indexingResetTimerRef.current = null;
+    }
+    setIsAutoTaggingAll(true);
+    indexingActions.update({
+      isIndexing: true,
+      current: 0,
+      total: 0,
+      statusKey: "autoTagAll.starting",
+    });
+
+    try {
+      const data = await runAutoTagAll<{
+        success?: boolean;
+        total?: number;
+        tagged?: number;
+      }>();
+
+      if (!data?.success) {
+        globalActions.pushToast({ key: "toast.autoTagAllFailed" }, "error");
+        return;
+      }
+
+      galleryActions.reload();
+      globalActions.pushToast(
+        {
+          key: "toast.autoTagAllCompleted",
+          params: {
+            tagged: data.tagged ?? 0,
+            total: data.total ?? 0,
+          },
+        },
+        "success",
+      );
+    } catch (error) {
+      console.error(error);
+      globalActions.pushToast({ key: "toast.autoTagAllFailed" }, "error");
+    } finally {
+      setIsAutoTaggingAll(false);
+      indexingResetTimerRef.current = window.setTimeout(() => {
+        indexingActions.reset();
+        indexingResetTimerRef.current = null;
+      }, 800);
+    }
+  };
+
   const handleToggleWindowShortcut = async (accelerator: string) => {
     if (!accelerator.trim()) {
       globalActions.pushToast({ key: "toast.shortcutInvalid" }, "error");
@@ -210,6 +266,8 @@ export const TitleBar: React.FC = () => {
     indexingSnap.isIndexing && indexingSnap.statusKey
       ? t(indexingSnap.statusKey, indexingSnap.statusParams)
       : null;
+  const isLibraryJobRunning =
+    isIndexing || isAutoTaggingAll || indexingSnap.isIndexing;
 
   const imageCount = gallerySnap.images.length;
   const imageCountLabel = t(
@@ -445,6 +503,62 @@ export const TitleBar: React.FC = () => {
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <div className="truncate text-xs font-medium text-neutral-200">
+                    {t("settings.autoTag")}
+                  </div>
+                </div>
+                <div className="shrink-0 flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
+                    onClick={() => {
+                      void handleAutoTagAll();
+                    }}
+                    disabled={isLibraryJobRunning || !snap.autoTagEnabled}
+                  >
+                    <Sparkles size={12} />
+                    {isAutoTaggingAll
+                      ? t("settings.autoTag.runningAll")
+                      : t("settings.run")}
+                  </button>
+                  <ToggleSwitch
+                    checked={snap.autoTagEnabled}
+                    disabled={isLibraryJobRunning}
+                    onToggle={() =>
+                      globalActions.setAutoTagEnabled(!snap.autoTagEnabled)
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="mt-3">
+                <div className="text-[11px] leading-5 text-neutral-500">
+                  {t("settings.autoTag.desc")}
+                </div>
+                <input
+                  type="range"
+                  min={AUTO_TAG_THRESHOLD_MIN}
+                  max={AUTO_TAG_THRESHOLD_MAX}
+                  step={AUTO_TAG_THRESHOLD_STEP}
+                  value={snap.autoTagThreshold}
+                  disabled={!snap.autoTagEnabled}
+                  className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-white/10 accent-[var(--color-primary)] disabled:cursor-not-allowed disabled:opacity-40"
+                  onChange={(event) => {
+                    globalActions.setAutoTagThreshold(
+                      Number(event.target.value),
+                    );
+                  }}
+                />
+                <div className="mt-2 flex items-center justify-between text-[11px] text-neutral-500">
+                  <span>{t("settings.autoTag.loose")}</span>
+                  <span>{t("settings.autoTag.strict")}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="border-b border-white/6 px-3 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-medium text-neutral-200">
                     {t("settings.indexing")}
                   </div>
                   <div className="mt-1 truncate text-[11px] text-neutral-500">
@@ -455,15 +569,15 @@ export const TitleBar: React.FC = () => {
                   type="button"
                   className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
                   onClick={handleIndexMissingImages}
-                  disabled={isIndexing}
+                  disabled={isLibraryJobRunning}
                 >
                   <span
                     className={clsx(
                       "inline-block h-1.5 w-1.5 rounded-full bg-current",
-                      isIndexing && "animate-pulse",
+                      isLibraryJobRunning && "animate-pulse",
                     )}
                   />
-                  {isIndexing ? t("settings.running") : t("settings.run")}
+                  {isLibraryJobRunning ? t("settings.running") : t("settings.run")}
                 </button>
               </div>
 

@@ -23,6 +23,7 @@ interface TagProps extends React.HTMLAttributes<HTMLDivElement> {
   isEdit?: boolean;
   showColor?: boolean;
   showEditActions?: boolean;
+  highlight?: boolean;
   onRemove?: () => void;
 }
 
@@ -74,6 +75,7 @@ export const Tag: React.FC<TagProps> = ({
   isEdit = false,
   showColor = true,
   showEditActions = false,
+  highlight = false,
   onRemove,
   onClick,
   className,
@@ -93,7 +95,7 @@ export const Tag: React.FC<TagProps> = ({
 
   // Styles
   const baseClasses =
-    "relative rounded transition-colors flex items-center group/tag whitespace-nowrap";
+    "relative rounded transition-all flex items-center group/tag whitespace-nowrap";
   const sizeClasses =
     size === "sm"
       ? "text-[10px] px-1 min-h-4"
@@ -113,6 +115,9 @@ export const Tag: React.FC<TagProps> = ({
         backgroundColor:
           background || (isEdit ? undefined : "rgba(38, 38, 38, 1)"),
         color: textColor,
+        transform: highlight ? "scale(1.15)" : "scale(1)",
+        zIndex: highlight ? 10 : undefined,
+        boxShadow: highlight ? `0 4px 12px rgba(0, 0, 0, 0.3)` : undefined,
         ...style,
       }}
       onClick={(e) => {

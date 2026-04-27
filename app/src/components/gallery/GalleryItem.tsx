@@ -9,6 +9,7 @@ import { Sparkles } from "lucide-react";
 interface SortableGalleryItemProps {
   image: ImageMeta;
   enableVectorSearch: boolean;
+  showTagsPreview: boolean;
   onContextMenu: (e: React.MouseEvent, image: ImageMeta) => void;
   onClick: (image: ImageMeta) => void;
 }
@@ -19,6 +20,7 @@ const ensureTags = (tags: string[] | undefined | null): string[] =>
 export const SortableGalleryItem: React.FC<SortableGalleryItemProps> = ({
   image,
   enableVectorSearch,
+  showTagsPreview,
   onContextMenu,
   onClick,
 }) => {
@@ -98,15 +100,21 @@ export const SortableGalleryItem: React.FC<SortableGalleryItemProps> = ({
           </div>
         )}
 
-        <div className="absolute bottom-0 left-0 right-0 p-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-          <div className="flex flex-wrap gap-1 items-center">
-            {ensureTags(image.tags as string[])
-              .slice(0, 5)
-              .map((tag) => (
-                <Tag key={tag} tag={tag} />
-              ))}
+        {ensureTags(image.tags as string[]).length > 0 && (
+          <div
+            className={`absolute bottom-0 left-0 right-0 p-2 transition-opacity pointer-events-none ${
+              showTagsPreview ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+            }`}
+          >
+            <div className="flex flex-wrap gap-1 items-center">
+              {ensureTags(image.tags as string[])
+                .slice(0, 5)
+                .map((tag) => (
+                  <Tag key={tag} tag={tag} />
+                ))}
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

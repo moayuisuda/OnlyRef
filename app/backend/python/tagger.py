@@ -431,6 +431,40 @@ def encode_text(text: str) -> List[float]:
     return text_features[0].cpu().tolist()
 
 
+def encode_texts(texts: List[str]) -> List[dict]:
+    model, processor, device = _get_clip()
+    results: List[dict] = [{"vector": None} for _ in texts]
+    valid_items: List[Tuple[int, str]] = []
+
+    for index, text in enumerate(texts):
+        if not isinstance(text, str):
+            results[index] = {"vector": None, "error": "invalid-text"}
+            continue
+        trimmed = text.strip()
+        if not trimmed:
+            results[index] = {"vector": None, "error": "empty-text"}
+            continue
+        valid_items.append((index, trimmed))
+
+    if not valid_items:
+        return results
+
+    inputs = processor(
+        text=[text for _, text in valid_items],
+        return_tensors="pt",
+        padding=True,
+    )
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    with torch.no_grad():
+        text_features = model.get_text_features(**inputs)
+        text_features = _to_normalized_vector_tensor(text_features)
+
+    vectors = text_features.cpu().tolist()
+    for (index, _), vector in zip(valid_items, vectors):
+        results[index] = {"vector": vector}
+    return results
+
+
 def main() -> None:
     if "--download-model" in sys.argv:
         model_dir = _get_model_dir()
@@ -475,6 +509,12 @@ def main() -> None:
             elif mode == "encode-text":
                 vector = encode_text(arg)
                 result = {"vector": vector}
+            elif mode == "encode-texts":
+                texts = arg if isinstance(arg, list) else []
+                if not all(isinstance(text, str) for text in texts):
+                    result = {"error": "encode-texts requires a string array"}
+                else:
+                    result = {"items": encode_texts(texts)}
             else:
                 result = {"error": f"unknown mode: {mode}"}
 

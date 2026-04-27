@@ -24,7 +24,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 // electron/main.ts
 var import_electron4 = require("electron");
 var import_path6 = __toESM(require("path"), 1);
-var import_fs_extra5 = __toESM(require("fs-extra"), 1);
+var import_fs_extra6 = __toESM(require("fs-extra"), 1);
 var import_electron_log = __toESM(require("electron-log"), 1);
 var import_electron_updater = require("electron-updater");
 var import_child_process3 = require("child_process");
@@ -105,7 +105,7 @@ var import_path5 = __toESM(require("path"), 1);
 var import_express5 = __toESM(require("express"), 1);
 var import_cors = __toESM(require("cors"), 1);
 var import_body_parser = __toESM(require("body-parser"), 1);
-var import_fs_extra4 = __toESM(require("fs-extra"), 1);
+var import_fs_extra5 = __toESM(require("fs-extra"), 1);
 var import_child_process2 = require("child_process");
 var import_readline = __toESM(require("readline"), 1);
 
@@ -732,10 +732,37 @@ var import_express = __toESM(require("express"), 1);
 var import_electron = require("electron");
 var import_url = require("url");
 var import_uuid = require("uuid");
+
+// shared/clipAutoTag.ts
+var AUTO_TAG_THRESHOLD_DEFAULT = 0.24;
+var AUTO_TAG_THRESHOLD_MIN = 0.1;
+var AUTO_TAG_THRESHOLD_MAX = 0.5;
+var AUTO_TAG_THRESHOLD_STEP = 0.01;
+var roundToStep = (value) => {
+  const rounded = Math.round(value / AUTO_TAG_THRESHOLD_STEP) * AUTO_TAG_THRESHOLD_STEP;
+  return Number(rounded.toFixed(2));
+};
+var normalizeAutoTagThreshold = (value) => {
+  const numeric = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  if (!Number.isFinite(numeric)) {
+    return AUTO_TAG_THRESHOLD_DEFAULT;
+  }
+  if (numeric <= AUTO_TAG_THRESHOLD_MIN) {
+    return AUTO_TAG_THRESHOLD_MIN;
+  }
+  if (numeric >= AUTO_TAG_THRESHOLD_MAX) {
+    return AUTO_TAG_THRESHOLD_MAX;
+  }
+  return roundToStep(numeric);
+};
+
+// backend/routes/images.ts
 var import_fs_extra2 = __toESM(require("fs-extra"), 1);
 var VECTOR_INDEX_BATCH_SIZE = 8;
+var TAG_TEXT_VECTOR_BATCH_SIZE = 64;
 var IMPORT_BATCH_CONCURRENCY = 4;
 var IMAGE_POST_PROCESS_CONCURRENCY = 3;
+var isAutoTagEnabled = (settings) => settings.autoTagEnabled !== false;
 var ensureTags = (tags) => {
   if (!Array.isArray(tags)) return [];
   return tags.filter((tag) => typeof tag === "string");
@@ -996,6 +1023,7 @@ var mergeImagePostProcessItems = (items) => {
       return;
     }
     current.processVector = current.processVector || item.processVector;
+    current.processAutoTag = current.processAutoTag || item.processAutoTag;
     current.processDominantColor = current.processDominantColor || item.processDominantColor;
     current.processTone = current.processTone || item.processTone;
   });
@@ -1004,6 +1032,7 @@ var mergeImagePostProcessItems = (items) => {
 var createImagesRouter = (deps) => {
   const router = import_express.default.Router();
   const reservedImportFilenames = /* @__PURE__ */ new Set();
+  const tagVectorCache = /* @__PURE__ */ new Map();
   const guardStorage = (res) => {
     const incompatibleError2 = deps.getIncompatibleError();
     if (!incompatibleError2) return false;
@@ -1067,6 +1096,9 @@ var createImagesRouter = (deps) => {
     }
     const tagIds = imageDb2.getTagIdsByNames(params.tags);
     const tagCount = params.tags.length;
+    if (tagCount > 0 && tagIds.length !== tagCount) {
+      return { items: [], nextCursor: null };
+    }
     const results = imageDb2.searchImages({
       vector,
       limit: params.effectiveLimit,
@@ -1082,6 +1114,117 @@ var createImagesRouter = (deps) => {
       items: results.map((item) => ({ ...item, isVectorResult: true })),
       nextCursor
     };
+  };
+  const getVectorSimilarity = (left, right) => {
+    const length = Math.min(left.length, right.length);
+    let score = 0;
+    for (let index = 0; index < length; index += 1) {
+      score += left[index] * right[index];
+    }
+    return score;
+  };
+  const resolveTagVectors = async (tags) => {
+    const result = /* @__PURE__ */ new Map();
+    const missingTags = [];
+    tags.forEach((tag) => {
+      const cached = tagVectorCache.get(tag);
+      if (cached && cached.length > 0) {
+        result.set(tag, cached);
+        return;
+      }
+      missingTags.push(tag);
+    });
+    for (const chunk of chunkItems(missingTags, TAG_TEXT_VECTOR_BATCH_SIZE)) {
+      if (chunk.length === 0) continue;
+      const batchResults = await deps.runPythonTexts(chunk);
+      chunk.forEach((tag, index) => {
+        var _a;
+        const vector = (_a = batchResults[index]) == null ? void 0 : _a.vector;
+        if (!vector || vector.length === 0) {
+          return;
+        }
+        tagVectorCache.set(tag, vector);
+        result.set(tag, vector);
+      });
+    }
+    return result;
+  };
+  const ensureTagCatalogEntries = async (names) => {
+    const normalized = Array.from(
+      new Set(
+        names.map((name) => name.trim()).filter((name) => name.length > 0)
+      )
+    );
+    if (normalized.length === 0) {
+      return;
+    }
+    const currentTags = await deps.readTags();
+    const existing = new Set(currentTags.map((tag) => tag.name));
+    const missing = normalized.filter((name) => !existing.has(name));
+    if (missing.length === 0) {
+      return;
+    }
+    await deps.writeTags([
+      ...currentTags,
+      ...missing.map((name) => ({ name, color: null }))
+    ]);
+  };
+  const createAutoTagContext = async (imageDb2, threshold) => {
+    void imageDb2;
+    const currentTags = (await deps.readTags()).map((tag) => tag.name).map((tag) => tag.trim()).filter((tag) => tag.length > 0);
+    if (currentTags.length === 0) {
+      return null;
+    }
+    try {
+      const tagVectors = await resolveTagVectors(currentTags);
+      const entries = currentTags.map((name) => {
+        const vector = tagVectors.get(name);
+        if (!vector || vector.length === 0) {
+          return null;
+        }
+        return { name, vector };
+      }).filter(
+        (item) => item !== null
+      );
+      if (entries.length === 0) {
+        return null;
+      }
+      return {
+        threshold,
+        tagVectors: entries
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("Auto tag vector preparation failed:", message);
+      return null;
+    }
+  };
+  const applyAutoTagsToImage = (imageDb2, item, imageVector, context) => {
+    var _a;
+    const current = imageDb2.getImageById(item.id);
+    if (!current) {
+      return false;
+    }
+    const existingTags = new Set(current.tags);
+    const matchedTags = context.tagVectors.map(({ name, vector }) => ({
+      name,
+      score: getVectorSimilarity(imageVector, vector)
+    })).filter(
+      ({ name, score }) => !existingTags.has(name) && score >= context.threshold
+    ).sort((left, right) => right.score - left.score).map(({ name }) => name);
+    if (matchedTags.length === 0) {
+      return false;
+    }
+    imageDb2.setImageTags(item.id, [...current.tags, ...matchedTags]);
+    const updated = imageDb2.getImageById(item.id);
+    if (!updated) {
+      return false;
+    }
+    (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "image-updated", {
+      id: item.id,
+      tags: updated.tags
+    });
+    return true;
   };
   const indexImageVector = async (imageDb2, params) => {
     var _a;
@@ -1101,7 +1244,7 @@ var createImagesRouter = (deps) => {
         ...typeof current === "number" ? { current } : {},
         ...typeof total === "number" ? { total } : {}
       });
-      return false;
+      return null;
     }
     imageDb2.setImageVector(rowid, vector);
     (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "image-updated", { id, hasVector: true });
@@ -1112,10 +1255,10 @@ var createImagesRouter = (deps) => {
       ...typeof total === "number" ? { total } : {},
       length: vector.length
     });
-    return true;
+    return vector;
   };
   const indexImageVectorBatch = async (imageDb2, items) => {
-    if (items.length === 0) return 0;
+    if (items.length === 0) return /* @__PURE__ */ new Map();
     console.log("[VectorIndex] start batch-chunk", {
       size: items.length,
       firstCurrent: items[0].current,
@@ -1147,6 +1290,7 @@ var createImagesRouter = (deps) => {
         successfulEntries.map(({ item, vector }) => ({ rowid: item.rowid, vector }))
       )
     );
+    const vectorsByImageId = /* @__PURE__ */ new Map();
     successfulEntries.forEach(({ item, vector }) => {
       var _a;
       if (!writtenRowids.has(item.rowid)) {
@@ -1158,6 +1302,7 @@ var createImagesRouter = (deps) => {
         });
         return;
       }
+      vectorsByImageId.set(item.id, vector);
       (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "image-updated", { id: item.id, hasVector: true });
       console.log("[VectorIndex] stored batch", {
         id: item.id,
@@ -1167,7 +1312,7 @@ var createImagesRouter = (deps) => {
         length: vector.length
       });
     });
-    return writtenRowids.size;
+    return vectorsByImageId;
   };
   const updateImageDominantColor = async (imageDb2, item) => {
     var _a;
@@ -1207,29 +1352,41 @@ var createImagesRouter = (deps) => {
   const runImagePostProcessing = async (imageDb2, items, options) => {
     var _a;
     if (items.length === 0) {
-      return { updatedVectors: 0, totalVectors: 0 };
+      return { updatedVectors: 0, totalVectors: 0, autoTaggedImages: 0 };
     }
     const vectorCandidates = items.filter((item) => item.processVector);
     let vectorItems = [];
+    let autoTagContext = null;
     if (vectorCandidates.length > 0) {
       const settings = await deps.readSettings();
       if (settings.enableVectorSearch === true) {
         vectorItems = vectorCandidates;
+        if (isAutoTagEnabled(settings)) {
+          autoTagContext = await createAutoTagContext(
+            imageDb2,
+            normalizeAutoTagThreshold(settings.autoTagThreshold)
+          );
+        }
       }
     }
     let updatedVectors = 0;
     let vectorFailures = 0;
+    let autoTaggedImages = 0;
     let completedVectors = 0;
-    const jobs = [];
-    const vectorScheduledIds = /* @__PURE__ */ new Set();
+    const vectorJobs = [];
+    const derivativeJobs = [];
+    const vectorResults = /* @__PURE__ */ new Map();
     const appendDerivativeJobs = (item) => {
       if (item.processDominantColor) {
-        jobs.push(() => updateImageDominantColor(imageDb2, item));
+        derivativeJobs.push(() => updateImageDominantColor(imageDb2, item));
       }
       if (item.processTone) {
-        jobs.push(() => updateImageTone(imageDb2, item));
+        derivativeJobs.push(() => updateImageTone(imageDb2, item));
       }
     };
+    items.forEach((item) => {
+      appendDerivativeJobs(item);
+    });
     let vectorBaseIndex = 0;
     for (const chunk of chunkItems(vectorItems, VECTOR_INDEX_BATCH_SIZE)) {
       const batchItems = chunk.map((item, index) => ({
@@ -1239,11 +1396,11 @@ var createImagesRouter = (deps) => {
         current: vectorBaseIndex + index + 1,
         total: vectorItems.length
       }));
-      jobs.push(async () => {
+      vectorJobs.push(async () => {
         var _a2;
         try {
           if (batchItems.length === 1) {
-            const indexed = await indexImageVector(imageDb2, {
+            const vector = await indexImageVector(imageDb2, {
               id: batchItems[0].id,
               rowid: batchItems[0].rowid,
               localPath: batchItems[0].localPath,
@@ -1251,12 +1408,19 @@ var createImagesRouter = (deps) => {
               current: batchItems[0].current,
               total: batchItems[0].total
             });
-            updatedVectors += indexed ? 1 : 0;
-            vectorFailures += indexed ? 0 : 1;
+            if (vector && vector.length > 0) {
+              vectorResults.set(batchItems[0].id, vector);
+              updatedVectors += 1;
+            } else {
+              vectorFailures += 1;
+            }
           } else {
-            const updated = await indexImageVectorBatch(imageDb2, batchItems);
-            updatedVectors += updated;
-            vectorFailures += batchItems.length - updated;
+            const vectors = await indexImageVectorBatch(imageDb2, batchItems);
+            vectors.forEach((vector, imageId) => {
+              vectorResults.set(imageId, vector);
+            });
+            updatedVectors += vectors.size;
+            vectorFailures += batchItems.length - vectors.size;
           }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -1267,27 +1431,55 @@ var createImagesRouter = (deps) => {
           (_a2 = options.onVectorProgress) == null ? void 0 : _a2.call(options, completedVectors, vectorItems.length);
         }
       });
-      chunk.forEach((item) => {
-        vectorScheduledIds.add(item.id);
-        appendDerivativeJobs(item);
-      });
       vectorBaseIndex += chunk.length;
     }
-    items.forEach((item) => {
-      if (!vectorScheduledIds.has(item.id)) {
-        appendDerivativeJobs(item);
+    const derivativePromise = runWithConcurrency(
+      derivativeJobs,
+      IMAGE_POST_PROCESS_CONCURRENCY,
+      async (job) => {
+        await job();
       }
-    });
-    await runWithConcurrency(jobs, IMAGE_POST_PROCESS_CONCURRENCY, async (job) => {
-      await job();
-    });
+    );
+    await runWithConcurrency(
+      vectorJobs,
+      IMAGE_POST_PROCESS_CONCURRENCY,
+      async (job) => {
+        await job();
+      }
+    );
+    const autoTagItems = vectorItems.filter((item) => item.processAutoTag);
+    if (autoTagContext && autoTagItems.length > 0) {
+      const autoTagJobs = autoTagItems.map((item) => {
+        const vector = vectorResults.get(item.id);
+        if (!vector || vector.length === 0) {
+          return null;
+        }
+        return async () => {
+          if (applyAutoTagsToImage(imageDb2, item, vector, autoTagContext)) {
+            autoTaggedImages += 1;
+          }
+        };
+      }).filter((job) => job !== null);
+      await runWithConcurrency(
+        autoTagJobs,
+        IMAGE_POST_PROCESS_CONCURRENCY,
+        async (job) => {
+          await job();
+        }
+      );
+    }
+    await derivativePromise;
     if (vectorFailures > 0 && options.notifyVectorFailure) {
       (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "toast", {
         key: "toast.vectorIndexFailed",
         type: "error"
       });
     }
-    return { updatedVectors, totalVectors: vectorItems.length };
+    return {
+      updatedVectors,
+      totalVectors: vectorItems.length,
+      autoTaggedImages
+    };
   };
   const scheduleImagePostProcessing = (imageDb2, items, options) => {
     if (items.length === 0) return;
@@ -1343,6 +1535,7 @@ var createImagesRouter = (deps) => {
     const { sourceType, sourceData } = source;
     const target = await reserveImportTarget(imageDb2, payload, source, timestamp);
     try {
+      await ensureTagCatalogEntries(tags);
       if (sourceType === "buffer") {
         await withFileLock(target.localPath, async () => {
           await import_fs_extra2.default.writeFile(target.localPath, sourceData);
@@ -1439,6 +1632,10 @@ var createImagesRouter = (deps) => {
       }
       const tagIds = imageDb2.getTagIdsByNames(tags);
       const tagCount = tags.length;
+      if (tagCount > 0 && tagIds.length !== tagCount) {
+        res.json({ items: [], nextCursor: null });
+        return;
+      }
       const results = imageDb2.searchImagesByText({
         query,
         limit: effectiveLimit,
@@ -1644,7 +1841,9 @@ var createImagesRouter = (deps) => {
         pageUrl: nextPageUrl
       });
       if (body.tags !== void 0) {
-        imageDb2.setImageTags(id, ensureTags(body.tags));
+        const nextTags = ensureTags(body.tags);
+        await ensureTagCatalogEntries(nextTags);
+        imageDb2.setImageTags(id, nextTags);
       }
       const updated = imageDb2.getImageById(id);
       if (!updated) {
@@ -1728,6 +1927,7 @@ var createImagesRouter = (deps) => {
             rowid: imported.rowid,
             localPath: imported.localPath,
             processVector: true,
+            processAutoTag: true,
             processDominantColor: true,
             processTone: true
           }
@@ -1788,6 +1988,7 @@ var createImagesRouter = (deps) => {
           rowid: item.rowid,
           localPath: item.localPath,
           processVector: true,
+          processAutoTag: true,
           processDominantColor: true,
           processTone: true
         })),
@@ -1802,7 +2003,7 @@ var createImagesRouter = (deps) => {
     }
   });
   router.post("/api/index", async (req, res) => {
-    var _a, _b;
+    var _a, _b, _c, _d;
     try {
       if (guardStorage(res)) return;
       const imageDb2 = deps.getImageDb();
@@ -1832,6 +2033,66 @@ var createImagesRouter = (deps) => {
           return;
         }
         res.json({ success: true });
+        return;
+      }
+      if (mode === "auto-tag-all") {
+        if (!isAutoTagEnabled(settings)) {
+          res.json({ success: true, total: 0, tagged: 0, updated: 0 });
+          return;
+        }
+        const allItems = imageDb2.listImages();
+        const candidates = allItems.filter(
+          (item) => typeof item.rowid === "number"
+        );
+        const total = candidates.length;
+        if (total === 0) {
+          res.json({ success: true, total: 0, tagged: 0, updated: 0 });
+          return;
+        }
+        (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "indexing-progress", {
+          current: 0,
+          total,
+          statusKey: "autoTagAll.starting"
+        });
+        const { updatedVectors, autoTaggedImages } = await runImagePostProcessing(
+          imageDb2,
+          candidates.map((item) => ({
+            id: item.id,
+            rowid: item.rowid,
+            localPath: import_path3.default.join(deps.getStorageDir(), item.imagePath),
+            processVector: true,
+            processAutoTag: true,
+            processDominantColor: false,
+            processTone: false
+          })),
+          {
+            vectorContext: "batch",
+            notifyVectorFailure: true,
+            onVectorProgress: (nextCurrent, nextTotal) => {
+              var _a2;
+              (_a2 = deps.sendToRenderer) == null ? void 0 : _a2.call(deps, "indexing-progress", {
+                current: nextCurrent,
+                total: nextTotal,
+                statusKey: "autoTagAll.progress",
+                statusParams: {
+                  current: nextCurrent,
+                  total: nextTotal
+                }
+              });
+            }
+          }
+        );
+        (_b = deps.sendToRenderer) == null ? void 0 : _b.call(deps, "indexing-progress", {
+          current: total,
+          total,
+          statusKey: "autoTagAll.completed"
+        });
+        res.json({
+          success: true,
+          total,
+          tagged: autoTaggedImages,
+          updated: updatedVectors
+        });
         return;
       }
       if (mode === "missing") {
@@ -1907,6 +2168,7 @@ var createImagesRouter = (deps) => {
               rowid: item.rowid,
               localPath: item.localPath,
               processVector: false,
+              processAutoTag: false,
               processDominantColor: true,
               processTone: true
             })),
@@ -1917,7 +2179,7 @@ var createImagesRouter = (deps) => {
           res.json({ success: true, created, updated: 0, deleted, total });
           return;
         }
-        (_a = deps.sendToRenderer) == null ? void 0 : _a.call(deps, "indexing-progress", {
+        (_c = deps.sendToRenderer) == null ? void 0 : _c.call(deps, "indexing-progress", {
           current: 0,
           total,
           statusKey: "indexing.starting"
@@ -1928,6 +2190,7 @@ var createImagesRouter = (deps) => {
             rowid: item.rowid,
             localPath: item.localPath,
             processVector: true,
+            processAutoTag: true,
             processDominantColor: true,
             processTone: true
           })),
@@ -1936,6 +2199,7 @@ var createImagesRouter = (deps) => {
             rowid: item.rowid,
             localPath: import_path3.default.join(deps.getStorageDir(), item.imagePath),
             processVector: true,
+            processAutoTag: false,
             processDominantColor: false,
             processTone: false
           }))
@@ -1959,7 +2223,7 @@ var createImagesRouter = (deps) => {
             }
           }
         );
-        (_b = deps.sendToRenderer) == null ? void 0 : _b.call(deps, "indexing-progress", {
+        (_d = deps.sendToRenderer) == null ? void 0 : _d.call(deps, "indexing-progress", {
           current: total,
           total,
           statusKey: "indexing.completed"
@@ -2063,6 +2327,25 @@ var createImagesRouter = (deps) => {
 
 // backend/routes/tags.ts
 var import_express2 = __toESM(require("express"), 1);
+var normalizeTagName = (value) => {
+  if (typeof value !== "string") return "";
+  return value.trim();
+};
+var normalizeTagColor = (value) => {
+  if (value === null || value === void 0) return null;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) return null;
+  const withHash = trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
+  if (/^#[0-9a-f]{6}$/.test(withHash)) return withHash;
+  if (/^#[0-9a-f]{3}$/.test(withHash)) {
+    return `#${withHash[1]}${withHash[1]}${withHash[2]}${withHash[2]}${withHash[3]}${withHash[3]}`;
+  }
+  return null;
+};
+var sortTags = (tags) => {
+  return [...tags].sort((left, right) => left.name.localeCompare(right.name));
+};
 var createTagsRouter = (deps) => {
   const router = import_express2.default.Router();
   const guardStorage = (res) => {
@@ -2078,15 +2361,28 @@ var createTagsRouter = (deps) => {
   router.get("/api/tags", async (_req, res) => {
     try {
       if (guardStorage(res)) return;
-      const imageDb2 = deps.getImageDb();
-      const tags = imageDb2.listTags();
-      const settings = await deps.readSettings();
-      const tagColors = settings.tagColors || {};
-      const result = tags.map((tag) => ({
-        name: tag,
-        color: tagColors[tag] || null
-      }));
-      res.json(result);
+      const tags = await deps.readTags();
+      res.json(sortTags(tags));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    }
+  });
+  router.post("/api/tag", async (req, res) => {
+    try {
+      if (guardStorage(res)) return;
+      const name = normalizeTagName(req.body.name);
+      if (!name) {
+        res.status(400).json({ error: "Tag name is required" });
+        return;
+      }
+      const tags = await deps.readTags();
+      if (tags.some((tag) => tag.name === name)) {
+        res.json({ success: true });
+        return;
+      }
+      await deps.writeTags([...tags, { name, color: null }]);
+      res.json({ success: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       res.status(500).json({ error: message });
@@ -2096,28 +2392,44 @@ var createTagsRouter = (deps) => {
     try {
       if (guardStorage(res)) return;
       const imageDb2 = deps.getImageDb();
-      const oldName = req.params.name;
-      const { newName } = req.body;
-      if (!oldName || !newName) {
-        res.status(400).json({ error: "Tag names are required" });
+      const oldName = normalizeTagName(req.params.name);
+      const body = req.body;
+      const newName = normalizeTagName(body.newName);
+      const hasRename = body.newName !== void 0;
+      const hasColor = Object.prototype.hasOwnProperty.call(body, "color");
+      if (!oldName) {
+        res.status(400).json({ error: "Tag name is required" });
         return;
       }
-      const trimmedOld = oldName.trim();
-      const trimmedNew = newName.trim();
-      if (!trimmedOld || !trimmedNew) {
+      if (hasRename && !newName) {
         res.status(400).json({ error: "Tags cannot be empty" });
         return;
       }
-      imageDb2.renameTag(trimmedOld, trimmedNew);
-      const settings = await deps.readSettings();
-      const tagColors = settings.tagColors || {};
-      if (Object.prototype.hasOwnProperty.call(tagColors, trimmedOld)) {
-        const color = tagColors[trimmedOld];
-        const nextTagColors = { ...tagColors };
-        delete nextTagColors[trimmedOld];
-        nextTagColors[trimmedNew] = color;
-        await deps.writeSettings({ ...settings, tagColors: nextTagColors });
+      if (!hasRename && !hasColor) {
+        res.status(400).json({ error: "No tag update provided" });
+        return;
       }
+      const tags = await deps.readTags();
+      const currentIndex = tags.findIndex((tag) => tag.name === oldName);
+      if (currentIndex === -1) {
+        res.status(404).json({ error: "Tag not found" });
+        return;
+      }
+      const targetName = hasRename ? newName : oldName;
+      if (targetName !== oldName && tags.some((tag, index) => index !== currentIndex && tag.name === targetName)) {
+        res.status(409).json({ error: "Tag already exists" });
+        return;
+      }
+      const nextTags = [...tags];
+      const current = nextTags[currentIndex];
+      nextTags[currentIndex] = {
+        name: targetName,
+        color: hasColor ? normalizeTagColor(body.color) : current.color
+      };
+      if (targetName !== oldName) {
+        imageDb2.renameTag(oldName, targetName);
+      }
+      await deps.writeTags(nextTags);
       res.json({ success: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2128,20 +2440,14 @@ var createTagsRouter = (deps) => {
     try {
       if (guardStorage(res)) return;
       const imageDb2 = deps.getImageDb();
-      const rawName = req.params.name;
-      const name = typeof rawName === "string" ? rawName.trim() : "";
+      const name = normalizeTagName(req.params.name);
       if (!name) {
         res.status(400).json({ error: "Tag name is required" });
         return;
       }
+      const tags = await deps.readTags();
+      await deps.writeTags(tags.filter((tag) => tag.name !== name));
       imageDb2.deleteTag(name);
-      const settings = await deps.readSettings();
-      const tagColors = settings.tagColors || {};
-      if (Object.prototype.hasOwnProperty.call(tagColors, name)) {
-        const nextTagColors = { ...tagColors };
-        delete nextTagColors[name];
-        await deps.writeSettings({ ...settings, tagColors: nextTagColors });
-      }
       res.json({ success: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2280,6 +2586,89 @@ var writeSettings = async (settings) => {
       await import_fs_extra3.default.writeJson(filePath, settings);
     } catch (error) {
       console.error("Failed to write settings file", error);
+    }
+  });
+};
+
+// backend/tagsStore.ts
+var import_fs_extra4 = __toESM(require("fs-extra"), 1);
+var tagsFilePath = "";
+var tagsCache = null;
+var normalizeTagName2 = (value) => {
+  if (typeof value !== "string") return "";
+  return value.trim();
+};
+var normalizeTagColor2 = (value) => {
+  if (value === null || value === void 0) return null;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) return null;
+  const withHash = trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
+  if (/^#[0-9a-f]{6}$/.test(withHash)) return withHash;
+  if (/^#[0-9a-f]{3}$/.test(withHash)) {
+    return `#${withHash[1]}${withHash[1]}${withHash[2]}${withHash[2]}${withHash[3]}${withHash[3]}`;
+  }
+  return null;
+};
+var normalizeTags2 = (value) => {
+  if (!Array.isArray(value)) return [];
+  const seen = /* @__PURE__ */ new Set();
+  const normalized = [];
+  value.forEach((item) => {
+    if (!item || typeof item !== "object") return;
+    const record = item;
+    const name = normalizeTagName2(record.name);
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    normalized.push({
+      name,
+      color: normalizeTagColor2(record.color)
+    });
+  });
+  return normalized;
+};
+var configureTagsStore = (filePath) => {
+  if (!filePath) {
+    throw new Error("Tags store file path is required");
+  }
+  if (tagsFilePath === filePath) return;
+  tagsFilePath = filePath;
+  tagsCache = null;
+};
+var getTagsFilePath = () => {
+  if (!tagsFilePath) {
+    throw new Error("Tags store is not configured");
+  }
+  return tagsFilePath;
+};
+var readTags = async () => {
+  const filePath = getTagsFilePath();
+  if (tagsCache) return tagsCache;
+  return withFileLock(filePath, async () => {
+    if (!await import_fs_extra4.default.pathExists(filePath)) {
+      tagsCache = [];
+      return tagsCache;
+    }
+    try {
+      const raw = await import_fs_extra4.default.readJson(filePath);
+      tagsCache = normalizeTags2(raw);
+      return tagsCache;
+    } catch (error) {
+      console.error("Failed to read tags file", error);
+    }
+    tagsCache = [];
+    return tagsCache;
+  });
+};
+var writeTags = async (tags) => {
+  const filePath = getTagsFilePath();
+  const normalized = normalizeTags2(tags);
+  tagsCache = normalized;
+  await withFileLock(filePath, async () => {
+    try {
+      await import_fs_extra4.default.writeJson(filePath, normalized);
+    } catch (error) {
+      console.error("Failed to write tags file", error);
     }
   });
 };
@@ -3447,12 +3836,16 @@ var loadStorageRoot = async () => {
 var STORAGE_DIR = DEFAULT_STORAGE_DIR;
 var IMAGE_DIR = import_path5.default.join(STORAGE_DIR, "images");
 var SETTINGS_FILE = import_path5.default.join(STORAGE_DIR, "settings.json");
+var TAGS_FILE = import_path5.default.join(STORAGE_DIR, "tags.json");
 configureSettingsStore(SETTINGS_FILE);
+configureTagsStore(TAGS_FILE);
 var updateStoragePaths = (root) => {
   STORAGE_DIR = root;
   IMAGE_DIR = import_path5.default.join(STORAGE_DIR, "images");
   SETTINGS_FILE = import_path5.default.join(STORAGE_DIR, "settings.json");
+  TAGS_FILE = import_path5.default.join(STORAGE_DIR, "tags.json");
   configureSettingsStore(SETTINGS_FILE);
+  configureTagsStore(TAGS_FILE);
 };
 var ensureStorageDirs = async (root) => {
   await Promise.all([
@@ -3463,7 +3856,7 @@ var ensureStorageDirs = async (root) => {
 };
 var persistStorageRootConfig = async (root) => {
   await withFileLock(CONFIG_FILE, async () => {
-    await import_fs_extra4.default.writeJson(CONFIG_FILE, { storageDir: root });
+    await import_fs_extra5.default.writeJson(CONFIG_FILE, { storageDir: root });
   });
 };
 var getStorageDir = () => STORAGE_DIR;
@@ -3610,6 +4003,8 @@ var BasePythonService = class {
       PIP_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
       // Use HF mirror for model downloads
       HF_ENDPOINT: "https://hf-mirror.com",
+      // Fix CUDA out of memory by avoiding fragmentation
+      PYTORCH_ALLOC_CONF: "expandable_segments:True",
       ...envOverrides
     };
     const proc = (0, import_child_process2.spawn)(command, args, {
@@ -3818,6 +4213,36 @@ var PythonVectorService = class extends BasePythonService {
       };
     });
   }
+  async runBatchTexts(texts) {
+    if (texts.length === 0) return [];
+    const raw = await this.sendRequest({ mode: "encode-texts", arg: texts });
+    if (!raw || typeof raw !== "object") {
+      throw new Error("Invalid text batch response");
+    }
+    const res = raw;
+    if (res.error) {
+      throw new Error(`Python error: ${String(res.error)}`);
+    }
+    if (!Array.isArray(res.items)) {
+      throw new Error("Text batch items missing");
+    }
+    if (res.items.length !== texts.length) {
+      throw new Error("Text batch item count mismatch");
+    }
+    return res.items.map((item) => {
+      if (!item || typeof item !== "object") {
+        return { vector: null, error: "invalid-batch-item" };
+      }
+      const record = item;
+      if (Array.isArray(record.vector)) {
+        return { vector: record.vector };
+      }
+      return {
+        vector: null,
+        error: typeof record.error === "string" ? record.error : "vector-missing"
+      };
+    });
+  }
 };
 var mapModelDownloadProgress = (data) => {
   if (!data || typeof data !== "object") return data;
@@ -3868,7 +4293,7 @@ function downloadImage(url, dest) {
         srcPath = srcPath.substring(1);
       }
     }
-    await import_fs_extra4.default.copy(decodeURIComponent(srcPath), dest);
+    await import_fs_extra5.default.copy(decodeURIComponent(srcPath), dest);
   };
   const isRetryableDownloadError = (error) => {
     const code = error.code;
@@ -3908,9 +4333,9 @@ function downloadImage(url, dest) {
         );
       }
       const buffer = Buffer.from(await response.arrayBuffer());
-      await import_fs_extra4.default.writeFile(dest, buffer);
+      await import_fs_extra5.default.writeFile(dest, buffer);
     } catch (error) {
-      await import_fs_extra4.default.remove(dest).catch(() => void 0);
+      await import_fs_extra5.default.remove(dest).catch(() => void 0);
       if (error instanceof Error && (error.name === "AbortError" || /aborted/i.test(error.message))) {
         throw new Error("Download timeout");
       }
@@ -3978,6 +4403,9 @@ async function startServer(sendToRenderer) {
   const runPythonVectors = async (paths) => {
     return vectorService.runBatchImages(paths);
   };
+  const runPythonTexts = async (texts) => {
+    return vectorService.runBatchTexts(texts);
+  };
   const runPythonDominantColor = async (arg) => {
     return getDominantColor(arg);
   };
@@ -3997,8 +4425,8 @@ async function startServer(sendToRenderer) {
     };
     const logFile = import_path5.default.join(STORAGE_DIR, "server.log");
     await withFileLock(logFile, async () => {
-      await import_fs_extra4.default.ensureFile(logFile);
-      await import_fs_extra4.default.appendFile(logFile, `${JSON.stringify(payload)}
+      await import_fs_extra5.default.ensureFile(logFile);
+      await import_fs_extra5.default.appendFile(logFile, `${JSON.stringify(payload)}
 `);
     });
   };
@@ -4024,8 +4452,8 @@ async function startServer(sendToRenderer) {
     createTagsRouter({
       getImageDb,
       getIncompatibleError: () => incompatibleError,
-      readSettings,
-      writeSettings
+      readTags,
+      writeTags
     })
   );
   server.use(
@@ -4036,8 +4464,11 @@ async function startServer(sendToRenderer) {
       getImageDir: () => IMAGE_DIR,
       readSettings,
       writeSettings,
+      readTags,
+      writeTags,
       runPythonVector,
       runPythonVectors,
+      runPythonTexts,
       runPythonDominantColor,
       runPythonTone,
       downloadImage,
@@ -4069,6 +4500,7 @@ var en = {
   "common.loading": "Loading...",
   "common.unavailable": "Unavailable",
   "common.clear": "Clear",
+  "common.add": "Add",
   "common.none": "None",
   "common.notSet": "Not set",
   "common.color": "Color",
@@ -4117,6 +4549,7 @@ var en = {
   "toast.tagDeleted": "Tag deleted",
   "toast.tagDeleteFailed": "Failed to delete tag",
   "toast.importImageFailed": "Failed to import image",
+  "toast.createTagFailed": "Failed to create tag",
   "toast.updateTagsFailed": "Failed to update tags",
   "toast.updateDominantColorFailed": "Failed to update dominant color",
   "toast.updateNameFailed": "Failed to update name",
@@ -4126,6 +4559,8 @@ var en = {
   "toast.deleteCanvasFailed": "Failed to delete canvas",
   "toast.vectorIndexed": "Vector indexed",
   "toast.vectorIndexFailed": "Failed to index vector",
+  "toast.autoTagAllCompleted": "Auto-tag completed: {{tagged}} matched, {{total}} scanned",
+  "toast.autoTagAllFailed": "Failed to run auto-tag for all images",
   "toast.imageVectorSearchFailed": "Image search failed",
   "toast.imageCopied": "Image copied",
   "toast.copyImageFailed": "Failed to copy image",
@@ -4171,6 +4606,9 @@ var en = {
   "indexing.starting": "Starting...",
   "indexing.progress": "Indexing {{current}}/{{total}}...",
   "indexing.completed": "Completed",
+  "autoTagAll.starting": "Preparing auto-tag...",
+  "autoTagAll.progress": "Auto-tagging {{current}}/{{total}}...",
+  "autoTagAll.completed": "Auto-tag completed",
   "errors.title": "PiCaptain encountered an error",
   "errors.unexpected": "An unexpected error occurred.",
   "errors.applicationLogTitle": "Application Log (Last 50KB)",
@@ -4193,6 +4631,7 @@ var en = {
   "gallery.vectorResult": "AI Search Result",
   "gallery.searchImage.pick": "Choose image",
   "gallery.searchImage.defaultName": "Image query",
+  "gallery.tagInput.placeholder": "New tag",
   "gallery.contextMenu.nameLabel": "Name",
   "gallery.contextMenu.imageNamePlaceholder": "Image name",
   "gallery.contextMenu.linkLabel": "Link",
@@ -4289,9 +4728,15 @@ var en = {
   "settings.llm.model": "Model",
   "settings.open": "Open settings",
   "settings.storageFolder": "Storage folder",
+  "settings.autoTag": "Auto-tag threshold",
+  "settings.autoTag.desc": "Higher values make matching stricter.",
+  "settings.autoTag.loose": "Looser",
+  "settings.autoTag.strict": "Stricter",
+  "settings.autoTag.runAll": "Run on all images",
+  "settings.autoTag.runningAll": "Auto-tagging...",
   "settings.queryTranslation": "Query translation",
   "settings.queryTranslation.desc": "LLM-assisted query rewrite",
-  "settings.indexing": "Indexing",
+  "settings.indexing": "Semantic Search Index",
   "settings.toggleWindowShortcut": "Toggle window shortcut",
   "settings.run": "Run",
   "settings.running": "Running",
@@ -4314,6 +4759,7 @@ var zh = {
   "common.close": "\u5173\u95ED",
   "common.loading": "\u52A0\u8F7D\u4E2D\u2026",
   "common.clear": "\u6E05\u9664",
+  "common.add": "\u6DFB\u52A0",
   "common.none": "\u65E0",
   "common.notSet": "\u672A\u8BBE\u7F6E",
   "common.color": "\u989C\u8272",
@@ -4360,6 +4806,7 @@ var zh = {
   "toast.tagDeleted": "\u6807\u7B7E\u5DF2\u5220\u9664",
   "toast.tagDeleteFailed": "\u5220\u9664\u6807\u7B7E\u5931\u8D25",
   "toast.importImageFailed": "\u5BFC\u5165\u56FE\u7247\u5931\u8D25",
+  "toast.createTagFailed": "\u521B\u5EFA\u6807\u7B7E\u5931\u8D25",
   "toast.updateTagsFailed": "\u66F4\u65B0\u6807\u7B7E\u5931\u8D25",
   "toast.updateDominantColorFailed": "\u66F4\u65B0\u4E3B\u8272\u5931\u8D25",
   "toast.updateNameFailed": "\u66F4\u65B0\u540D\u79F0\u5931\u8D25",
@@ -4507,9 +4954,15 @@ var zh = {
   "titleBar.maximize": "\u6700\u5927\u5316",
   "settings.open": "\u6253\u5F00\u8BBE\u7F6E",
   "settings.storageFolder": "\u5B58\u50A8\u6587\u4EF6\u5939",
+  "settings.autoTag": "\u81EA\u52A8\u6807\u7B7E\u9608\u503C",
+  "settings.autoTag.desc": "\u503C\u8D8A\u9AD8\u5339\u914D\u8D8A\u4E25\u683C",
+  "settings.autoTag.loose": "\u5BBD\u677E",
+  "settings.autoTag.strict": "\u4E25\u683C",
+  "settings.autoTag.runAll": "\u5168\u91CF\u6253\u6807",
+  "settings.autoTag.runningAll": "\u6253\u6807\u4E2D",
   "settings.queryTranslation": "\u67E5\u8BE2\u7FFB\u8BD1",
   "settings.queryTranslation.desc": "LLM \u8F85\u52A9\u7684\u67E5\u8BE2\u6539\u5199",
-  "settings.indexing": "\u7D22\u5F15",
+  "settings.indexing": "\u8BED\u4E49\u641C\u7D22\u7D22\u5F15",
   "settings.toggleWindowShortcut": "\u5207\u6362\u7A97\u53E3\u5FEB\u6377\u952E",
   "settings.run": "\u8FD0\u884C",
   "settings.running": "\u8FD0\u884C\u4E2D",
@@ -4520,6 +4973,11 @@ var zh = {
   "settings.status.ready.semanticAndTranslation": "\u8BED\u4E49\u641C\u7D22\u548C\u67E5\u8BE2\u7FFB\u8BD1\u5DF2\u542F\u7528",
   "settings.status.ready.semantic": "\u672C\u5730\u7D20\u6750\u5E93\u7684\u8BED\u4E49\u641C\u7D22\u5DF2\u542F\u7528",
   "settings.status.ready.basic": "\u641C\u7D22\u3001\u989C\u8272\u7B5B\u9009\u548C\u672C\u5730\u7D20\u6750\u7BA1\u7406\u5DF2\u5C31\u7EEA",
+  "toast.autoTagAllCompleted": "\u5168\u91CF\u81EA\u52A8\u6253\u6807\u5B8C\u6210\uFF1A{{tagged}} \u5F20\u547D\u4E2D\uFF0C{{total}} \u5F20\u5DF2\u626B\u63CF",
+  "toast.autoTagAllFailed": "\u5168\u91CF\u81EA\u52A8\u6253\u6807\u5931\u8D25",
+  "autoTagAll.starting": "\u6B63\u5728\u51C6\u5907\u5168\u91CF\u81EA\u52A8\u6253\u6807",
+  "autoTagAll.progress": "\u6B63\u5728\u81EA\u52A8\u6253\u6807 {{current}}/{{total}}",
+  "autoTagAll.completed": "\u5168\u91CF\u81EA\u52A8\u6253\u6807\u5B8C\u6210",
   "envInit.detectingGpu": "\u6B63\u5728\u68C0\u6D4B GPU \u652F\u6301\u2026",
   "envInit.creatingVirtualEnv": "\u6B63\u5728\u521B\u5EFA Python \u865A\u62DF\u73AF\u5883\u2026",
   "envInit.resolvedPackages": "\u5DF2\u89E3\u6790 {{total}} \u4E2A\u4F9D\u8D56\u5305",
@@ -4537,6 +4995,7 @@ var zh = {
   "gallery.searchPlaceholderImage": "\u5DF2\u542F\u7528\u4EE5\u56FE\u641C\u56FE",
   "gallery.searchImage.pick": "\u9009\u62E9\u56FE\u7247",
   "gallery.searchImage.defaultName": "\u56FE\u7247\u68C0\u7D22",
+  "gallery.tagInput.placeholder": "\u65B0\u5EFA\u6807\u7B7E",
   "gallery.contextMenu.copyImage": "\u590D\u5236\u56FE\u7247",
   "gallery.contextMenu.searchByImage": "\u4EE5\u56FE\u641C\u56FE",
   "gallery.preview.previous": "\u4E0A\u4E00\u5F20",
@@ -5113,7 +5572,7 @@ async function createWindow(options) {
         const start = Math.max(0, size - READ_SIZE);
         return await withFileLock(logPath, () => {
           return new Promise((resolve, reject) => {
-            const stream = import_fs_extra5.default.createReadStream(logPath, {
+            const stream = import_fs_extra6.default.createReadStream(logPath, {
               start,
               encoding: "utf8"
             });
@@ -5524,7 +5983,7 @@ async function ensureUvInstalled(onProgress) {
   }
   await lockedFs.writeFile(uvPath, binary);
   if (process.platform !== "win32") {
-    await withFileLock(uvPath, () => import_fs_extra5.default.chmod(uvPath, 493));
+    await withFileLock(uvPath, () => import_fs_extra6.default.chmod(uvPath, 493));
   }
   process.env.PROREF_UV_PATH = uvPath;
   return uvPath;
@@ -5621,7 +6080,9 @@ async function ensureModelReady(parent, options = {}) {
         PYTHONUTF8: "1",
         TRANSFORMERS_VERBOSITY: "error",
         HF_HUB_DISABLE_PROGRESS_BARS: "1",
-        HF_ENDPOINT: "https://hf-mirror.com"
+        HF_ENDPOINT: "https://hf-mirror.com",
+        // Fix CUDA out of memory by avoiding fragmentation
+        PYTORCH_ALLOC_CONF: "expandable_segments:True"
       }
     }
   );

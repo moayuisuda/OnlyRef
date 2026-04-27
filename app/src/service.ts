@@ -317,6 +317,31 @@ export async function renameTag(oldTag: string, newTag: string): Promise<void> {
   }
 }
 
+export async function createTag(name: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/tag`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to create tag: ${res.status}`);
+  }
+}
+
+export async function updateTagColor(
+  tag: string,
+  color: string | null
+): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/tag/${encodeURIComponent(tag)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ color }),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to update tag color: ${res.status}`);
+  }
+}
+
 export async function deleteTag(tag: string): Promise<void> {
   const res = await fetch(`${API_BASE_URL}/api/tag/${encodeURIComponent(tag)}`, {
     method: "DELETE",
@@ -358,6 +383,12 @@ export async function indexImages<T = unknown>(payload: {
     throw new Error(`Failed to index images: ${res.status}`);
   }
   return (await res.json()) as T;
+}
+
+export async function runAutoTagAll<T = unknown>(): Promise<T> {
+  return indexImages<T>({
+    mode: "auto-tag-all",
+  });
 }
 
 export async function localApi<TResponse>(

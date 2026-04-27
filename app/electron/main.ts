@@ -1385,6 +1385,8 @@ async function ensureModelReady(
         TRANSFORMERS_VERBOSITY: "error",
         HF_HUB_DISABLE_PROGRESS_BARS: "1",
         HF_ENDPOINT: "https://hf-mirror.com",
+        // Fix CUDA out of memory by avoiding fragmentation
+        PYTORCH_ALLOC_CONF: "expandable_segments:True",
       },
     },
   );

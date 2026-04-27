@@ -1,10 +1,16 @@
 import { proxy } from "valtio";
 import { THEME } from "../theme";
 import {
+  AUTO_TAG_THRESHOLD_DEFAULT,
+  normalizeAutoTagThreshold,
+} from "../../shared/clipAutoTag";
+import {
   getSettingsSnapshot,
   readSetting,
   settingStorage,
   syncSettingsSnapshotValue,
+  updateTagColor,
+  type TagMeta,
 } from "../service";
 import type { I18nKey, I18nMessage, I18nParams } from "../../shared/i18n/types";
 
@@ -94,6 +100,8 @@ export interface GlobalState {
   colorSwatches: string[];
   toasts: Toast[];
   toggleWindowShortcut: string;
+  autoTagEnabled: boolean;
+  autoTagThreshold: number;
   enableVectorSearch: boolean;
   llmSettings: LLMSettings;
   isAppHidden: boolean;
@@ -146,6 +154,8 @@ export const globalState = proxy<GlobalState>({
   colorSwatches: [...DEFAULT_COLOR_SWATCHES],
   toasts: [],
   toggleWindowShortcut: DEFAULT_TOGGLE_WINDOW_SHORTCUT,
+  autoTagEnabled: true,
+  autoTagThreshold: AUTO_TAG_THRESHOLD_DEFAULT,
   enableVectorSearch: true,
   llmSettings: {
     enabled: false,
@@ -161,11 +171,6 @@ export const globalActions = {
   hydrateSettings: async () => {
     try {
       const settings = await getSettingsSnapshot();
-      const rawTagColors = readSetting<Record<string, unknown>>(
-        settings,
-        "tagColors",
-        {},
-      );
       const rawColorSwatches = readSetting<unknown>(
         settings,
         "colorSwatches",
@@ -181,15 +186,17 @@ export const globalActions = {
         "windowAlwaysOnTop",
         DEFAULT_WINDOW_ALWAYS_ON_TOP,
       );
+      const rawAutoTagThreshold = readSetting<unknown>(
+        settings,
+        "autoTagThreshold",
+        AUTO_TAG_THRESHOLD_DEFAULT,
+      );
+      const rawAutoTagEnabled = readSetting<unknown>(
+        settings,
+        "autoTagEnabled",
+        true,
+      );
       const rawLlmSettings = readSetting<unknown>(settings, "llmSettings", {});
-
-      const nextTagColors: Record<string, string> = {};
-      for (const [key, value] of Object.entries(rawTagColors)) {
-        if (typeof key === "string" && typeof value === "string" && key.trim()) {
-          nextTagColors[key] = value;
-        }
-      }
-      globalState.tagColors = nextTagColors;
       globalState.colorSwatches = Array.isArray(rawColorSwatches)
         ? rawColorSwatches.filter(isHexColor).map((color) => normalizeHexColor(color))
         : [...DEFAULT_COLOR_SWATCHES];
@@ -201,6 +208,10 @@ export const globalActions = {
         globalState.toggleWindowShortcut = rawToggleWindowShortcut.trim();
       }
 
+      globalState.autoTagEnabled = rawAutoTagEnabled !== false;
+      globalState.autoTagThreshold = normalizeAutoTagThreshold(
+        rawAutoTagThreshold,
+      );
       globalState.enableVectorSearch = true;
       void settingStorage.set("enableVectorSearch", true);
       globalState.windowAlwaysOnTop = rawWindowAlwaysOnTop === true;
@@ -250,12 +261,34 @@ export const globalActions = {
     void settingStorage.set("enableVectorSearch", enabled);
   },
 
+  setTagMetas: (tagMetas: TagMeta[]) => {
+    const next: Record<string, string> = {};
+    tagMetas.forEach((tagMeta) => {
+      if (!tagMeta.name.trim() || !tagMeta.color) return;
+      next[tagMeta.name] = tagMeta.color;
+    });
+    globalState.tagColors = next;
+  },
+
+  setAutoTagThreshold: (threshold: number) => {
+    const next = normalizeAutoTagThreshold(threshold);
+    globalState.autoTagThreshold = next;
+    void settingStorage.set("autoTagThreshold", next);
+  },
+
+  setAutoTagEnabled: (enabled: boolean) => {
+    globalState.autoTagEnabled = enabled;
+    void settingStorage.set("autoTagEnabled", enabled);
+  },
+
   setTagColor: (tag: string, color: string) => {
     const key = tag.trim();
     if (!key) return;
     const next = { ...globalState.tagColors, [key]: color };
     globalState.tagColors = next;
-    void settingStorage.set("tagColors", next);
+    void updateTagColor(key, color).catch((error) => {
+      console.error(error);
+    });
   },
 
   clearTagColor: (tag: string) => {
@@ -265,7 +298,9 @@ export const globalActions = {
     const next = { ...globalState.tagColors };
     delete next[key];
     globalState.tagColors = next;
-    void settingStorage.set("tagColors", next);
+    void updateTagColor(key, null).catch((error) => {
+      console.error(error);
+    });
   },
 
   setColorSwatch: (index: number, color: string) => {
