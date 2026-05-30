@@ -37,6 +37,10 @@ contextBridge.exposeInMainWorld('electron', {
     ipcRenderer.invoke('start-image-drag', payload),
   getEnvInitProgress: () => ipcRenderer.invoke('get-env-init-progress'),
   hasPersistedStorageRoot: () => ipcRenderer.invoke('has-persisted-storage-root'),
+  getUpdaterState: () => ipcRenderer.invoke('get-updater-state'),
+  checkAppUpdate: () => ipcRenderer.invoke('check-app-update'),
+  downloadAppUpdate: () => ipcRenderer.invoke('download-app-update'),
+  quitAndInstallAppUpdate: () => ipcRenderer.invoke('quit-and-install-app-update'),
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
   onImageUpdated: (callback: (data: unknown) => void) => {
     const handler = (_: unknown, data: unknown) => callback(data);
@@ -62,6 +66,11 @@ contextBridge.exposeInMainWorld('electron', {
     const handler = (_: unknown, data: unknown) => callback(data);
     ipcRenderer.on('toast', handler);
     return () => ipcRenderer.off('toast', handler);
+  },
+  onUpdaterState: (callback: (data: unknown) => void) => {
+    const handler = (_: unknown, data: unknown) => callback(data);
+    ipcRenderer.on('updater-state', handler);
+    return () => ipcRenderer.off('updater-state', handler);
   },
   log: (level: string, ...args: unknown[]) => ipcRenderer.send('log-message', level, ...args),
   getLogContent: () => ipcRenderer.invoke('get-log-content'),

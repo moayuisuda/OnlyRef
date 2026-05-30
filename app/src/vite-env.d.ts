@@ -3,6 +3,26 @@
 export {};
 
 declare global {
+  type UpdateStatus =
+    | "idle"
+    | "checking"
+    | "available"
+    | "not-available"
+    | "not-published"
+    | "downloading"
+    | "downloaded"
+    | "error"
+    | "unsupported";
+
+  type UpdaterState = {
+    enabled: boolean;
+    status: UpdateStatus;
+    currentVersion: string;
+    latestVersion: string;
+    downloadProgress: number;
+    errorMessage: string;
+  };
+
   type GalleryPreviewWindowImage = {
     id: string;
     filename: string;
@@ -42,6 +62,11 @@ declare global {
       onRendererEvent: (callback: (channel: string, ...args: unknown[]) => void) => () => void;
       getEnvInitProgress: () => Promise<unknown>;
       hasPersistedStorageRoot: () => Promise<boolean>;
+      getUpdaterState: () => Promise<UpdaterState>;
+      checkAppUpdate: () => Promise<{ success: boolean; error?: string }>;
+      downloadAppUpdate: () => Promise<{ success: boolean; error?: string }>;
+      quitAndInstallAppUpdate: () => Promise<{ success: boolean; error?: string }>;
+      onUpdaterState: (callback: (data: UpdaterState) => void) => () => void;
       getStorageDir: () => Promise<string>;
       openStorageDir: () => Promise<{ success: boolean; error?: string }>;
       chooseStorageDir: () => Promise<string | null>;

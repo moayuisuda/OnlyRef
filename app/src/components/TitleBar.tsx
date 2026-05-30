@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
+  Download,
   FolderOpen,
   Minus,
   Pin,
@@ -23,6 +24,7 @@ import {
   indexingState,
 } from "../store/globalStore";
 import { actions as galleryActions, state as galleryState } from "../store/galleryStore";
+import { versionActions, versionState } from "../store/versionStore";
 import { indexImages, runAutoTagAll } from "../service";
 import { useClickOutside } from "../hooks/useClickOutside";
 import { ShortcutInput } from "./ShortcutInput";
@@ -61,6 +63,7 @@ export const TitleBar: React.FC = () => {
   const snap = useSnapshot(globalState);
   const gallerySnap = useSnapshot(galleryState);
   const indexingSnap = useSnapshot(indexingState);
+  const versionSnap = useSnapshot(versionState);
   const { t, locale, setLocale } = useT();
   const isAlwaysOnTop = snap.windowAlwaysOnTop;
 
@@ -80,6 +83,9 @@ export const TitleBar: React.FC = () => {
 
   useEffect(() => {
     window.electron?.setSettingsOpen?.(settingsOpen);
+    if (settingsOpen) {
+      void versionActions.init();
+    }
   }, [settingsOpen]);
 
   useEffect(() => {
@@ -262,6 +268,22 @@ export const TitleBar: React.FC = () => {
     await globalActions.setToggleWindowShortcut(accelerator);
   };
 
+  const handleVersionAction = async () => {
+    if (!versionSnap.updateEnabled) return;
+
+    if (versionSnap.updateStatus === "available") {
+      await versionActions.downloadUpdate();
+      return;
+    }
+
+    if (versionSnap.updateStatus === "downloaded") {
+      await versionActions.quitAndInstallUpdate();
+      return;
+    }
+
+    await versionActions.checkForUpdates();
+  };
+
   const progressText =
     indexingSnap.isIndexing && indexingSnap.statusKey
       ? t(indexingSnap.statusKey, indexingSnap.statusParams)
@@ -295,6 +317,79 @@ export const TitleBar: React.FC = () => {
             : t("settings.status.ready.basic"),
           percent: 100,
         };
+
+  const hasVersionUpdate =
+    versionSnap.updateStatus === "available" ||
+    versionSnap.updateStatus === "downloading" ||
+    versionSnap.updateStatus === "downloaded";
+
+  const versionStatusText = (() => {
+    if (versionSnap.updateStatus === "unsupported") {
+      return t("titleBar.version.inAppUnavailable");
+    }
+
+    if (versionSnap.updateStatus === "checking") {
+      return t("titleBar.version.checking");
+    }
+
+    if (versionSnap.updateStatus === "available") {
+      return t("titleBar.version.updateAvailable", {
+        version: versionSnap.latestVersion || versionSnap.currentVersion,
+      });
+    }
+
+    if (versionSnap.updateStatus === "downloading") {
+      return t("titleBar.version.downloading", {
+        progress: Math.round(versionSnap.downloadProgress),
+      });
+    }
+
+    if (versionSnap.updateStatus === "downloaded") {
+      return t("titleBar.version.readyToInstall", {
+        version: versionSnap.latestVersion || versionSnap.currentVersion,
+      });
+    }
+
+    if (versionSnap.updateStatus === "error") {
+      return t("titleBar.version.error", {
+        error: versionSnap.errorMessage || t("common.notSet"),
+      });
+    }
+
+    if (versionSnap.updateStatus === "not-available") {
+      return t("titleBar.version.upToDate");
+    }
+
+    if (versionSnap.updateStatus === "not-published") {
+      return t("titleBar.version.notPublished");
+    }
+
+    return t("titleBar.version.checkHint");
+  })();
+
+  const versionActionLabel = (() => {
+    if (!versionSnap.updateEnabled) return "";
+    if (versionSnap.updateStatus === "available") {
+      return t("titleBar.version.downloadNow");
+    }
+    if (versionSnap.updateStatus === "downloaded") {
+      return t("titleBar.version.restartToInstall");
+    }
+    if (versionSnap.updateStatus === "downloading") {
+      return t("titleBar.version.downloadingButton", {
+        progress: Math.round(versionSnap.downloadProgress),
+      });
+    }
+    if (versionSnap.updateStatus === "checking") {
+      return t("titleBar.version.checkingButton");
+    }
+    return t("titleBar.version.checkNow");
+  })();
+
+  const versionActionDisabled =
+    !versionSnap.updateEnabled ||
+    versionSnap.updateStatus === "checking" ||
+    versionSnap.updateStatus === "downloading";
 
   return (
     <div className="draggable relative z-30 border-b border-white/6 bg-neutral-950/92 backdrop-blur-xl">
@@ -342,12 +437,16 @@ export const TitleBar: React.FC = () => {
             type="button"
             className={clsx(
               iconButtonClass,
+              "relative",
               settingsOpen && "bg-white/[0.08] text-[var(--color-primary)]",
             )}
             title={t("settings.open")}
             onClick={() => setSettingsOpen((open) => !open)}
           >
             <Settings size={14} />
+            {hasVersionUpdate && (
+              <span className="pointer-events-none absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[var(--color-primary)] shadow-[0_0_10px_rgba(57,197,187,0.75)]" />
+            )}
           </button>
           <div className="mx-1 h-4 w-px bg-white/8" />
           <button
@@ -498,6 +597,57 @@ export const TitleBar: React.FC = () => {
                 </div>
               )}
             </div> */}
+
+            <div className="border-b border-white/6 px-3 py-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-neutral-200">
+                    <Download
+                      size={12}
+                      className={clsx(hasVersionUpdate && "text-[var(--color-primary)]")}
+                    />
+                    {t("titleBar.version")}
+                  </div>
+                  <div className="mt-1 truncate text-[11px] text-neutral-500">
+                    {t("titleBar.version.row", {
+                      current: versionSnap.currentVersion
+                        ? `v${versionSnap.currentVersion}`
+                        : t("common.notSet"),
+                      latest: versionSnap.latestVersion
+                        ? `v${versionSnap.latestVersion}`
+                        : t("common.notSet"),
+                    })}
+                  </div>
+                  <div
+                    className={clsx(
+                      "mt-1 text-[11px] leading-5",
+                      versionSnap.updateStatus === "error"
+                        ? "text-amber-300"
+                        : "text-neutral-500",
+                    )}
+                  >
+                    {versionStatusText}
+                  </div>
+                  {versionSnap.updateStatus === "downloading" && (
+                    <div className="mt-2">
+                      <ProgressBar value={versionSnap.downloadProgress} />
+                    </div>
+                  )}
+                </div>
+                {versionActionLabel && (
+                  <button
+                    type="button"
+                    className="shrink-0 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
+                    disabled={versionActionDisabled}
+                    onClick={() => {
+                      void handleVersionAction();
+                    }}
+                  >
+                    {versionActionLabel}
+                  </button>
+                )}
+              </div>
+            </div>
 
             <div className="border-b border-white/6 px-3 py-3">
               <div className="flex items-center justify-between gap-3">

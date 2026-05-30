@@ -11,7 +11,12 @@ import {
 import path from "path";
 import fs from "fs-extra";
 import log from "electron-log";
-import { autoUpdater } from "electron-updater";
+import {
+  autoUpdater,
+  type ProgressInfo,
+  type UpdateDownloadedEvent,
+  type UpdateInfo,
+} from "electron-updater";
 import { spawn } from "child_process";
 import { lockedFs, withFileLock } from "../backend/fileLock";
 
@@ -70,6 +75,10 @@ let isLocalServerReady = false;
 const DEFAULT_TOGGLE_WINDOW_SHORTCUT =
   process.platform === "darwin" ? "Command+L" : "Ctrl+L";
 const APP_ID = "com.picaptain.app";
+const UPDATE_FEED_URL =
+  "https://xget-5sd.pages.dev/gh/moayuisuda/OnlyRef/releases/latest/download";
+const DEV_APP_UPDATE_CONFIG_FILE = "dev-app-update.yml";
+const DEV_UPDATER_CACHE_DIR_NAME = "picaptain-updater";
 const WINDOW_ICON_PATH = path.join(__dirname, "../resources/icon.png");
 const STORAGE_ROOT_CONFIG_PATH = path.join(
   app.getPath("userData"),
@@ -82,9 +91,40 @@ let isSettingsOpen = false;
 let hasPendingSecondInstanceRestore = false;
 let windowAlwaysOnTop = DEFAULT_WINDOW_ALWAYS_ON_TOP;
 let cachedWindowBounds: Electron.Rectangle | null = null;
+let isUpdaterInitialized = false;
+let hasTriggeredStartupUpdateCheck = false;
 
 const NORMAL_WINDOW_MIN_WIDTH = 400;
 const NORMAL_WINDOW_MIN_HEIGHT = 300;
+
+type UpdaterStatus =
+  | "idle"
+  | "checking"
+  | "available"
+  | "not-available"
+  | "not-published"
+  | "downloading"
+  | "downloaded"
+  | "error"
+  | "unsupported";
+
+type UpdaterState = {
+  enabled: boolean;
+  status: UpdaterStatus;
+  currentVersion: string;
+  latestVersion: string;
+  downloadProgress: number;
+  errorMessage: string;
+};
+
+const updaterState: UpdaterState = {
+  enabled: false,
+  status: "idle",
+  currentVersion: "",
+  latestVersion: "",
+  downloadProgress: 0,
+  errorMessage: "",
+};
 
 type PersistedSettings = Record<string, unknown> & {
   windowBounds?: Partial<Electron.Rectangle>;
@@ -511,6 +551,9 @@ function createGalleryPreviewWindow(): BrowserWindow {
 }
 
 function setupAutoUpdater() {
+  void prepareAutoUpdater();
+  return;
+  /*
   autoUpdater.logger = log;
   // autoUpdater.logger.transports.file.level = 'info';
 
@@ -567,6 +610,236 @@ function setupAutoUpdater() {
   if (app.isPackaged) {
     autoUpdater.checkForUpdatesAndNotify();
   }
+  */
+}
+
+function normalizeVersion(version: string) {
+  return version.trim().replace(/^v/i, "");
+}
+
+function isAutoUpdateSupported() {
+  return process.platform === "darwin" || process.platform === "win32";
+}
+
+function getDevAppUpdateConfigPath() {
+  return path.join(app.getAppPath(), DEV_APP_UPDATE_CONFIG_FILE);
+}
+
+function buildDevAppUpdateConfig() {
+  return [
+    "provider: generic",
+    `url: ${UPDATE_FEED_URL}`,
+    `updaterCacheDirName: ${DEV_UPDATER_CACHE_DIR_NAME}`,
+    "",
+  ].join("\n");
+}
+
+async function ensureDevAppUpdateConfig() {
+  if (app.isPackaged) return;
+  const configPath = getDevAppUpdateConfigPath();
+  const nextConfig = buildDevAppUpdateConfig();
+  const currentConfig = await lockedFs
+    .readFile(configPath, "utf-8")
+    .then((content) => String(content))
+    .catch(() => "");
+
+  if (currentConfig === nextConfig) return;
+
+  // electron-updater 开发模式固定读取 app 根目录下的 dev-app-update.yml。
+  await lockedFs.writeFile(configPath, nextConfig, "utf-8");
+}
+
+function syncUpdaterCurrentVersion() {
+  updaterState.currentVersion = normalizeVersion(app.getVersion());
+}
+
+function getUpdaterErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isMissingMacUpdateChannelError(message: string) {
+  if (process.platform !== "darwin") return false;
+  const normalizedMessage = message.toLowerCase();
+  return normalizedMessage.includes("404") && normalizedMessage.includes("latest-mac.yml");
+}
+
+function emitToast(
+  key: string,
+  type: "success" | "error" | "warning" | "info",
+  params?: Record<string, string | number>,
+) {
+  mainWindow?.webContents.send("toast", { key, type, params });
+}
+
+function emitUpdaterState() {
+  syncUpdaterCurrentVersion();
+  mainWindow?.webContents.send("updater-state", { ...updaterState });
+}
+
+function setUpdaterState(next: Partial<UpdaterState>) {
+  Object.assign(updaterState, next);
+  emitUpdaterState();
+}
+
+function applyUpdateInfoStatus(status: UpdaterStatus, info?: UpdateInfo) {
+  const nextVersion =
+    info && typeof info.version === "string" ? normalizeVersion(info.version) : "";
+  setUpdaterState({
+    enabled: true,
+    status,
+    latestVersion: nextVersion || updaterState.latestVersion,
+    errorMessage: "",
+  });
+}
+
+function applyUpdaterError(error: unknown) {
+  const message = getUpdaterErrorMessage(error);
+
+  if (isMissingMacUpdateChannelError(message)) {
+    log.info("[updater] latest-mac.yml is not published yet");
+    setUpdaterState({
+      enabled: true,
+      status: "not-published",
+      latestVersion: "",
+      downloadProgress: 0,
+      errorMessage: "",
+    });
+    return { handled: true, message: "" };
+  }
+
+  log.error("[updater] error", message);
+  setUpdaterState({
+    enabled: true,
+    status: "error",
+    errorMessage: message,
+  });
+  return { handled: false, message };
+}
+
+function initializeAutoUpdater() {
+  if (isUpdaterInitialized) {
+    emitUpdaterState();
+    return;
+  }
+
+  syncUpdaterCurrentVersion();
+  const enabled = isAutoUpdateSupported();
+  updaterState.enabled = enabled;
+  updaterState.status = enabled ? "idle" : "unsupported";
+
+  if (!enabled) {
+    emitUpdaterState();
+    return;
+  }
+
+  isUpdaterInitialized = true;
+  autoUpdater.logger = log;
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.disableWebInstaller = true;
+  autoUpdater.forceDevUpdateConfig = !app.isPackaged;
+  autoUpdater.setFeedURL({
+    provider: "generic",
+    url: UPDATE_FEED_URL,
+  });
+
+  autoUpdater.on("checking-for-update", () => {
+    setUpdaterState({
+      enabled: true,
+      status: "checking",
+      errorMessage: "",
+      downloadProgress: 0,
+    });
+  });
+
+  autoUpdater.on("update-available", (info) => {
+    applyUpdateInfoStatus("available", info);
+  });
+
+  autoUpdater.on("update-not-available", (info) => {
+    applyUpdateInfoStatus("not-available", info);
+    setUpdaterState({ downloadProgress: 0 });
+  });
+
+  autoUpdater.on("download-progress", (progress: ProgressInfo) => {
+    setUpdaterState({
+      enabled: true,
+      status: "downloading",
+      downloadProgress: Math.max(0, Math.min(100, progress.percent || 0)),
+      errorMessage: "",
+    });
+  });
+
+  autoUpdater.on("update-downloaded", (info: UpdateDownloadedEvent) => {
+    applyUpdateInfoStatus("downloaded", info);
+    setUpdaterState({ downloadProgress: 100 });
+    emitToast("toast.updateDownloaded", "success", {
+      version: normalizeVersion(info.version),
+    });
+  });
+
+  autoUpdater.on("error", (error) => {
+    applyUpdaterError(error);
+  });
+
+  emitUpdaterState();
+}
+
+async function prepareAutoUpdater() {
+  initializeAutoUpdater();
+  if (!updaterState.enabled) return;
+  await ensureDevAppUpdateConfig();
+}
+
+async function checkForAppUpdates() {
+  await prepareAutoUpdater();
+  if (!updaterState.enabled) {
+    return { success: false, error: "Auto update is unavailable" };
+  }
+  try {
+    await autoUpdater.checkForUpdates();
+    return { success: true };
+  } catch (error) {
+    const result = applyUpdaterError(error);
+    if (result.handled) {
+      return { success: true };
+    }
+    return { success: false, error: result.message };
+  }
+}
+
+async function downloadAppUpdate() {
+  await prepareAutoUpdater();
+  if (!updaterState.enabled) {
+    return { success: false, error: "Auto update is unavailable" };
+  }
+  if (updaterState.status === "downloaded") {
+    return { success: true };
+  }
+  if (updaterState.status !== "available" && updaterState.status !== "downloading") {
+    return { success: false, error: "No update is ready to download" };
+  }
+  try {
+    await autoUpdater.downloadUpdate();
+    return { success: true };
+  } catch (error) {
+    const result = applyUpdaterError(error);
+    return { success: false, error: result.message };
+  }
+}
+
+async function quitAndInstallAppUpdate() {
+  await prepareAutoUpdater();
+  if (!updaterState.enabled) {
+    return { success: false, error: "Auto update is unavailable" };
+  }
+  if (updaterState.status !== "downloaded") {
+    return { success: false, error: "Downloaded update is unavailable" };
+  }
+  setImmediate(() => {
+    autoUpdater.quitAndInstall(false, true);
+  });
+  return { success: true };
 }
 
 async function createWindow(options?: { load?: boolean }) {
@@ -618,6 +891,7 @@ async function createWindow(options?: { load?: boolean }) {
   mainWindow.webContents.on("did-finish-load", () => {
     log.info("Renderer process finished loading");
     notifyWindowAlwaysOnTop();
+    emitUpdaterState();
   });
 
   // Open DevTools in development
@@ -645,9 +919,9 @@ async function createWindow(options?: { load?: boolean }) {
     loadMainWindow();
   }
 
-  // 初始化自动更新
   setupAutoUpdater();
 
+  // 初始化自动更新
   ipcMain.on("window-min", () => mainWindow?.minimize());
   ipcMain.on("window-max", () => {
     if (mainWindow?.isMaximized()) {
@@ -1645,6 +1919,23 @@ ipcMain.handle("get-storage-dir", async () => {
   return getStorageDir();
 });
 
+ipcMain.handle("get-updater-state", async () => {
+  initializeAutoUpdater();
+  return { ...updaterState };
+});
+
+ipcMain.handle("check-app-update", async () => {
+  return checkForAppUpdates();
+});
+
+ipcMain.handle("download-app-update", async () => {
+  return downloadAppUpdate();
+});
+
+ipcMain.handle("quit-and-install-app-update", async () => {
+  return quitAndInstallAppUpdate();
+});
+
 ipcMain.handle("get-env-init-progress", async () => {
   return currentEnvInitProgress;
 });
@@ -1888,6 +2179,7 @@ app.whenReady().then(async () => {
   log.info("Log file location:", log.transports.file.getFile().path);
   log.info("App path:", app.getAppPath());
   log.info("User data:", app.getPath("userData"));
+  await prepareAutoUpdater();
 
   if (process.platform === "win32") {
     app.setAppUserModelId(APP_ID);
@@ -1925,9 +2217,16 @@ app.whenReady().then(async () => {
     restoreMainWindowVisibility();
   }
 
+  if (!hasTriggeredStartupUpdateCheck) {
+    hasTriggeredStartupUpdateCheck = true;
+    void checkForAppUpdates();
+  }
+
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      void createWindow();
+      void createWindow().then(() => {
+        emitUpdaterState();
+      });
       return;
     }
     restoreMainWindowVisibility();

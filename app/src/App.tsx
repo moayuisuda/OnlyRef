@@ -15,6 +15,7 @@ import {
   type EnvInitState,
   type ToastType,
 } from "./store/globalStore";
+import { versionActions } from "./store/versionStore";
 import { importFiles } from "./utils/import";
 import { useT } from "./i18n/useT";
 import { isI18nKey } from "../shared/i18n/guards";
@@ -37,6 +38,7 @@ function App() {
         envInitActions.update(data as Partial<EnvInitState>);
       }
     });
+    void versionActions.init();
 
     const cleanupUpdate = window.electron?.onImageUpdated((data) => {
       if (isRecord(data) && typeof data.id === "string") {

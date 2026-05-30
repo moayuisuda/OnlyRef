@@ -71,10 +71,7 @@ module.exports = {
     "node_modules/sqlite-vec/**",
   ],
   mac: {
-    target: {
-      target: "dmg",
-      arch: ["x64", "arm64"],
-    },
+    target: ["dmg", "zip"],
   },
   win: {
     target: "nsis",
@@ -83,7 +80,7 @@ module.exports = {
   publish: [
     {
       provider: "generic",
-      url: "https://mirror.ghproxy.com/https://github.com/anhaohui/RroRef/releases/latest/download/",
+      url: "https://xget-5sd.pages.dev/gh/moayuisuda/OnlyRef/releases/latest/download",
     },
   ],
   nsis: {

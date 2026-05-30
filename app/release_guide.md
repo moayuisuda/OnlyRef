@@ -1,66 +1,50 @@
-# OnlyRef Release Guide
+# PiCaptain Release Guide
 
-本文档详细说明了 OnlyRef 应用的发布流程，确保自动更新（Auto Update）功能正常工作。
+本文档说明 PiCaptain 的发布流程，确保应用内自动更新功能正常工作。
 
-## 1. 准备工作
+## 1. 准备版本号
 
-确保 `package.json` 中的 `version` 字段已更新。
+发布前先更新 `app/package.json` 中的 `version` 字段。自动更新只会识别比当前安装版本更高的版本号。
 
-```json
-{
-  "version": "0.0.1" // 每次发布必须递增版本号
-}
-```
+## 2. 触发发布流水线
 
-## 2. 构建应用
+推荐通过 tag 触发当前仓库的 GitHub Actions：
 
-在项目根目录 (`app/`) 执行构建命令：
-
-### Windows
 ```bash
-npm run build:win
+git tag v1.0.5
+git push origin v1.0.5
 ```
 
-### macOS
-```bash
-npm run build:mac
+Windows 和 macOS 流水线会在当前仓库构建产物，并把自动更新所需文件上传到同一个 GitHub Release。
+
+## 3. 自动更新资源清单
+
+Windows Release 必须包含：
+
+| 文件 | 用途 |
+| :--- | :--- |
+| `PiCaptain Setup x.x.x.exe` | 安装包 |
+| `PiCaptain Setup x.x.x.exe.blockmap` | 增量更新校验文件 |
+| `latest.yml` | Windows 更新元数据 |
+
+macOS Release 必须包含：
+
+| 文件 | 用途 |
+| :--- | :--- |
+| `PiCaptain-x.x.x.dmg` | 安装包 |
+| `PiCaptain-x.x.x.dmg.blockmap` | 增量更新校验文件 |
+| `PiCaptain-x.x.x-mac.zip` | 自动更新替换包 |
+| `PiCaptain-x.x.x-mac.zip.blockmap` | 增量更新校验文件 |
+| `latest-mac.yml` | macOS 更新元数据 |
+
+不要手动改名构建产物，`latest.yml` / `latest-mac.yml` 中的 `path` 必须和实际文件名一致。
+
+## 4. 更新源
+
+应用内自动更新读取当前仓库 Release 的下载地址：
+
+```text
+https://xget-5sd.pages.dev/gh/moayuisuda/OnlyRef/releases/latest/download
 ```
 
-构建完成后，产物会生成在 `app/dist/` 目录下。
-
-## 3. GitHub Release 上传清单
-
-每次在 GitHub 创建新 Release 时，**必须**上传以下文件，否则自动更新将失效。
-
-### Windows 必需文件
-| 文件名示例 | 说明 | 必须性 |
-| :--- | :--- | :--- |
-| `OnlyRef-Setup-x.x.x.exe` | 安装包 | ✅ 必须 |
-| `OnlyRef-Setup-x.x.x.exe.blockmap` | 增量更新校验文件 | ✅ 必须 |
-| `latest.yml` | Windows 版本索引文件 | ✅ 必须 |
-
-### macOS 必需文件
-| 文件名示例 | 说明 | 必须性 |
-| :--- | :--- | :--- |
-| `OnlyRef-x.x.x.dmg` | 安装包 | ✅ 必须 |
-| `OnlyRef-x.x.x.dmg.blockmap` | 增量更新校验文件 | ✅ 必须 |
-| `OnlyRef-x.x.x-mac.zip` | 自动更新替换包 | ✅ 必须 |
-| `latest-mac.yml` | macOS 版本索引文件 | ✅ 必须 |
-
-> **注意**：请直接上传构建生成的原文件名，不要手动修改文件名。
-
-## 4. 自动更新原理说明
-
-我们配置了国内镜像加速源（`mirror.ghproxy.com`），更新流程如下：
-
-1. 应用启动，请求 `https://mirror.ghproxy.com/https://github.com/anhaohui/RroRef/releases/latest/download/latest.yml`。
-2. 即使你在 GitHub 还没有标记 `latest`，只要 Release 链接正确，镜像源通常能通过重定向找到最新版。
-3. **最佳实践**：在 GitHub Release 页面发布时，勾选 **"Set as the latest release"**。
-
-## 5. 常见问题
-
-- **Q: 为什么更新下载很慢？**
-  - A: 检查是否漏传了 `.blockmap` 文件。如果没有它，应用会下载完整的 `.exe` / `.dmg` 包，而不是几 KB 的差异包。
-
-- **Q: 为什么检测不到更新？**
-  - A: 检查 `latest.yml` 是否上传，以及 `package.json` 里的 `version` 是否真的比当前安装的版本号大。
+发布 Release 时需要确保该 Release 被标记为 latest，否则客户端可能检测不到新版本。
