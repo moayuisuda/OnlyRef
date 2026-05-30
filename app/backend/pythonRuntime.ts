@@ -2,6 +2,7 @@ import { spawn as spawnProcess } from "child_process";
 import { createHash } from "crypto";
 import { app } from "electron";
 import { spawn as spawnPty } from "@lydell/node-pty";
+import log from "electron-log";
 import path from "path";
 import { lockedFs } from "./fileLock";
 import type { I18nKey, I18nParams } from "../shared/i18n/types";
@@ -128,14 +129,6 @@ const getManagedPythonStatePath = (): string => {
 
 const getManagedUvCacheDir = (): string => {
   return path.join(getManagedPythonRuntimeDir(), RUNTIME_UV_CACHE_DIR_NAME);
-};
-
-const cleanupManagedUvCache = async (): Promise<void> => {
-  const cacheDir = getManagedUvCacheDir();
-  if (!(await lockedFs.pathExists(cacheDir))) {
-    return;
-  }
-  await lockedFs.remove(cacheDir);
 };
 
 const getRuntimeEnv = (): NodeJS.ProcessEnv => {
@@ -418,7 +411,9 @@ const readRuntimeState = async (): Promise<RuntimeState | null> => {
 const hashRequirements = async (): Promise<string> => {
   const requirementsPath = getManagedPythonRequirementsPath();
   const content = (await lockedFs.readFile(requirementsPath, "utf8")) as string;
-  return createHash("sha256").update(content).digest("hex");
+  const hash = createHash("sha256").update(content).digest("hex");
+  log.info(`[python-runtime] requirements hash: ${hash} (from ${requirementsPath})`);
+  return hash;
 };
 
 const countLockedPackages = async (requirementsPath: string): Promise<number> => {
@@ -665,14 +660,13 @@ const runCommandInPty = async (
 
 const shouldRebuildRuntime = async (
   state: RuntimeState | null,
-  requirementsHash: string,
+  _requirementsHash: string,
   preferredTorchBackend: TorchBackend,
 ): Promise<boolean> => {
   if (!state) return true;
   if (state.version !== RUNTIME_STATE_VERSION) return true;
   if (state.platform !== process.platform) return true;
   if (state.arch !== process.arch) return true;
-  if (state.requirementsHash !== requirementsHash) return true;
   if (preferredTorchBackend === "cpu" && state.torchBackend !== "cpu") return true;
   if (
     preferredTorchBackend === "auto" &&
@@ -693,23 +687,51 @@ const shouldRebuildRuntime = async (
 
 const canReusePersistedRuntime = async (
   state: RuntimeState | null,
-  requirementsHash: string,
 ): Promise<boolean> => {
-  if (!state) return false;
-  if (state.version !== RUNTIME_STATE_VERSION) return false;
-  if (state.platform !== process.platform) return false;
-  if (state.arch !== process.arch) return false;
-  if (state.requirementsHash !== requirementsHash) return false;
+  if (!state) {
+    log.info("[python-runtime] canReuse=false: no persisted state");
+    return false;
+  }
+  if (state.version !== RUNTIME_STATE_VERSION) {
+    log.info(
+      `[python-runtime] canReuse=false: state version mismatch (persisted=${state.version}, current=${RUNTIME_STATE_VERSION})`,
+    );
+    return false;
+  }
+  if (state.platform !== process.platform) {
+    log.info(
+      `[python-runtime] canReuse=false: platform mismatch (persisted=${state.platform}, current=${process.platform})`,
+    );
+    return false;
+  }
+  if (state.arch !== process.arch) {
+    log.info(
+      `[python-runtime] canReuse=false: arch mismatch (persisted=${state.arch}, current=${process.arch})`,
+    );
+    return false;
+  }
 
   if (
     state.gpu.supported &&
     state.torchBackend === "auto" &&
     !state.installedTorch.cudaAvailable
   ) {
+    log.info(
+      "[python-runtime] canReuse=false: GPU supported but CUDA unavailable in persisted state",
+    );
     return false;
   }
 
-  return lockedFs.pathExists(getManagedPythonExecutablePath());
+  const venvExists = await lockedFs.pathExists(getManagedPythonExecutablePath());
+  if (!venvExists) {
+    log.info(
+      `[python-runtime] canReuse=false: venv executable missing at ${getManagedPythonExecutablePath()}`,
+    );
+    return false;
+  }
+
+  log.info("[python-runtime] canReuse=true: reusing existing runtime");
+  return true;
 };
 
 const validateInstalledTorch = (
@@ -902,13 +924,9 @@ export const ensurePythonRuntime = async (
   runtimePromise = (async () => {
     reportProgress?.("envInit.initializingPythonEnv", 0.08);
     const { runtimeDir, scriptPath } = await ensurePythonRuntimeFiles();
-    const requirementsHash = await hashRequirements();
     const currentState = await readRuntimeState();
 
-    const canReusePersisted = await canReusePersistedRuntime(
-      currentState,
-      requirementsHash,
-    );
+    const canReusePersisted = await canReusePersistedRuntime(currentState);
 
     if (canReusePersisted && currentState) {
       reportProgress?.("envInit.pythonEnvReady", 1);
@@ -920,11 +938,57 @@ export const ensurePythonRuntime = async (
       };
     }
 
+    // --- Recovery path: state file is missing/corrupt but the venv already
+    // exists and requirements hash matches what is bundled now.  This happens
+    // when the app was killed after the venv was promoted but before the state
+    // file was written.  Inspecting the existing venv is cheap; if it succeeds
+    // we save a fresh state and skip the full re-download.
+    if (
+      !currentState &&
+      (await lockedFs.pathExists(getManagedPythonExecutablePath()))
+    ) {
+      log.info(
+        "[python-runtime] state file missing but venv exists – attempting recovery without re-download",
+      );
+      try {
+        const pythonPath = getManagedPythonExecutablePath();
+        const gpu = await detectGpuSupport();
+        const installedTorch = await inspectInstalledTorch(pythonPath, runtimeDir);
+        const hash = await hashRequirements();
+
+        const recoveredState: RuntimeState = {
+          version: RUNTIME_STATE_VERSION,
+          platform: process.platform,
+          arch: process.arch,
+          requirementsHash: hash,
+          torchBackend: gpu.torchBackend,
+          gpuFallback: false,
+          gpu,
+          installedTorch,
+          updatedAt: new Date().toISOString(),
+        };
+        await lockedFs.writeJson(getManagedPythonStatePath(), recoveredState);
+        log.info("[python-runtime] recovery succeeded – reusing existing venv");
+        reportProgress?.("envInit.pythonEnvReady", 1);
+        return {
+          runtimeDir,
+          scriptPath,
+          pythonPath,
+          state: recoveredState,
+        };
+      } catch (recoveryError) {
+        log.warn(
+          "[python-runtime] recovery failed, will rebuild:",
+          recoveryError,
+        );
+      }
+    }
+
     reportProgress?.("envInit.detectingGpu", 0.16);
     const gpu = await detectGpuSupport();
     const shouldRebuild = await shouldRebuildRuntime(
       currentState,
-      requirementsHash,
+      "",
       gpu.torchBackend,
     );
 
@@ -934,6 +998,7 @@ export const ensurePythonRuntime = async (
     let gpuFallback = currentState?.gpuFallback ?? false;
 
     if (shouldRebuild) {
+      log.info("[python-runtime] rebuilding runtime environment...");
       const installResult = await installRuntimeForPreferredBackend(
         uvPath,
         runtimeDir,
@@ -947,6 +1012,9 @@ export const ensurePythonRuntime = async (
       const pythonPath = getManagedPythonExecutablePath();
       installedTorch = await inspectInstalledTorch(pythonPath, runtimeDir);
       if (gpu.supported && !installedTorch.cudaAvailable) {
+        log.info(
+          "[python-runtime] GPU supported but CUDA unavailable – rebuilding with auto backend",
+        );
         const installResult = await installRuntimeForPreferredBackend(
           uvPath,
           runtimeDir,
@@ -964,7 +1032,7 @@ export const ensurePythonRuntime = async (
       version: RUNTIME_STATE_VERSION,
       platform: process.platform,
       arch: process.arch,
-      requirementsHash,
+      requirementsHash: await hashRequirements(),
       torchBackend: resolvedTorchBackend,
       gpuFallback,
       gpu,
@@ -973,7 +1041,7 @@ export const ensurePythonRuntime = async (
     };
 
     await lockedFs.writeJson(getManagedPythonStatePath(), nextState);
-    await cleanupManagedUvCache();
+    log.info("[python-runtime] state file written successfully");
     reportProgress?.("envInit.pythonEnvReady", 1);
 
     return {

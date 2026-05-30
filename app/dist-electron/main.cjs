@@ -25,7 +25,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 var import_electron4 = require("electron");
 var import_path6 = __toESM(require("path"), 1);
 var import_fs_extra6 = __toESM(require("fs-extra"), 1);
-var import_electron_log = __toESM(require("electron-log"), 1);
+var import_electron_log2 = __toESM(require("electron-log"), 1);
 var import_electron_updater = require("electron-updater");
 var import_child_process3 = require("child_process");
 
@@ -3095,6 +3095,7 @@ var import_child_process = require("child_process");
 var import_crypto = require("crypto");
 var import_electron2 = require("electron");
 var import_node_pty = require("@lydell/node-pty");
+var import_electron_log = __toESM(require("electron-log"), 1);
 var import_path4 = __toESM(require("path"), 1);
 var PYTHON_RUNTIME_DIR_NAME = "python-runtime";
 var PYTHON_RUNTIME_FILES = ["requirements.lock.txt", "tagger.py"];
@@ -3145,13 +3146,6 @@ var getManagedPythonStatePath = () => {
 };
 var getManagedUvCacheDir = () => {
   return import_path4.default.join(getManagedPythonRuntimeDir(), RUNTIME_UV_CACHE_DIR_NAME);
-};
-var cleanupManagedUvCache = async () => {
-  const cacheDir = getManagedUvCacheDir();
-  if (!await lockedFs.pathExists(cacheDir)) {
-    return;
-  }
-  await lockedFs.remove(cacheDir);
 };
 var getRuntimeEnv = () => {
   return {
@@ -3586,15 +3580,47 @@ var shouldRebuildRuntime = async (state, requirementsHash, preferredTorchBackend
   return !await lockedFs.pathExists(getManagedPythonExecutablePath());
 };
 var canReusePersistedRuntime = async (state, requirementsHash) => {
-  if (!state) return false;
-  if (state.version !== RUNTIME_STATE_VERSION) return false;
-  if (state.platform !== process.platform) return false;
-  if (state.arch !== process.arch) return false;
-  if (state.requirementsHash !== requirementsHash) return false;
-  if (state.gpu.supported && state.torchBackend === "auto" && !state.installedTorch.cudaAvailable) {
+  if (!state) {
+    import_electron_log.default.info("[python-runtime] canReuse=false: no persisted state");
     return false;
   }
-  return lockedFs.pathExists(getManagedPythonExecutablePath());
+  if (state.version !== RUNTIME_STATE_VERSION) {
+    import_electron_log.default.info(
+      `[python-runtime] canReuse=false: state version mismatch (persisted=${state.version}, current=${RUNTIME_STATE_VERSION})`
+    );
+    return false;
+  }
+  if (state.platform !== process.platform) {
+    import_electron_log.default.info(
+      `[python-runtime] canReuse=false: platform mismatch (persisted=${state.platform}, current=${process.platform})`
+    );
+    return false;
+  }
+  if (state.arch !== process.arch) {
+    import_electron_log.default.info(
+      `[python-runtime] canReuse=false: arch mismatch (persisted=${state.arch}, current=${process.arch})`
+    );
+    return false;
+  }
+  if (state.requirementsHash !== requirementsHash) {
+    import_electron_log.default.info(
+      `[python-runtime] canReuse=false: requirements hash mismatch (persisted=${state.requirementsHash.slice(0, 8)}, current=${requirementsHash.slice(0, 8)})`
+    );
+    return false;
+  }
+  if (state.gpu.supported && state.torchBackend === "auto" && !state.installedTorch.cudaAvailable) {
+    import_electron_log.default.info(
+      "[python-runtime] canReuse=false: GPU supported but CUDA unavailable in persisted state"
+    );
+    return false;
+  }
+  const venvExists = await lockedFs.pathExists(getManagedPythonExecutablePath());
+  if (!venvExists) {
+    import_electron_log.default.info("[python-runtime] canReuse=false: venv executable missing");
+    return false;
+  }
+  import_electron_log.default.info("[python-runtime] canReuse=true: reusing existing runtime");
+  return true;
 };
 var validateInstalledTorch = (requireCuda, gpu, installedTorch) => {
   if (!requireCuda) {
@@ -3748,6 +3774,41 @@ var ensurePythonRuntime = async (uvPath, reportProgress) => {
         state: currentState
       };
     }
+    if (!currentState && await lockedFs.pathExists(getManagedPythonExecutablePath())) {
+      import_electron_log.default.info(
+        "[python-runtime] state file missing but venv exists \u2013 attempting recovery without re-download"
+      );
+      try {
+        const pythonPath2 = getManagedPythonExecutablePath();
+        const gpu2 = await detectGpuSupport();
+        const installedTorch2 = await inspectInstalledTorch(pythonPath2, runtimeDir);
+        const recoveredState = {
+          version: RUNTIME_STATE_VERSION,
+          platform: process.platform,
+          arch: process.arch,
+          requirementsHash,
+          torchBackend: gpu2.torchBackend,
+          gpuFallback: false,
+          gpu: gpu2,
+          installedTorch: installedTorch2,
+          updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+        };
+        await lockedFs.writeJson(getManagedPythonStatePath(), recoveredState);
+        import_electron_log.default.info("[python-runtime] recovery succeeded \u2013 reusing existing venv");
+        reportProgress == null ? void 0 : reportProgress("envInit.pythonEnvReady", 1);
+        return {
+          runtimeDir,
+          scriptPath,
+          pythonPath: pythonPath2,
+          state: recoveredState
+        };
+      } catch (recoveryError) {
+        import_electron_log.default.warn(
+          "[python-runtime] recovery failed, will rebuild:",
+          recoveryError
+        );
+      }
+    }
     reportProgress == null ? void 0 : reportProgress("envInit.detectingGpu", 0.16);
     const gpu = await detectGpuSupport();
     const shouldRebuild = await shouldRebuildRuntime(
@@ -3759,6 +3820,7 @@ var ensurePythonRuntime = async (uvPath, reportProgress) => {
     let resolvedTorchBackend = (currentState == null ? void 0 : currentState.torchBackend) ?? gpu.torchBackend;
     let gpuFallback = (currentState == null ? void 0 : currentState.gpuFallback) ?? false;
     if (shouldRebuild) {
+      import_electron_log.default.info("[python-runtime] rebuilding runtime environment...");
       const installResult = await installRuntimeForPreferredBackend(
         uvPath,
         runtimeDir,
@@ -3772,6 +3834,9 @@ var ensurePythonRuntime = async (uvPath, reportProgress) => {
       const pythonPath2 = getManagedPythonExecutablePath();
       installedTorch = await inspectInstalledTorch(pythonPath2, runtimeDir);
       if (gpu.supported && !installedTorch.cudaAvailable) {
+        import_electron_log.default.info(
+          "[python-runtime] GPU supported but CUDA unavailable \u2013 rebuilding with auto backend"
+        );
         const installResult = await installRuntimeForPreferredBackend(
           uvPath,
           runtimeDir,
@@ -3796,7 +3861,7 @@ var ensurePythonRuntime = async (uvPath, reportProgress) => {
       updatedAt: (/* @__PURE__ */ new Date()).toISOString()
     };
     await lockedFs.writeJson(getManagedPythonStatePath(), nextState);
-    await cleanupManagedUvCache();
+    import_electron_log.default.info("[python-runtime] state file written successfully");
     reportProgress == null ? void 0 : reportProgress("envInit.pythonEnvReady", 1);
     return {
       runtimeDir,
@@ -4534,6 +4599,22 @@ var en = {
   "titleBar.indexing": "Indexing...",
   "titleBar.indexUnindexedImages": "Index unindexed images",
   "titleBar.processing": "Processing...",
+  "titleBar.version": "App updates",
+  "titleBar.version.row": "Current {{current}} \xB7 Latest {{latest}}",
+  "titleBar.version.checkHint": "Check whether a newer release is available.",
+  "titleBar.version.checkNow": "Check",
+  "titleBar.version.checking": "Checking for updates...",
+  "titleBar.version.checkingButton": "Checking",
+  "titleBar.version.downloadNow": "Download",
+  "titleBar.version.downloading": "Downloading update {{progress}}%",
+  "titleBar.version.downloadingButton": "{{progress}}%",
+  "titleBar.version.error": "Update failed: {{error}}",
+  "titleBar.version.inAppUnavailable": "In-app updates are unavailable on this platform",
+  "titleBar.version.notPublished": "No update has been published for this platform yet",
+  "titleBar.version.readyToInstall": "v{{version}} is ready to install.",
+  "titleBar.version.restartToInstall": "Restart",
+  "titleBar.version.upToDate": "You are on the latest version.",
+  "titleBar.version.updateAvailable": "Update available: v{{version}}",
   "toast.indexFailed": "Failed to index images",
   "toast.noUnindexedImages": "No unindexed images found",
   "toast.indexCompleted": "Index completed: {{created}} created, {{updated}} updated, {{deleted}} deleted",
@@ -4569,6 +4650,7 @@ var en = {
   "toast.shortcutUpdateFailed": "Failed to update shortcut: {{error}}",
   "toast.windowDisplayModeUpdateFailed": "Failed to switch floating mode: {{error}}",
   "toast.windowAlwaysOnTopUpdateFailed": "Failed to update always-on-top: {{error}}",
+  "toast.updateDownloaded": "Update downloaded. Restart to install v{{version}}",
   "envInit.brandTitle": "PiCaptain",
   "envInit.heading": "Preparing PiCaptain...",
   "envInit.subheading": "First run may download tools, install dependencies, and fetch the local model. This is a one-time step.",
@@ -5006,7 +5088,24 @@ var zh = {
   "envInit.selectStorageAction": "\u9009\u62E9\u76EE\u5F55",
   "dialog.invalidStorageFolderTitle": "\u65E0\u6CD5\u4F7F\u7528\u8BE5\u76EE\u5F55",
   "dialog.invalidStorageFolderMessage": "\u6570\u636E\u76EE\u5F55\u4E0D\u80FD\u4F4D\u4E8E\u5E94\u7528\u5B89\u88C5\u76EE\u5F55\u5185\u3002",
-  "dialog.invalidStorageFolderDetail": "\u8BF7\u9009\u62E9\u4E0B\u9762\u76EE\u5F55\u4E4B\u5916\u7684\u5176\u4ED6\u4F4D\u7F6E\uFF1A\n{{dir}}"
+  "dialog.invalidStorageFolderDetail": "\u8BF7\u9009\u62E9\u4E0B\u9762\u76EE\u5F55\u4E4B\u5916\u7684\u5176\u4ED6\u4F4D\u7F6E\uFF1A\n{{dir}}",
+  "titleBar.version": "\u5E94\u7528\u66F4\u65B0",
+  "titleBar.version.row": "\u5F53\u524D {{current}} \xB7 \u6700\u65B0 {{latest}}",
+  "titleBar.version.checkHint": "\u68C0\u67E5\u662F\u5426\u6709\u53EF\u7528\u7684\u65B0\u7248\u672C\u3002",
+  "titleBar.version.checkNow": "\u68C0\u67E5",
+  "titleBar.version.checking": "\u6B63\u5728\u68C0\u67E5\u66F4\u65B0\u2026",
+  "titleBar.version.checkingButton": "\u68C0\u67E5\u4E2D",
+  "titleBar.version.downloadNow": "\u4E0B\u8F7D",
+  "titleBar.version.downloading": "\u6B63\u5728\u4E0B\u8F7D\u66F4\u65B0 {{progress}}%",
+  "titleBar.version.downloadingButton": "{{progress}}%",
+  "titleBar.version.error": "\u66F4\u65B0\u5931\u8D25\uFF1A{{error}}",
+  "titleBar.version.inAppUnavailable": "\u5F53\u524D\u5E73\u53F0\u4E0D\u652F\u6301\u5E94\u7528\u5185\u66F4\u65B0",
+  "titleBar.version.notPublished": "\u5F53\u524D\u5E73\u53F0\u6682\u672A\u53D1\u5E03\u66F4\u65B0",
+  "titleBar.version.readyToInstall": "v{{version}} \u5DF2\u51C6\u5907\u597D\u5B89\u88C5\u3002",
+  "titleBar.version.restartToInstall": "\u91CD\u542F\u5B89\u88C5",
+  "titleBar.version.upToDate": "\u5F53\u524D\u5DF2\u662F\u6700\u65B0\u7248\u672C\u3002",
+  "titleBar.version.updateAvailable": "\u53EF\u66F4\u65B0\u81F3 v{{version}}",
+  "toast.updateDownloaded": "\u66F4\u65B0\u5DF2\u4E0B\u8F7D\u5B8C\u6210\uFF0C\u53EF\u91CD\u542F\u5B89\u88C5 v{{version}}"
 };
 
 // shared/i18n/t.ts
@@ -5045,10 +5144,10 @@ var import_radash = require("radash");
 if (!import_electron4.app.isPackaged) {
   import_electron4.app.setName("PiCaptain");
 }
-Object.assign(console, import_electron_log.default.functions);
-import_electron_log.default.transports.file.level = "info";
-import_electron_log.default.transports.file.maxSize = 5 * 1024 * 1024;
-import_electron_log.default.transports.file.archiveLog = (file) => {
+Object.assign(console, import_electron_log2.default.functions);
+import_electron_log2.default.transports.file.level = "info";
+import_electron_log2.default.transports.file.maxSize = 5 * 1024 * 1024;
+import_electron_log2.default.transports.file.archiveLog = (file) => {
   const filePath = file.toString();
   const info = import_path6.default.parse(filePath);
   const dest = import_path6.default.join(info.dir, info.name + ".old" + info.ext);
@@ -5064,6 +5163,9 @@ var localServerApiBaseUrl = `http://localhost:${DEFAULT_SERVER_PORT}`;
 var isLocalServerReady = false;
 var DEFAULT_TOGGLE_WINDOW_SHORTCUT = process.platform === "darwin" ? "Command+L" : "Ctrl+L";
 var APP_ID = "com.picaptain.app";
+var UPDATE_FEED_URL = "https://xget-5sd.pages.dev/gh/moayuisuda/OnlyRef/releases/latest/download";
+var DEV_APP_UPDATE_CONFIG_FILE = "dev-app-update.yml";
+var DEV_UPDATER_CACHE_DIR_NAME = "picaptain-updater";
 var WINDOW_ICON_PATH = import_path6.default.join(__dirname, "../resources/icon.png");
 var STORAGE_ROOT_CONFIG_PATH = import_path6.default.join(
   import_electron4.app.getPath("userData"),
@@ -5074,8 +5176,18 @@ var isSettingsOpen = false;
 var hasPendingSecondInstanceRestore = false;
 var windowAlwaysOnTop = DEFAULT_WINDOW_ALWAYS_ON_TOP;
 var cachedWindowBounds = null;
+var isUpdaterInitialized = false;
+var hasTriggeredStartupUpdateCheck = false;
 var NORMAL_WINDOW_MIN_WIDTH = 400;
 var NORMAL_WINDOW_MIN_HEIGHT = 300;
+var updaterState = {
+  enabled: false,
+  status: "idle",
+  currentVersion: "",
+  latestVersion: "",
+  downloadProgress: 0,
+  errorMessage: ""
+};
 var galleryPreviewPayload = null;
 var hasSingleInstanceLock = import_electron4.app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
@@ -5094,7 +5206,7 @@ async function hasPersistedStorageRoot() {
     );
     return typeof (raw == null ? void 0 : raw.storageDir) === "string" && raw.storageDir.trim().length > 0;
   } catch (error) {
-    import_electron_log.default.warn("Failed to read storage root config", error);
+    import_electron_log2.default.warn("Failed to read storage root config", error);
     return false;
   }
 }
@@ -5187,7 +5299,7 @@ async function writePersistedSettings(patch) {
       ...patch
     });
   } catch (error) {
-    import_electron_log.default.error("Failed to write settings", error);
+    import_electron_log2.default.error("Failed to write settings", error);
   }
 }
 function normalizeWindowBounds(bounds) {
@@ -5310,11 +5422,11 @@ function loadMainWindow() {
     apiBaseUrl: localServerApiBaseUrl
   }).toString();
   if (!import_electron4.app.isPackaged) {
-    import_electron_log.default.info("Loading renderer from localhost");
+    import_electron_log2.default.info("Loading renderer from localhost");
     void mainWindow.loadURL(`http://localhost:5173/?${query}`);
   } else {
     const filePath = import_path6.default.join(__dirname, "../dist-renderer/index.html");
-    import_electron_log.default.info("Loading renderer from file:", filePath);
+    import_electron_log2.default.info("Loading renderer from file:", filePath);
     void mainWindow.loadFile(filePath, {
       query: {
         apiBaseUrl: localServerApiBaseUrl
@@ -5397,7 +5509,7 @@ function createGalleryPreviewWindow() {
   previewWindow.webContents.on(
     "did-fail-load",
     (_event, errorCode, errorDescription, validatedURL) => {
-      import_electron_log.default.error(
+      import_electron_log2.default.error(
         "Gallery preview failed to load:",
         errorCode,
         errorDescription,
@@ -5409,44 +5521,199 @@ function createGalleryPreviewWindow() {
   return previewWindow;
 }
 function setupAutoUpdater() {
-  import_electron_updater.autoUpdater.logger = import_electron_log.default;
-  import_electron_updater.autoUpdater.autoDownload = true;
+  void prepareAutoUpdater();
+  return;
+}
+function normalizeVersion(version) {
+  return version.trim().replace(/^v/i, "");
+}
+function isAutoUpdateSupported() {
+  return process.platform === "darwin" || process.platform === "win32";
+}
+function getDevAppUpdateConfigPath() {
+  return import_path6.default.join(import_electron4.app.getAppPath(), DEV_APP_UPDATE_CONFIG_FILE);
+}
+function buildDevAppUpdateConfig() {
+  return [
+    "provider: generic",
+    `url: ${UPDATE_FEED_URL}`,
+    `updaterCacheDirName: ${DEV_UPDATER_CACHE_DIR_NAME}`,
+    ""
+  ].join("\n");
+}
+async function ensureDevAppUpdateConfig() {
+  if (import_electron4.app.isPackaged) return;
+  const configPath = getDevAppUpdateConfigPath();
+  const nextConfig = buildDevAppUpdateConfig();
+  const currentConfig = await lockedFs.readFile(configPath, "utf-8").then((content) => String(content)).catch(() => "");
+  if (currentConfig === nextConfig) return;
+  await lockedFs.writeFile(configPath, nextConfig, "utf-8");
+}
+function syncUpdaterCurrentVersion() {
+  updaterState.currentVersion = normalizeVersion(import_electron4.app.getVersion());
+}
+function getUpdaterErrorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function isMissingMacUpdateChannelError(message) {
+  if (process.platform !== "darwin") return false;
+  const normalizedMessage = message.toLowerCase();
+  return normalizedMessage.includes("404") && normalizedMessage.includes("latest-mac.yml");
+}
+function emitToast(key, type, params) {
+  mainWindow == null ? void 0 : mainWindow.webContents.send("toast", { key, type, params });
+}
+function emitUpdaterState() {
+  syncUpdaterCurrentVersion();
+  mainWindow == null ? void 0 : mainWindow.webContents.send("updater-state", { ...updaterState });
+}
+function setUpdaterState(next) {
+  Object.assign(updaterState, next);
+  emitUpdaterState();
+}
+function applyUpdateInfoStatus(status, info) {
+  const nextVersion = info && typeof info.version === "string" ? normalizeVersion(info.version) : "";
+  setUpdaterState({
+    enabled: true,
+    status,
+    latestVersion: nextVersion || updaterState.latestVersion,
+    errorMessage: ""
+  });
+}
+function applyUpdaterError(error) {
+  const message = getUpdaterErrorMessage(error);
+  if (isMissingMacUpdateChannelError(message)) {
+    import_electron_log2.default.info("[updater] latest-mac.yml is not published yet");
+    setUpdaterState({
+      enabled: true,
+      status: "not-published",
+      latestVersion: "",
+      downloadProgress: 0,
+      errorMessage: ""
+    });
+    return { handled: true, message: "" };
+  }
+  import_electron_log2.default.error("[updater] error", message);
+  setUpdaterState({
+    enabled: true,
+    status: "error",
+    errorMessage: message
+  });
+  return { handled: false, message };
+}
+function initializeAutoUpdater() {
+  if (isUpdaterInitialized) {
+    emitUpdaterState();
+    return;
+  }
+  syncUpdaterCurrentVersion();
+  const enabled = isAutoUpdateSupported();
+  updaterState.enabled = enabled;
+  updaterState.status = enabled ? "idle" : "unsupported";
+  if (!enabled) {
+    emitUpdaterState();
+    return;
+  }
+  isUpdaterInitialized = true;
+  import_electron_updater.autoUpdater.logger = import_electron_log2.default;
+  import_electron_updater.autoUpdater.autoDownload = false;
+  import_electron_updater.autoUpdater.autoInstallOnAppQuit = true;
+  import_electron_updater.autoUpdater.disableWebInstaller = true;
+  import_electron_updater.autoUpdater.forceDevUpdateConfig = !import_electron4.app.isPackaged;
+  import_electron_updater.autoUpdater.setFeedURL({
+    provider: "generic",
+    url: UPDATE_FEED_URL
+  });
   import_electron_updater.autoUpdater.on("checking-for-update", () => {
-    import_electron_log.default.info("Checking for update...");
+    setUpdaterState({
+      enabled: true,
+      status: "checking",
+      errorMessage: "",
+      downloadProgress: 0
+    });
   });
   import_electron_updater.autoUpdater.on("update-available", (info) => {
-    import_electron_log.default.info("Update available.", info);
-    if (mainWindow) {
-      mainWindow.webContents.send("update-available", info);
-    }
+    applyUpdateInfoStatus("available", info);
   });
   import_electron_updater.autoUpdater.on("update-not-available", (info) => {
-    import_electron_log.default.info("Update not available.", info);
+    applyUpdateInfoStatus("not-available", info);
+    setUpdaterState({ downloadProgress: 0 });
   });
-  import_electron_updater.autoUpdater.on("error", (err) => {
-    import_electron_log.default.error("Error in auto-updater.", err);
-  });
-  import_electron_updater.autoUpdater.on("download-progress", (progressObj) => {
-    let log_message = "Download speed: " + progressObj.bytesPerSecond;
-    log_message = log_message + " - Downloaded " + progressObj.percent + "%";
-    log_message = log_message + " (" + progressObj.transferred + "/" + progressObj.total + ")";
-    import_electron_log.default.info(log_message);
-    if (mainWindow) {
-      mainWindow.webContents.send("download-progress", progressObj);
-    }
+  import_electron_updater.autoUpdater.on("download-progress", (progress) => {
+    setUpdaterState({
+      enabled: true,
+      status: "downloading",
+      downloadProgress: Math.max(0, Math.min(100, progress.percent || 0)),
+      errorMessage: ""
+    });
   });
   import_electron_updater.autoUpdater.on("update-downloaded", (info) => {
-    import_electron_log.default.info("Update downloaded", info);
-    if (mainWindow) {
-      mainWindow.webContents.send("update-downloaded", info);
-    }
+    applyUpdateInfoStatus("downloaded", info);
+    setUpdaterState({ downloadProgress: 100 });
+    emitToast("toast.updateDownloaded", "success", {
+      version: normalizeVersion(info.version)
+    });
   });
-  if (import_electron4.app.isPackaged) {
-    import_electron_updater.autoUpdater.checkForUpdatesAndNotify();
+  import_electron_updater.autoUpdater.on("error", (error) => {
+    applyUpdaterError(error);
+  });
+  emitUpdaterState();
+}
+async function prepareAutoUpdater() {
+  initializeAutoUpdater();
+  if (!updaterState.enabled) return;
+  await ensureDevAppUpdateConfig();
+}
+async function checkForAppUpdates() {
+  await prepareAutoUpdater();
+  if (!updaterState.enabled) {
+    return { success: false, error: "Auto update is unavailable" };
+  }
+  try {
+    await import_electron_updater.autoUpdater.checkForUpdates();
+    return { success: true };
+  } catch (error) {
+    const result = applyUpdaterError(error);
+    if (result.handled) {
+      return { success: true };
+    }
+    return { success: false, error: result.message };
   }
 }
+async function downloadAppUpdate() {
+  await prepareAutoUpdater();
+  if (!updaterState.enabled) {
+    return { success: false, error: "Auto update is unavailable" };
+  }
+  if (updaterState.status === "downloaded") {
+    return { success: true };
+  }
+  if (updaterState.status !== "available" && updaterState.status !== "downloading") {
+    return { success: false, error: "No update is ready to download" };
+  }
+  try {
+    await import_electron_updater.autoUpdater.downloadUpdate();
+    return { success: true };
+  } catch (error) {
+    const result = applyUpdaterError(error);
+    return { success: false, error: result.message };
+  }
+}
+async function quitAndInstallAppUpdate() {
+  await prepareAutoUpdater();
+  if (!updaterState.enabled) {
+    return { success: false, error: "Auto update is unavailable" };
+  }
+  if (updaterState.status !== "downloaded") {
+    return { success: false, error: "Downloaded update is unavailable" };
+  }
+  setImmediate(() => {
+    import_electron_updater.autoUpdater.quitAndInstall(false, true);
+  });
+  return { success: true };
+}
 async function createWindow(options) {
-  import_electron_log.default.info("Creating main window...");
+  import_electron_log2.default.info("Creating main window...");
   isAppHidden = false;
   const settings = await readPersistedSettings();
   cachedWindowBounds = settings.windowBounds ? normalizeWindowBounds(settings.windowBounds) : null;
@@ -5486,8 +5753,9 @@ async function createWindow(options) {
     debouncedSaveWindowBounds(bounds);
   });
   mainWindow.webContents.on("did-finish-load", () => {
-    import_electron_log.default.info("Renderer process finished loading");
+    import_electron_log2.default.info("Renderer process finished loading");
     notifyWindowAlwaysOnTop();
+    emitUpdaterState();
   });
   if (!import_electron4.app.isPackaged) {
     mainWindow.webContents.openDevTools({ mode: "detach" });
@@ -5495,7 +5763,7 @@ async function createWindow(options) {
   mainWindow.webContents.on(
     "did-fail-load",
     (_event, errorCode, errorDescription, validatedURL) => {
-      import_electron_log.default.error(
+      import_electron_log2.default.error(
         "Renderer process failed to load:",
         errorCode,
         errorDescription,
@@ -5504,7 +5772,7 @@ async function createWindow(options) {
     }
   );
   mainWindow.webContents.on("render-process-gone", (_event, details) => {
-    import_electron_log.default.error("Renderer process gone:", details.reason, details.exitCode);
+    import_electron_log2.default.error("Renderer process gone:", details.reason, details.exitCode);
   });
   if ((options == null ? void 0 : options.load) !== false) {
     loadMainWindow();
@@ -5547,7 +5815,7 @@ async function createWindow(options) {
       });
       return { success: true, alwaysOnTop: windowAlwaysOnTop };
     } catch (error) {
-      import_electron_log.default.error("Failed to switch always-on-top state", error);
+      import_electron_log2.default.error("Failed to switch always-on-top state", error);
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error),
@@ -5556,15 +5824,15 @@ async function createWindow(options) {
     }
   });
   import_electron4.ipcMain.on("log-message", (_event, level, ...args) => {
-    if (typeof import_electron_log.default[level] === "function") {
-      import_electron_log.default[level](...args);
+    if (typeof import_electron_log2.default[level] === "function") {
+      import_electron_log2.default[level](...args);
     } else {
-      import_electron_log.default.info(...args);
+      import_electron_log2.default.info(...args);
     }
   });
   import_electron4.ipcMain.handle("get-log-content", async () => {
     try {
-      const logPath = import_electron_log.default.transports.file.getFile().path;
+      const logPath = import_electron_log2.default.transports.file.getFile().path;
       if (await lockedFs.pathExists(logPath)) {
         const stats = await lockedFs.stat(logPath);
         const size = stats.size;
@@ -5585,7 +5853,7 @@ async function createWindow(options) {
       }
       return "No log file found.";
     } catch (error) {
-      import_electron_log.default.error("Failed to read log file:", error);
+      import_electron_log2.default.error("Failed to read log file:", error);
       return `Failed to read log file: ${error instanceof Error ? error.message : String(error)}`;
     }
   });
@@ -5955,7 +6223,7 @@ async function ensureUvInstalled(onProgress) {
   }
   await lockedFs.ensureDir(import_path6.default.dirname(uvPath));
   const { url, kind } = resolveUvReleaseAsset();
-  import_electron_log.default.info(`Downloading uv from: ${url}`);
+  import_electron_log2.default.info(`Downloading uv from: ${url}`);
   onProgress == null ? void 0 : onProgress("envInit.downloadingUv", 0.18);
   const buf = await downloadBuffer(url, (current, total) => {
     if (total <= 0) {
@@ -5996,11 +6264,11 @@ async function preparePythonRuntime(parent, reportEnvInit) {
   const uvPath = await ensureUvInstalled((statusKey, progress) => {
     reportEnvInit(statusKey, progress);
   });
-  import_electron_log.default.info("[python-init] uv ready:", uvPath);
+  import_electron_log2.default.info("[python-init] uv ready:", uvPath);
   try {
-    import_electron_log.default.info("[python-init] ensuring managed runtime...");
+    import_electron_log2.default.info("[python-init] ensuring managed runtime...");
     await ensurePythonRuntime(uvPath, reportEnvInit);
-    import_electron_log.default.info("[python-init] managed runtime ready.");
+    import_electron_log2.default.info("[python-init] managed runtime ready.");
   } catch (error) {
     const locale = await getLocale();
     const pythonDir = getManagedPythonRuntimeDir();
@@ -6009,7 +6277,7 @@ Dir: ${pythonDir}` : t(locale, "dialog.pythonSetupFailedDetail", {
       code: -1,
       dir: pythonDir
     });
-    import_electron_log.default.error("[python-init] runtime setup failed", error);
+    import_electron_log2.default.error("[python-init] runtime setup failed", error);
     closeEnvInitProgress(parent);
     await import_electron4.dialog.showMessageBox(parent, {
       type: "error",
@@ -6230,9 +6498,9 @@ async function runStartupInitialization(parent) {
     return;
   }
   startupInitializationPromise = (async () => {
-    import_electron_log.default.info("Ensuring startup initialization...");
+    import_electron_log2.default.info("Ensuring startup initialization...");
     await ensureStartupInitialization(parent);
-    import_electron_log.default.info("Startup initialization ready.");
+    import_electron_log2.default.info("Startup initialization ready.");
     scheduleVectorServiceWarmup();
   })();
   try {
@@ -6245,9 +6513,9 @@ function scheduleVectorServiceWarmup() {
   void (async () => {
     try {
       await warmupVectorService();
-      import_electron_log.default.info("[vector-service] warmup ready.");
+      import_electron_log2.default.info("[vector-service] warmup ready.");
     } catch (error) {
-      import_electron_log.default.warn("[vector-service] warmup failed:", error);
+      import_electron_log2.default.warn("[vector-service] warmup failed:", error);
     }
   })();
 }
@@ -6284,6 +6552,19 @@ import_electron4.app.on("second-instance", () => {
 });
 import_electron4.ipcMain.handle("get-storage-dir", async () => {
   return getStorageDir();
+});
+import_electron4.ipcMain.handle("get-updater-state", async () => {
+  initializeAutoUpdater();
+  return { ...updaterState };
+});
+import_electron4.ipcMain.handle("check-app-update", async () => {
+  return checkForAppUpdates();
+});
+import_electron4.ipcMain.handle("download-app-update", async () => {
+  return downloadAppUpdate();
+});
+import_electron4.ipcMain.handle("quit-and-install-app-update", async () => {
+  return quitAndInstallAppUpdate();
 });
 import_electron4.ipcMain.handle("get-env-init-progress", async () => {
   return currentEnvInitProgress;
@@ -6327,7 +6608,7 @@ import_electron4.ipcMain.handle("choose-initial-storage-dir", async () => {
     void runStartupInitialization(mainWindow).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[startup] initialization failed:", message);
-      import_electron_log.default.error("[startup] initialization failed:", message);
+      import_electron_log2.default.error("[startup] initialization failed:", message);
       import_electron4.app.quit();
     });
   }
@@ -6399,7 +6680,7 @@ import_electron4.ipcMain.handle(
       }
       return { success: true };
     } catch (error) {
-      import_electron_log.default.error("Failed to open gallery preview window", error);
+      import_electron_log2.default.error("Failed to open gallery preview window", error);
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error)
@@ -6426,7 +6707,7 @@ import_electron4.ipcMain.handle("search-main-window-by-image", async (_event, pa
     }
     return { success: true };
   } catch (error) {
-    import_electron_log.default.error("Failed to sync preview image search", error);
+    import_electron_log2.default.error("Failed to sync preview image search", error);
     return {
       success: false,
       error: error instanceof Error ? error.message : String(error)
@@ -6456,7 +6737,7 @@ import_electron4.ipcMain.handle(
       });
       return { success: true };
     } catch (error) {
-      import_electron_log.default.error("Failed to start image drag", error);
+      import_electron_log2.default.error("Failed to start image drag", error);
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error)
@@ -6465,10 +6746,11 @@ import_electron4.ipcMain.handle(
   }
 );
 import_electron4.app.whenReady().then(async () => {
-  import_electron_log.default.info("App starting...");
-  import_electron_log.default.info("Log file location:", import_electron_log.default.transports.file.getFile().path);
-  import_electron_log.default.info("App path:", import_electron4.app.getAppPath());
-  import_electron_log.default.info("User data:", import_electron4.app.getPath("userData"));
+  import_electron_log2.default.info("App starting...");
+  import_electron_log2.default.info("Log file location:", import_electron_log2.default.transports.file.getFile().path);
+  import_electron_log2.default.info("App path:", import_electron4.app.getAppPath());
+  import_electron_log2.default.info("User data:", import_electron4.app.getPath("userData"));
+  await prepareAutoUpdater();
   if (process.platform === "win32") {
     import_electron4.app.setAppUserModelId(APP_ID);
   }
@@ -6492,7 +6774,7 @@ import_electron4.app.whenReady().then(async () => {
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     console.error("[startup] initialization failed:", message);
-    import_electron_log.default.error("[startup] initialization failed:", message);
+    import_electron_log2.default.error("[startup] initialization failed:", message);
     import_electron4.app.quit();
     return;
   }
@@ -6500,9 +6782,15 @@ import_electron4.app.whenReady().then(async () => {
     hasPendingSecondInstanceRestore = false;
     restoreMainWindowVisibility();
   }
+  if (!hasTriggeredStartupUpdateCheck) {
+    hasTriggeredStartupUpdateCheck = true;
+    void checkForAppUpdates();
+  }
   import_electron4.app.on("activate", () => {
     if (import_electron4.BrowserWindow.getAllWindows().length === 0) {
-      void createWindow();
+      void createWindow().then(() => {
+        emitUpdaterState();
+      });
       return;
     }
     restoreMainWindowVisibility();

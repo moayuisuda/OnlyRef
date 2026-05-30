@@ -26,6 +26,10 @@ import_electron.contextBridge.exposeInMainWorld("electron", {
   startImageDrag: (payload) => import_electron.ipcRenderer.invoke("start-image-drag", payload),
   getEnvInitProgress: () => import_electron.ipcRenderer.invoke("get-env-init-progress"),
   hasPersistedStorageRoot: () => import_electron.ipcRenderer.invoke("has-persisted-storage-root"),
+  getUpdaterState: () => import_electron.ipcRenderer.invoke("get-updater-state"),
+  checkAppUpdate: () => import_electron.ipcRenderer.invoke("check-app-update"),
+  downloadAppUpdate: () => import_electron.ipcRenderer.invoke("download-app-update"),
+  quitAndInstallAppUpdate: () => import_electron.ipcRenderer.invoke("quit-and-install-app-update"),
   openExternal: (url) => import_electron.ipcRenderer.invoke("open-external", url),
   onImageUpdated: (callback) => {
     const handler = (_, data) => callback(data);
@@ -51,6 +55,11 @@ import_electron.contextBridge.exposeInMainWorld("electron", {
     const handler = (_, data) => callback(data);
     import_electron.ipcRenderer.on("toast", handler);
     return () => import_electron.ipcRenderer.off("toast", handler);
+  },
+  onUpdaterState: (callback) => {
+    const handler = (_, data) => callback(data);
+    import_electron.ipcRenderer.on("updater-state", handler);
+    return () => import_electron.ipcRenderer.off("updater-state", handler);
   },
   log: (level, ...args) => import_electron.ipcRenderer.send("log-message", level, ...args),
   getLogContent: () => import_electron.ipcRenderer.invoke("get-log-content")
