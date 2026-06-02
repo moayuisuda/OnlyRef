@@ -816,10 +816,20 @@ async function downloadAppUpdate() {
   if (updaterState.status === "downloaded") {
     return { success: true };
   }
-  if (updaterState.status !== "available" && updaterState.status !== "downloading") {
+  if (updaterState.status === "downloading") {
+    return { success: true };
+  }
+  if (updaterState.status !== "available") {
     return { success: false, error: "No update is ready to download" };
   }
   try {
+    setUpdaterState({
+      enabled: true,
+      status: "downloading",
+      downloadProgress: 0,
+      errorMessage: "",
+    });
+    log.info("[updater] download started");
     await autoUpdater.downloadUpdate();
     return { success: true };
   } catch (error) {
