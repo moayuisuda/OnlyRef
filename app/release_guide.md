@@ -23,8 +23,8 @@ Windows Release 必须包含：
 
 | 文件 | 用途 |
 | :--- | :--- |
-| `PiCaptain Setup x.x.x.exe` | 安装包 |
-| `PiCaptain Setup x.x.x.exe.blockmap` | 增量更新校验文件 |
+| `PiCaptain.Setup.x.x.x.exe` | 安装包 |
+| `PiCaptain.Setup.x.x.x.exe.blockmap` | 增量更新校验文件 |
 | `latest.yml` | Windows 更新元数据 |
 
 macOS Release 必须包含：
@@ -37,7 +37,7 @@ macOS Release 必须包含：
 | `PiCaptain-x.x.x-mac.zip.blockmap` | 增量更新校验文件 |
 | `latest-mac.yml` | macOS 更新元数据 |
 
-不要手动改名构建产物，`latest.yml` / `latest-mac.yml` 中的 `path` 必须和实际文件名一致。
+不要手动改名构建产物，`latest.yml` / `latest-mac.yml` 中的 `path` 必须和实际文件名一致。Windows 自动更新资产名不要包含空格，避免 GitHub Release 上传后资产名被规范化，导致元数据下载地址 404。
 
 ## 4. 更新源
 
