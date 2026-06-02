@@ -5,7 +5,7 @@ import { getRuntimeWindowType } from "../config";
 import { TitleBar } from "./components/TitleBar";
 import { Gallery } from "./components/Gallery";
 import { EnvInitModal } from "./components/EnvInitModal";
-import { WindowResizer } from "./components/WindowResizer";
+// import { WindowResizer } from "./components/WindowResizer";
 import { GalleryPreviewWindow } from "./components/gallery/GalleryPreviewWindow";
 import { actions as galleryActions, type ImageMeta } from "./store/galleryStore";
 import {
@@ -17,7 +17,7 @@ import {
 } from "./store/globalStore";
 import { versionActions } from "./store/versionStore";
 import { importFiles } from "./utils/import";
-import { useT } from "./i18n/useT";
+import { useT } from "./i18n/useT";3
 import { isI18nKey } from "../shared/i18n/guards";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -176,7 +176,7 @@ function App() {
       )}
     >
       <div className="absolute inset-0 flex flex-col">
-        <WindowResizer />
+        {/* <WindowResizer /> */}
         <TitleBar />
         <div className="flex-1 overflow-hidden">
           <Gallery />

@@ -4,6 +4,7 @@ import React, {
   useState,
   useRef,
   useCallback,
+  useLayoutEffect,
 } from "react";
 import { flushSync } from "react-dom";
 import Masonry from "react-masonry-css";
@@ -132,6 +133,7 @@ export const Gallery: React.FC = () => {
   } | null>(null);
   const dragOutTriggeredRef = useRef(false);
   const [dndContextKey, setDndContextKey] = useState(0);
+  const pendingScrollRestoreRef = useRef<number | null>(null);
 
   const dragOverlay = useMemo(() => {
     if (activeImage && activeSize) {
@@ -357,6 +359,23 @@ export const Gallery: React.FC = () => {
     setActiveTagSize(null);
   };
 
+  const resetDndContextKeepingScroll = () => {
+    pendingScrollRestoreRef.current = galleryRef.current?.scrollTop ?? null;
+    setDndContextKey((current) => current + 1);
+  };
+
+  useLayoutEffect(() => {
+    const nextScrollTop = pendingScrollRestoreRef.current;
+    if (nextScrollTop === null) {
+      return;
+    }
+
+    pendingScrollRestoreRef.current = null;
+    if (galleryRef.current) {
+      galleryRef.current.scrollTop = nextScrollTop;
+    }
+  }, [dndContextKey]);
+
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
 
@@ -411,7 +430,7 @@ export const Gallery: React.FC = () => {
       dragOutTriggeredRef.current = true;
       markExternalDragSession(activeImage);
       flushSync(() => {
-        setDndContextKey((current) => current + 1);
+        resetDndContextKeepingScroll();
         resetActiveDragState();
       });
 

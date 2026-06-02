@@ -3366,7 +3366,9 @@ var readRuntimeState = async () => {
 var hashRequirements = async () => {
   const requirementsPath = getManagedPythonRequirementsPath();
   const content = await lockedFs.readFile(requirementsPath, "utf8");
-  return (0, import_crypto.createHash)("sha256").update(content).digest("hex");
+  const hash = (0, import_crypto.createHash)("sha256").update(content).digest("hex");
+  import_electron_log.default.info(`[python-runtime] requirements hash: ${hash} (from ${requirementsPath})`);
+  return hash;
 };
 var countLockedPackages = async (requirementsPath) => {
   const content = await lockedFs.readFile(requirementsPath, "utf8");
@@ -3564,12 +3566,11 @@ var runCommandInPty = async (command, args, cwd, envOverrides = {}, onLine) => {
     });
   });
 };
-var shouldRebuildRuntime = async (state, requirementsHash, preferredTorchBackend) => {
+var shouldRebuildRuntime = async (state, _requirementsHash, preferredTorchBackend) => {
   if (!state) return true;
   if (state.version !== RUNTIME_STATE_VERSION) return true;
   if (state.platform !== process.platform) return true;
   if (state.arch !== process.arch) return true;
-  if (state.requirementsHash !== requirementsHash) return true;
   if (preferredTorchBackend === "cpu" && state.torchBackend !== "cpu") return true;
   if (preferredTorchBackend === "auto" && state.torchBackend !== "auto" && !state.gpuFallback) {
     return true;
@@ -3579,7 +3580,7 @@ var shouldRebuildRuntime = async (state, requirementsHash, preferredTorchBackend
   }
   return !await lockedFs.pathExists(getManagedPythonExecutablePath());
 };
-var canReusePersistedRuntime = async (state, requirementsHash) => {
+var canReusePersistedRuntime = async (state) => {
   if (!state) {
     import_electron_log.default.info("[python-runtime] canReuse=false: no persisted state");
     return false;
@@ -3602,12 +3603,6 @@ var canReusePersistedRuntime = async (state, requirementsHash) => {
     );
     return false;
   }
-  if (state.requirementsHash !== requirementsHash) {
-    import_electron_log.default.info(
-      `[python-runtime] canReuse=false: requirements hash mismatch (persisted=${state.requirementsHash.slice(0, 8)}, current=${requirementsHash.slice(0, 8)})`
-    );
-    return false;
-  }
   if (state.gpu.supported && state.torchBackend === "auto" && !state.installedTorch.cudaAvailable) {
     import_electron_log.default.info(
       "[python-runtime] canReuse=false: GPU supported but CUDA unavailable in persisted state"
@@ -3616,7 +3611,9 @@ var canReusePersistedRuntime = async (state, requirementsHash) => {
   }
   const venvExists = await lockedFs.pathExists(getManagedPythonExecutablePath());
   if (!venvExists) {
-    import_electron_log.default.info("[python-runtime] canReuse=false: venv executable missing");
+    import_electron_log.default.info(
+      `[python-runtime] canReuse=false: venv executable missing at ${getManagedPythonExecutablePath()}`
+    );
     return false;
   }
   import_electron_log.default.info("[python-runtime] canReuse=true: reusing existing runtime");
@@ -3759,12 +3756,8 @@ var ensurePythonRuntime = async (uvPath, reportProgress) => {
   runtimePromise = (async () => {
     reportProgress == null ? void 0 : reportProgress("envInit.initializingPythonEnv", 0.08);
     const { runtimeDir, scriptPath } = await ensurePythonRuntimeFiles();
-    const requirementsHash = await hashRequirements();
     const currentState = await readRuntimeState();
-    const canReusePersisted = await canReusePersistedRuntime(
-      currentState,
-      requirementsHash
-    );
+    const canReusePersisted = await canReusePersistedRuntime(currentState);
     if (canReusePersisted && currentState) {
       reportProgress == null ? void 0 : reportProgress("envInit.pythonEnvReady", 1);
       return {
@@ -3782,11 +3775,12 @@ var ensurePythonRuntime = async (uvPath, reportProgress) => {
         const pythonPath2 = getManagedPythonExecutablePath();
         const gpu2 = await detectGpuSupport();
         const installedTorch2 = await inspectInstalledTorch(pythonPath2, runtimeDir);
+        const hash = await hashRequirements();
         const recoveredState = {
           version: RUNTIME_STATE_VERSION,
           platform: process.platform,
           arch: process.arch,
-          requirementsHash,
+          requirementsHash: hash,
           torchBackend: gpu2.torchBackend,
           gpuFallback: false,
           gpu: gpu2,
@@ -3813,7 +3807,7 @@ var ensurePythonRuntime = async (uvPath, reportProgress) => {
     const gpu = await detectGpuSupport();
     const shouldRebuild = await shouldRebuildRuntime(
       currentState,
-      requirementsHash,
+      "",
       gpu.torchBackend
     );
     let installedTorch;
@@ -3853,7 +3847,7 @@ var ensurePythonRuntime = async (uvPath, reportProgress) => {
       version: RUNTIME_STATE_VERSION,
       platform: process.platform,
       arch: process.arch,
-      requirementsHash,
+      requirementsHash: await hashRequirements(),
       torchBackend: resolvedTorchBackend,
       gpuFallback,
       gpu,
