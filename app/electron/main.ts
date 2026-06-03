@@ -51,6 +51,7 @@ import {
   getStorageDir,
   readSettings as readSharedSettings,
   setStorageRoot,
+  stopServer as stopApiServer,
   writeSettings as writeSharedSettings,
   warmupVectorService,
   type RendererChannel,
@@ -93,6 +94,8 @@ let windowAlwaysOnTop = DEFAULT_WINDOW_ALWAYS_ON_TOP;
 let cachedWindowBounds: Electron.Rectangle | null = null;
 let isUpdaterInitialized = false;
 let hasTriggeredStartupUpdateCheck = false;
+let isQuitPrepared = false;
+let quitPreparationPromise: Promise<void> | null = null;
 
 const NORMAL_WINDOW_MIN_WIDTH = 400;
 const NORMAL_WINDOW_MIN_HEIGHT = 300;
@@ -846,10 +849,34 @@ async function quitAndInstallAppUpdate() {
   if (updaterState.status !== "downloaded") {
     return { success: false, error: "Downloaded update is unavailable" };
   }
-  setImmediate(() => {
-    autoUpdater.quitAndInstall(false, true);
-  });
+  try {
+    await prepareForAppQuit();
+    setImmediate(() => {
+      autoUpdater.quitAndInstall(false, true);
+    });
+  } catch (error) {
+    const result = applyUpdaterError(error);
+    return { success: false, error: result.message };
+  }
   return { success: true };
+}
+
+async function prepareForAppQuit(): Promise<void> {
+  if (isQuitPrepared) return;
+  if (quitPreparationPromise) {
+    await quitPreparationPromise;
+    return;
+  }
+
+  quitPreparationPromise = (async () => {
+    log.info("[shutdown] preparing application resources");
+    globalShortcut.unregisterAll();
+    await stopApiServer();
+    isQuitPrepared = true;
+    log.info("[shutdown] application resources released");
+  })();
+
+  await quitPreparationPromise;
 }
 
 async function createWindow(options?: { load?: boolean }) {
@@ -2252,6 +2279,20 @@ ipcMain.handle(
 
 ipcMain.on("settings-open-changed", (_event, open: boolean) => {
   isSettingsOpen = Boolean(open);
+});
+
+app.on("before-quit", (event) => {
+  if (isQuitPrepared) return;
+
+  event.preventDefault();
+  void prepareForAppQuit()
+    .then(() => {
+      app.quit();
+    })
+    .catch((error) => {
+      log.error("[shutdown] failed to prepare app quit", error);
+      app.exit(1);
+    });
 });
 
 app.on("will-quit", () => {

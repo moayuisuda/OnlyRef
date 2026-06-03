@@ -5,6 +5,7 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import fs from "fs-extra";
 import { spawn, ChildProcess } from "child_process";
+import type { Server as HttpServer } from "http";
 import readline from "readline";
 import { createDatabase, StorageIncompatibleError, type ImageDb } from "./db";
 import { createImagesRouter } from "./routes/images";
@@ -44,6 +45,8 @@ const DEFAULT_STORAGE_DIR = path.join(
   app.getPath("userData"),
   "picaptain_storage",
 );
+const HTTP_SERVER_SHUTDOWN_TIMEOUT_MS = 1000;
+const PROCESS_SHUTDOWN_TIMEOUT_MS = 2500;
 
 const loadStorageRoot = async (): Promise<string> => {
   // 1. Try reading from config file in userData
@@ -111,6 +114,8 @@ export const setStorageRoot = async (root: string) => {
 let imageDb: ImageDb | null = null;
 let incompatibleError: StorageIncompatibleError | null = null;
 let dbHandle: { close: () => void } | null = null;
+let activeHttpServer: HttpServer | null = null;
+let activeServerPort: number | null = null;
 
 const initDatabase = () => {
   const result = createDatabase(STORAGE_DIR);
@@ -120,6 +125,135 @@ const initDatabase = () => {
     dbHandle.close();
   }
   dbHandle = result.db;
+};
+
+const closeDatabase = () => {
+  if (!dbHandle) return;
+  dbHandle.close();
+  dbHandle = null;
+  imageDb = null;
+  incompatibleError = null;
+};
+
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+const waitForProcessExit = (
+  proc: ChildProcess,
+  timeoutMs: number,
+): Promise<boolean> => {
+  if (proc.exitCode !== null || proc.signalCode !== null) {
+    return Promise.resolve(true);
+  }
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      proc.off("exit", onExit);
+      resolve(false);
+    }, timeoutMs);
+
+    const onExit = () => {
+      clearTimeout(timeout);
+      resolve(true);
+    };
+
+    proc.once("exit", onExit);
+  });
+};
+
+const forceKillChildProcess = async (
+  proc: ChildProcess,
+  processName: string,
+): Promise<void> => {
+  if (proc.exitCode !== null || proc.signalCode !== null) {
+    return;
+  }
+
+  if (process.platform === "win32" && typeof proc.pid === "number") {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const killer = spawn("taskkill", ["/PID", String(proc.pid), "/T", "/F"], {
+          stdio: "ignore",
+          windowsHide: true,
+        });
+
+        killer.once("error", reject);
+        killer.once("exit", (code) => {
+          if (code === 0 || proc.exitCode !== null || proc.signalCode !== null) {
+            resolve();
+            return;
+          }
+          reject(new Error(`taskkill exited with code ${code}`));
+        });
+      });
+    } catch (error) {
+      if (await waitForProcessExit(proc, 100)) {
+        return;
+      }
+      throw error;
+    }
+    return;
+  }
+
+  if (
+    !proc.kill("SIGKILL") &&
+    proc.exitCode === null &&
+    proc.signalCode === null
+  ) {
+    throw new Error(`Failed to terminate ${processName}`);
+  }
+};
+
+const stopChildProcess = async (
+  proc: ChildProcess,
+  processName: string,
+): Promise<void> => {
+  if (proc.exitCode !== null || proc.signalCode !== null) {
+    return;
+  }
+
+  try {
+    proc.stdin?.end();
+  } catch (error) {
+    console.warn(`[${processName}] failed to close stdin`, error);
+  }
+
+  if (await waitForProcessExit(proc, PROCESS_SHUTDOWN_TIMEOUT_MS)) {
+    return;
+  }
+
+  console.warn(`[${processName}] did not exit gracefully, terminating`);
+  await forceKillChildProcess(proc, processName);
+  if (!(await waitForProcessExit(proc, 1200))) {
+    throw new Error(`${processName} did not exit after termination`);
+  }
+};
+
+const closeHttpServer = async (httpServer: HttpServer): Promise<void> => {
+  const closeTask = new Promise<void>((resolve, reject) => {
+    httpServer.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+
+  httpServer.closeIdleConnections?.();
+
+  const closedGracefully = await Promise.race([
+    closeTask.then(() => true),
+    delay(HTTP_SERVER_SHUTDOWN_TIMEOUT_MS).then(() => false),
+  ]);
+
+  if (closedGracefully) return;
+
+  console.warn("[server] active connections did not close gracefully");
+  httpServer.closeAllConnections?.();
+  await closeTask;
 };
 
 const initializeStorage = async () => {
@@ -138,6 +272,7 @@ class BasePythonService {
     reject: (err: Error) => void;
   }[] = [];
   protected serviceName: string = "Python Service";
+  protected stopping = false;
 
   protected getManagedUvPath(): string {
     return path.join(
@@ -256,15 +391,19 @@ class BasePythonService {
 
     proc.on("exit", (code: number) => {
       console.log(`${this.serviceName} exited with code`, code);
-      const pending = this.queue.splice(0, this.queue.length);
-      for (const task of pending) {
-        task.resolve(null);
-      }
+      this.resolvePendingRequests();
       if (this.process === proc) {
         this.process = null;
       }
       rl.close();
     });
+  }
+
+  protected resolvePendingRequests() {
+    const pending = this.queue.splice(0, this.queue.length);
+    for (const task of pending) {
+      task.resolve(null);
+    }
   }
 
   protected spawnProcess(
@@ -355,6 +494,9 @@ class BasePythonService {
   }
 
   async start(): Promise<void> {
+    if (this.stopping) {
+      throw new Error(`${this.serviceName} is stopping`);
+    }
     if (this.process) return;
     if (this.startupPromise) {
       await this.startupPromise;
@@ -381,6 +523,27 @@ class BasePythonService {
     }
   }
 
+  async stop(): Promise<void> {
+    this.stopping = true;
+    try {
+      if (this.startupPromise) {
+        await this.startupPromise.catch((error) => {
+          console.warn(`${this.serviceName} startup failed during stop`, error);
+        });
+      }
+
+      const proc = this.process;
+      this.process = null;
+      this.startupPromise = null;
+      if (proc) {
+        await stopChildProcess(proc, this.serviceName);
+      }
+      this.resolvePendingRequests();
+    } finally {
+      this.stopping = false;
+    }
+  }
+
   protected async sendRequest(req: unknown): Promise<unknown> {
     if (!this.process) {
       await this.start();
@@ -399,6 +562,7 @@ class BasePythonService {
 class PythonVectorService extends BasePythonService {
   private warmupPromise: Promise<void> | null = null;
   private warmedUp = false;
+  private modelDownloadProcess: ChildProcess | null = null;
 
   constructor() {
     super();
@@ -438,6 +602,10 @@ class PythonVectorService extends BasePythonService {
   }
 
   downloadModel(onProgress: (data: unknown) => void): Promise<void> {
+    if (this.modelDownloadProcess) {
+      throw new Error("Model download is already running");
+    }
+
     return new Promise((resolve, reject) => {
       const startDownload = async () => {
         const uvPath = await this.resolveUvCommand();
@@ -451,9 +619,12 @@ class PythonVectorService extends BasePythonService {
           {},
           false,
         );
+        this.modelDownloadProcess = proc;
 
-        if (proc.stdout) {
-          const rl = readline.createInterface({ input: proc.stdout });
+        const rl = proc.stdout
+          ? readline.createInterface({ input: proc.stdout })
+          : null;
+        if (rl) {
           rl.on("line", (line: string) => {
             try {
               const res = JSON.parse(line);
@@ -468,7 +639,19 @@ class PythonVectorService extends BasePythonService {
           console.log("[Python Download]", data.toString());
         });
 
+        proc.once("error", (error) => {
+          if (this.modelDownloadProcess === proc) {
+            this.modelDownloadProcess = null;
+          }
+          rl?.close();
+          reject(error);
+        });
+
         proc.on("exit", (code) => {
+          if (this.modelDownloadProcess === proc) {
+            this.modelDownloadProcess = null;
+          }
+          rl?.close();
           if (code === 0) {
             resolve();
           } else {
@@ -479,6 +662,18 @@ class PythonVectorService extends BasePythonService {
 
       void startDownload().catch(reject);
     });
+  }
+
+  override async stop(): Promise<void> {
+    const downloadProc = this.modelDownloadProcess;
+    this.modelDownloadProcess = null;
+    if (downloadProc) {
+      await stopChildProcess(downloadProc, "Python Model Download");
+    }
+
+    this.warmedUp = false;
+    this.warmupPromise = null;
+    await super.stop();
   }
 
   async run(
@@ -749,7 +944,7 @@ function downloadImage(url: string, dest: string): Promise<void> {
 const listenOnAvailablePort = (
   appServer: express.Express,
   startPort: number,
-): Promise<number> =>
+): Promise<{ port: number; httpServer: HttpServer }> =>
   new Promise((resolve, reject) => {
     const tryListen = (port: number) => {
       if (port > MAX_SERVER_PORT) {
@@ -758,11 +953,12 @@ const listenOnAvailablePort = (
       }
 
       const httpServer = appServer.listen(port, API_HOSTNAME, () => {
-        resolve(port);
+        resolve({ port, httpServer });
       });
 
       httpServer.once("error", (error: NodeJS.ErrnoException) => {
         if (error.code === "EADDRINUSE") {
+          httpServer.close();
           tryListen(port + 1);
           return;
         }
@@ -776,6 +972,10 @@ const listenOnAvailablePort = (
 export async function startServer(
   sendToRenderer?: SendToRenderer,
 ): Promise<number> {
+  if (activeHttpServer && activeServerPort !== null) {
+    return activeServerPort;
+  }
+
   await initializeStorage();
   const server = express();
   server.use(cors());
@@ -889,8 +1089,26 @@ export async function startServer(
     },
   );
 
-  const port = await listenOnAvailablePort(server, DEFAULT_SERVER_PORT);
+  const { port, httpServer } = await listenOnAvailablePort(
+    server,
+    DEFAULT_SERVER_PORT,
+  );
+  activeHttpServer = httpServer;
+  activeServerPort = port;
   console.log(`Local server running at http://${API_HOSTNAME}:${port}`);
 
   return port;
+}
+
+export async function stopServer(): Promise<void> {
+  const httpServer = activeHttpServer;
+  activeHttpServer = null;
+  activeServerPort = null;
+
+  if (httpServer) {
+    await closeHttpServer(httpServer);
+  }
+
+  await getVectorService().stop();
+  closeDatabase();
 }

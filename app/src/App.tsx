@@ -17,7 +17,7 @@ import {
 } from "./store/globalStore";
 import { versionActions } from "./store/versionStore";
 import { importFiles } from "./utils/import";
-import { useT } from "./i18n/useT";3
+import { useT } from "./i18n/useT";
 import { isI18nKey } from "../shared/i18n/guards";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

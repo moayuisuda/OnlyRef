@@ -1,57 +1,59 @@
-!macro customRemoveFiles
-  Push $R6
-  Push $R7
-  Push $R8
-  Push $R9
+!macro customHeader
+  !ifndef BUILD_UNINSTALLER
+    Var oldInstallDir
 
-  ; 仅在“更新安装”时保留安装目录下的 data 文件夹。
-  ; 常规卸载保持原行为，避免改变用户主动卸载语义。
-  StrCpy $R6 "0"
-  StrCpy $R7 "$INSTDIR\..\${APP_FILENAME}.data.keep"
+    Function .onInstFailed
+      ${if} $oldInstallDir != ""
+      ${andIf} ${FileExists} "$oldInstallDir\*.*"
+        SetOutPath "$PLUGINSDIR"
+        ClearErrors
+        RMDir /r "$INSTDIR"
+        ${if} ${Errors}
+          DetailPrint "Failed to remove partial install directory: $INSTDIR"
+        ${endif}
+        ClearErrors
+        Rename "$oldInstallDir" "$INSTDIR"
+        ${if} ${Errors}
+          DetailPrint "Failed to restore previous install directory: $oldInstallDir"
+        ${endif}
+      ${endif}
+    FunctionEnd
+  !endif
+!macroend
+
+!macro customInit
+  StrCpy $oldInstallDir "$INSTDIR.__old"
+!macroend
+
+!macro customRemoveFiles
+  Push $R0
 
   ${if} ${isUpdated}
-    ${if} ${FileExists} "$INSTDIR\data\*.*"
-      RMDir /r "$R7"
+    StrCpy $R0 "$INSTDIR.__old"
+    ${if} ${FileExists} "$R0\*.*"
       ClearErrors
-      Rename "$INSTDIR\data" "$R7"
-      ${ifNot} ${Errors}
-        StrCpy $R6 "1"
+      RMDir /r "$R0"
+      ${if} ${Errors}
+        Abort `Can't remove stale backup "$R0".`
       ${endif}
     ${endif}
 
-    CreateDirectory "$PLUGINSDIR\old-install"
-
-    Push ""
-    Call un.atomicRMDir
-    Pop $R8
-
-    ${if} $R8 != 0
-      DetailPrint "File is busy, aborting: $R8"
-
-      Push ""
-      Call un.restoreFiles
-      Pop $R9
-
-      ${if} $R6 == "1"
-        CreateDirectory "$INSTDIR"
-        Rename "$R7" "$INSTDIR\data"
-      ${endif}
-
-      Abort `Can't rename "$INSTDIR" to "$PLUGINSDIR\old-install".`
+    ; Move the install directory as one unit so a failed update does not
+    ; partially remove the currently installed app.
+    SetOutPath "$PLUGINSDIR"
+    ClearErrors
+    Rename "$INSTDIR" "$R0"
+    ${if} ${Errors}
+      Abort `Can't move "$INSTDIR" to "$R0".`
     ${endif}
 
-    RMDir /r $INSTDIR
-
-    ${if} $R6 == "1"
-      CreateDirectory "$INSTDIR"
-      Rename "$R7" "$INSTDIR\data"
-    ${endif}
   ${else}
-    RMDir /r $INSTDIR
+    RMDir /r "$INSTDIR"
   ${endif}
 
-  Pop $R9
-  Pop $R8
-  Pop $R7
-  Pop $R6
+  Pop $R0
+!macroend
+
+!macro customInstall
+  RMDir /r "$oldInstallDir"
 !macroend
