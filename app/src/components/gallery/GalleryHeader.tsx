@@ -133,6 +133,7 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
   const [searchColorPicker, setSearchColorPicker] = useState<{
     x: number;
     y: number;
+    editingSwatchIndex: number | null;
   } | null>(null);
 
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -140,6 +141,14 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
   useClickOutside<HTMLElement>([popoverRef, colorButtonRef], () =>
     setSearchColorPicker(null),
   );
+
+  const handleSearchColorChange = (next: string) => {
+    actions.setSearchColor(next);
+    const index = searchColorPicker?.editingSwatchIndex;
+    if (typeof index === "number") {
+      globalActions.setColorSwatch(index, next);
+    }
+  };
 
   const handleRenameTag = async (oldTag: string, newTag: string) => {
     try {
@@ -435,7 +444,18 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
                   e.currentTarget as HTMLButtonElement
                 ).getBoundingClientRect();
                 const next = clampPopover(rect.left, rect.bottom);
-                setSearchColorPicker({ x: next.x, y: next.y });
+                const matchingSwatchIndex = snap.searchColor
+                  ? appSnap.colorSwatches.findIndex(
+                      (color) =>
+                        color.toLowerCase() === snap.searchColor?.toLowerCase(),
+                    )
+                  : -1;
+                setSearchColorPicker({
+                  x: next.x,
+                  y: next.y,
+                  editingSwatchIndex:
+                    matchingSwatchIndex >= 0 ? matchingSwatchIndex : null,
+                });
               }}
             />
 
@@ -543,15 +563,25 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
               <button
                 type="button"
                 className="text-xs text-neutral-400 hover:text-white transition-colors"
-                onClick={() => actions.setSearchColor(null)}
+                onClick={() => {
+                  actions.setSearchColor(null);
+                  setSearchColorPicker({
+                    ...searchColorPicker,
+                    editingSwatchIndex: null,
+                  });
+                }}
               >
                 {t("common.clear")}
               </button>
             </div>
             <div className="mt-2 flex items-center gap-3">
               <ColorInput
-                value={snap.searchColor}
-                onChange={(next) => actions.setSearchColor(next)}
+                value={
+                  typeof searchColorPicker.editingSwatchIndex === "number"
+                    ? appSnap.colorSwatches[searchColorPicker.editingSwatchIndex]
+                    : snap.searchColor
+                }
+                onChange={handleSearchColorChange}
               />
               <div className="flex-1 min-w-0">
                 <div className="text-xs text-neutral-200 font-semibold truncate">
@@ -570,18 +600,16 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
                     key={`${c}_${i}`}
                     color={c}
                     selected={
-                      !!snap.searchColor &&
-                      c.toLowerCase() === snap.searchColor.toLowerCase()
+                      searchColorPicker.editingSwatchIndex === i ||
+                      (!!snap.searchColor &&
+                        c.toLowerCase() === snap.searchColor.toLowerCase())
                     }
                     onPress={() => {
-                      if (
-                        snap.searchColor &&
-                        snap.searchColor.toLowerCase() === c.toLowerCase()
-                      ) {
-                        actions.setSearchColor(null);
-                      } else {
-                        actions.setSearchColor(c);
-                      }
+                      setSearchColorPicker({
+                        ...searchColorPicker,
+                        editingSwatchIndex: i,
+                      });
+                      actions.setSearchColor(c);
                     }}
                     onReplaceWithCurrent={() =>
                       globalActions.setColorSwatch(i, current)

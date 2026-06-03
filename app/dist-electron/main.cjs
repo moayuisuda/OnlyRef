@@ -3880,6 +3880,8 @@ var DEFAULT_STORAGE_DIR = import_path5.default.join(
   import_electron3.app.getPath("userData"),
   "picaptain_storage"
 );
+var HTTP_SERVER_SHUTDOWN_TIMEOUT_MS = 1e3;
+var PROCESS_SHUTDOWN_TIMEOUT_MS = 2500;
 var loadStorageRoot = async () => {
   try {
     if (await lockedFs.pathExists(CONFIG_FILE)) {
@@ -3930,6 +3932,8 @@ var setStorageRoot = async (root) => {
 var imageDb = null;
 var incompatibleError = null;
 var dbHandle = null;
+var activeHttpServer = null;
+var activeServerPort = null;
 var initDatabase = () => {
   const result = createDatabase(STORAGE_DIR);
   incompatibleError = result.incompatibleError;
@@ -3938,6 +3942,104 @@ var initDatabase = () => {
     dbHandle.close();
   }
   dbHandle = result.db;
+};
+var closeDatabase = () => {
+  if (!dbHandle) return;
+  dbHandle.close();
+  dbHandle = null;
+  imageDb = null;
+  incompatibleError = null;
+};
+var delay = (ms) => new Promise((resolve) => {
+  setTimeout(resolve, ms);
+});
+var waitForProcessExit = (proc, timeoutMs) => {
+  if (proc.exitCode !== null || proc.signalCode !== null) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      proc.off("exit", onExit);
+      resolve(false);
+    }, timeoutMs);
+    const onExit = () => {
+      clearTimeout(timeout);
+      resolve(true);
+    };
+    proc.once("exit", onExit);
+  });
+};
+var forceKillChildProcess = async (proc, processName) => {
+  if (proc.exitCode !== null || proc.signalCode !== null) {
+    return;
+  }
+  if (process.platform === "win32" && typeof proc.pid === "number") {
+    try {
+      await new Promise((resolve, reject) => {
+        const killer = (0, import_child_process2.spawn)("taskkill", ["/PID", String(proc.pid), "/T", "/F"], {
+          stdio: "ignore",
+          windowsHide: true
+        });
+        killer.once("error", reject);
+        killer.once("exit", (code) => {
+          if (code === 0 || proc.exitCode !== null || proc.signalCode !== null) {
+            resolve();
+            return;
+          }
+          reject(new Error(`taskkill exited with code ${code}`));
+        });
+      });
+    } catch (error) {
+      if (await waitForProcessExit(proc, 100)) {
+        return;
+      }
+      throw error;
+    }
+    return;
+  }
+  if (!proc.kill("SIGKILL") && proc.exitCode === null && proc.signalCode === null) {
+    throw new Error(`Failed to terminate ${processName}`);
+  }
+};
+var stopChildProcess = async (proc, processName) => {
+  var _a;
+  if (proc.exitCode !== null || proc.signalCode !== null) {
+    return;
+  }
+  try {
+    (_a = proc.stdin) == null ? void 0 : _a.end();
+  } catch (error) {
+    console.warn(`[${processName}] failed to close stdin`, error);
+  }
+  if (await waitForProcessExit(proc, PROCESS_SHUTDOWN_TIMEOUT_MS)) {
+    return;
+  }
+  console.warn(`[${processName}] did not exit gracefully, terminating`);
+  await forceKillChildProcess(proc, processName);
+  if (!await waitForProcessExit(proc, 1200)) {
+    throw new Error(`${processName} did not exit after termination`);
+  }
+};
+var closeHttpServer = async (httpServer) => {
+  var _a, _b;
+  const closeTask = new Promise((resolve, reject) => {
+    httpServer.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+  (_a = httpServer.closeIdleConnections) == null ? void 0 : _a.call(httpServer);
+  const closedGracefully = await Promise.race([
+    closeTask.then(() => true),
+    delay(HTTP_SERVER_SHUTDOWN_TIMEOUT_MS).then(() => false)
+  ]);
+  if (closedGracefully) return;
+  console.warn("[server] active connections did not close gracefully");
+  (_b = httpServer.closeAllConnections) == null ? void 0 : _b.call(httpServer);
+  await closeTask;
 };
 var initializeStorage = async () => {
   const root = await loadStorageRoot();
@@ -3950,6 +4052,7 @@ var BasePythonService = class {
   startupPromise = null;
   queue = [];
   serviceName = "Python Service";
+  stopping = false;
   getManagedUvPath() {
     return import_path5.default.join(
       import_electron3.app.getPath("userData"),
@@ -4038,15 +4141,18 @@ var BasePythonService = class {
     });
     proc.on("exit", (code) => {
       console.log(`${this.serviceName} exited with code`, code);
-      const pending = this.queue.splice(0, this.queue.length);
-      for (const task of pending) {
-        task.resolve(null);
-      }
+      this.resolvePendingRequests();
       if (this.process === proc) {
         this.process = null;
       }
       rl.close();
     });
+  }
+  resolvePendingRequests() {
+    const pending = this.queue.splice(0, this.queue.length);
+    for (const task of pending) {
+      task.resolve(null);
+    }
   }
   spawnProcess(command, args, cwd, envOverrides = {}, attachListeners = true) {
     const env = {
@@ -4116,6 +4222,9 @@ var BasePythonService = class {
     return trySpawn(0);
   }
   async start() {
+    if (this.stopping) {
+      throw new Error(`${this.serviceName} is stopping`);
+    }
     if (this.process) return;
     if (this.startupPromise) {
       await this.startupPromise;
@@ -4138,6 +4247,25 @@ var BasePythonService = class {
       }
     }
   }
+  async stop() {
+    this.stopping = true;
+    try {
+      if (this.startupPromise) {
+        await this.startupPromise.catch((error) => {
+          console.warn(`${this.serviceName} startup failed during stop`, error);
+        });
+      }
+      const proc = this.process;
+      this.process = null;
+      this.startupPromise = null;
+      if (proc) {
+        await stopChildProcess(proc, this.serviceName);
+      }
+      this.resolvePendingRequests();
+    } finally {
+      this.stopping = false;
+    }
+  }
   async sendRequest(req) {
     if (!this.process) {
       await this.start();
@@ -4156,6 +4284,7 @@ var BasePythonService = class {
 var PythonVectorService = class extends BasePythonService {
   warmupPromise = null;
   warmedUp = false;
+  modelDownloadProcess = null;
   constructor() {
     super();
     this.serviceName = "Python Vector Service";
@@ -4189,6 +4318,9 @@ var PythonVectorService = class extends BasePythonService {
     }
   }
   downloadModel(onProgress) {
+    if (this.modelDownloadProcess) {
+      throw new Error("Model download is already running");
+    }
     return new Promise((resolve, reject) => {
       const startDownload = async () => {
         var _a;
@@ -4203,8 +4335,9 @@ var PythonVectorService = class extends BasePythonService {
           {},
           false
         );
-        if (proc.stdout) {
-          const rl = import_readline.default.createInterface({ input: proc.stdout });
+        this.modelDownloadProcess = proc;
+        const rl = proc.stdout ? import_readline.default.createInterface({ input: proc.stdout }) : null;
+        if (rl) {
           rl.on("line", (line) => {
             try {
               const res = JSON.parse(line);
@@ -4216,7 +4349,18 @@ var PythonVectorService = class extends BasePythonService {
         (_a = proc.stderr) == null ? void 0 : _a.on("data", (data) => {
           console.log("[Python Download]", data.toString());
         });
+        proc.once("error", (error) => {
+          if (this.modelDownloadProcess === proc) {
+            this.modelDownloadProcess = null;
+          }
+          rl == null ? void 0 : rl.close();
+          reject(error);
+        });
         proc.on("exit", (code) => {
+          if (this.modelDownloadProcess === proc) {
+            this.modelDownloadProcess = null;
+          }
+          rl == null ? void 0 : rl.close();
           if (code === 0) {
             resolve();
           } else {
@@ -4226,6 +4370,16 @@ var PythonVectorService = class extends BasePythonService {
       };
       void startDownload().catch(reject);
     });
+  }
+  async stop() {
+    const downloadProc = this.modelDownloadProcess;
+    this.modelDownloadProcess = null;
+    if (downloadProc) {
+      await stopChildProcess(downloadProc, "Python Model Download");
+    }
+    this.warmedUp = false;
+    this.warmupPromise = null;
+    await super.stop();
   }
   async run(mode, arg) {
     const raw = await this.sendRequest({ mode, arg });
@@ -4438,10 +4592,11 @@ var listenOnAvailablePort = (appServer, startPort) => new Promise((resolve, reje
       return;
     }
     const httpServer = appServer.listen(port, API_HOSTNAME, () => {
-      resolve(port);
+      resolve({ port, httpServer });
     });
     httpServer.once("error", (error) => {
       if (error.code === "EADDRINUSE") {
+        httpServer.close();
         tryListen(port + 1);
         return;
       }
@@ -4451,6 +4606,9 @@ var listenOnAvailablePort = (appServer, startPort) => new Promise((resolve, reje
   tryListen(startPort);
 });
 async function startServer(sendToRenderer) {
+  if (activeHttpServer && activeServerPort !== null) {
+    return activeServerPort;
+  }
   await initializeStorage();
   const server = (0, import_express5.default)();
   server.use((0, import_cors.default)());
@@ -4543,9 +4701,24 @@ async function startServer(sendToRenderer) {
       res.status(500).json({ error: "Unexpected error", details: message });
     }
   );
-  const port = await listenOnAvailablePort(server, DEFAULT_SERVER_PORT);
+  const { port, httpServer } = await listenOnAvailablePort(
+    server,
+    DEFAULT_SERVER_PORT
+  );
+  activeHttpServer = httpServer;
+  activeServerPort = port;
   console.log(`Local server running at http://${API_HOSTNAME}:${port}`);
   return port;
+}
+async function stopServer() {
+  const httpServer = activeHttpServer;
+  activeHttpServer = null;
+  activeServerPort = null;
+  if (httpServer) {
+    await closeHttpServer(httpServer);
+  }
+  await getVectorService().stop();
+  closeDatabase();
 }
 
 // shared/i18n/locales/en.ts
@@ -5172,6 +5345,8 @@ var windowAlwaysOnTop = DEFAULT_WINDOW_ALWAYS_ON_TOP;
 var cachedWindowBounds = null;
 var isUpdaterInitialized = false;
 var hasTriggeredStartupUpdateCheck = false;
+var isQuitPrepared = false;
+var quitPreparationPromise = null;
 var NORMAL_WINDOW_MIN_WIDTH = 400;
 var NORMAL_WINDOW_MIN_HEIGHT = 300;
 var updaterState = {
@@ -5682,10 +5857,20 @@ async function downloadAppUpdate() {
   if (updaterState.status === "downloaded") {
     return { success: true };
   }
-  if (updaterState.status !== "available" && updaterState.status !== "downloading") {
+  if (updaterState.status === "downloading") {
+    return { success: true };
+  }
+  if (updaterState.status !== "available") {
     return { success: false, error: "No update is ready to download" };
   }
   try {
+    setUpdaterState({
+      enabled: true,
+      status: "downloading",
+      downloadProgress: 0,
+      errorMessage: ""
+    });
+    import_electron_log2.default.info("[updater] download started");
     await import_electron_updater.autoUpdater.downloadUpdate();
     return { success: true };
   } catch (error) {
@@ -5701,10 +5886,31 @@ async function quitAndInstallAppUpdate() {
   if (updaterState.status !== "downloaded") {
     return { success: false, error: "Downloaded update is unavailable" };
   }
-  setImmediate(() => {
-    import_electron_updater.autoUpdater.quitAndInstall(false, true);
-  });
+  try {
+    await prepareForAppQuit();
+    setImmediate(() => {
+      import_electron_updater.autoUpdater.quitAndInstall(false, true);
+    });
+  } catch (error) {
+    const result = applyUpdaterError(error);
+    return { success: false, error: result.message };
+  }
   return { success: true };
+}
+async function prepareForAppQuit() {
+  if (isQuitPrepared) return;
+  if (quitPreparationPromise) {
+    await quitPreparationPromise;
+    return;
+  }
+  quitPreparationPromise = (async () => {
+    import_electron_log2.default.info("[shutdown] preparing application resources");
+    import_electron4.globalShortcut.unregisterAll();
+    await stopServer();
+    isQuitPrepared = true;
+    import_electron_log2.default.info("[shutdown] application resources released");
+  })();
+  await quitPreparationPromise;
 }
 async function createWindow(options) {
   import_electron_log2.default.info("Creating main window...");
@@ -6198,7 +6404,7 @@ function createStageReporter(report, start, end) {
     report(statusKey, start + span * normalized, statusParams, detailText);
   };
 }
-var delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+var delay2 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function ensureUvInstalled(onProgress) {
   const candidates = getUvCandidates();
   let existing = "";
@@ -6481,7 +6687,7 @@ async function ensureStartupInitialization(parent) {
     await ensureModelReady(parent, {
       reportProgress: reportModelInit
     });
-    await delay(250);
+    await delay2(250);
   } finally {
     closeEnvInitProgress(parent);
   }
@@ -6798,6 +7004,16 @@ import_electron4.ipcMain.handle(
 );
 import_electron4.ipcMain.on("settings-open-changed", (_event, open) => {
   isSettingsOpen = Boolean(open);
+});
+import_electron4.app.on("before-quit", (event) => {
+  if (isQuitPrepared) return;
+  event.preventDefault();
+  void prepareForAppQuit().then(() => {
+    import_electron4.app.quit();
+  }).catch((error) => {
+    import_electron_log2.default.error("[shutdown] failed to prepare app quit", error);
+    import_electron4.app.exit(1);
+  });
 });
 import_electron4.app.on("will-quit", () => {
   import_electron4.globalShortcut.unregisterAll();
