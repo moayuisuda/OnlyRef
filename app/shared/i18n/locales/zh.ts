@@ -109,7 +109,7 @@ export const zh: I18nDict = {
   'errors.copyLog': '复制日志',
   'errors.reloadApplication': '重新加载应用',
 
-  'gallery.searchPlaceholder': '请用英文搜索，或先译成英文',
+  'gallery.searchPlaceholder': '使用英文搜索以获得最佳效果',
   'gallery.filter': '筛选',
   'gallery.filterSummary.color': '颜色：{{color}}',
   'gallery.filterSummary.tone': '色调：{{tone}}',
