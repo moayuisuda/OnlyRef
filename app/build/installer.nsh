@@ -1,34 +1,113 @@
 ; Match only the installed app executable. The upstream electron-builder
 ; prefix check can match the updater installer itself when $INSTDIR is wrong.
-!macro syncInstallDirFromRegistry
+Function PiCaptainGetInQuotes
+  Exch $R0
+  Push $R1
+  Push $R2
+  Push $R3
+
+  StrCpy $R2 -1
+  IntOp $R2 $R2 + 1
+  StrCpy $R3 $R0 1 $R2
+  StrCmp $R3 "" 0 +3
+    StrCpy $R0 ""
+    Goto done
+  StrCmp $R3 '"' 0 -5
+
+  IntOp $R2 $R2 + 1
+  StrCpy $R0 $R0 "" $R2
+
+  StrCpy $R2 0
+  IntOp $R2 $R2 + 1
+  StrCpy $R3 $R0 1 $R2
+  StrCmp $R3 "" 0 +3
+    StrCpy $R0 ""
+    Goto done
+  StrCmp $R3 '"' 0 -5
+
+  StrCpy $R0 $R0 $R2
+
+  done:
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Exch $R0
+FunctionEnd
+
+!macro getQuotedPath _RESULT _COMMAND
+  Push "${_COMMAND}"
+  Call PiCaptainGetInQuotes
+  Pop "${_RESULT}"
+!macroend
+
+!macro resolveInstallDirFromRegistryRoot _ROOT _RESULT
   Push $R0
+  Push $R1
+  Push $R2
 
-  ReadRegStr $R0 HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation
-  ${if} $R0 == ""
-    ReadRegStr $R0 HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation
-  ${endif}
-
+  ReadRegStr $R0 ${_ROOT} "${INSTALL_REGISTRY_KEY}" InstallLocation
   ${if} $R0 != ""
   ${andIf} ${FileExists} "$R0\${APP_EXECUTABLE_FILENAME}"
-    StrCpy $INSTDIR "$R0"
+    StrCpy ${_RESULT} "$R0"
   ${endif}
 
+  ${if} ${_RESULT} == ""
+    ReadRegStr $R1 ${_ROOT} "${UNINSTALL_REGISTRY_KEY}" UninstallString
+    !ifdef UNINSTALL_REGISTRY_KEY_2
+      ${if} $R1 == ""
+        ReadRegStr $R1 ${_ROOT} "${UNINSTALL_REGISTRY_KEY_2}" UninstallString
+      ${endif}
+    !endif
+
+    ${if} $R1 != ""
+      !insertmacro getQuotedPath $R2 "$R1"
+      ${if} $R2 == ""
+        StrCpy $R2 "$R1"
+      ${endif}
+      ${StdUtils.GetParentPath} $R2 "$R2"
+      ${if} ${FileExists} "$R2\${APP_EXECUTABLE_FILENAME}"
+        StrCpy ${_RESULT} "$R2"
+      ${endif}
+    ${endif}
+  ${endif}
+
+  Pop $R2
+  Pop $R1
   Pop $R0
+!macroend
+
+!macro syncInstallDirFromRegistry
+  Push $0
+
+  StrCpy $0 ""
+  !insertmacro resolveInstallDirFromRegistryRoot HKCU $0
+  ${if} $0 == ""
+    !insertmacro resolveInstallDirFromRegistryRoot HKLM $0
+  ${endif}
+  ${if} $0 != ""
+    StrCpy $INSTDIR "$0"
+  ${endif}
+
+  Pop $0
 !macroend
 
 !macro findInstalledAppProcess _RETURN
   System::Call 'kernel32::SetEnvironmentVariable(t "__PICAPTAIN_TARGET_EXE", t "$INSTDIR\${APP_EXECUTABLE_FILENAME}")'
-  nsExec::Exec `"$PowerShellPath" -NoProfile -ExecutionPolicy Bypass -Command "$$target = [System.IO.Path]::GetFullPath($$env:__PICAPTAIN_TARGET_EXE); $$found = Get-CimInstance -ClassName Win32_Process | Where-Object { $$_.ExecutablePath -and ([System.IO.Path]::GetFullPath($$_.ExecutablePath).Equals($$target, [System.StringComparison]::CurrentCultureIgnoreCase)) }; if ($$found) { exit 0 } else { exit 1 }"`
+  System::Call 'kernel32::SetEnvironmentVariable(t "__PICAPTAIN_INSTALLER_EXE", t "$EXEPATH")'
+  nsExec::Exec `"$PowerShellPath" -NoProfile -ExecutionPolicy Bypass -Command "$$target = [System.IO.Path]::GetFullPath($$env:__PICAPTAIN_TARGET_EXE); $$installer = [System.IO.Path]::GetFullPath($$env:__PICAPTAIN_INSTALLER_EXE); if ($$target.Equals($$installer, [System.StringComparison]::CurrentCultureIgnoreCase)) { exit 1 }; $$found = Get-CimInstance -ClassName Win32_Process | Where-Object { $$_.ExecutablePath -and ([System.IO.Path]::GetFullPath($$_.ExecutablePath).Equals($$target, [System.StringComparison]::CurrentCultureIgnoreCase)) }; if ($$found) { exit 0 } else { exit 1 }"`
   Pop ${_RETURN}
   System::Call 'kernel32::SetEnvironmentVariable(t "__PICAPTAIN_TARGET_EXE", t "")'
+  System::Call 'kernel32::SetEnvironmentVariable(t "__PICAPTAIN_INSTALLER_EXE", t "")'
 !macroend
 
 !macro closeInstalledAppProcess _FORCE
   System::Call 'kernel32::SetEnvironmentVariable(t "__PICAPTAIN_TARGET_EXE", t "$INSTDIR\${APP_EXECUTABLE_FILENAME}")'
+  System::Call 'kernel32::SetEnvironmentVariable(t "__PICAPTAIN_INSTALLER_EXE", t "$EXEPATH")'
   System::Call 'kernel32::SetEnvironmentVariable(t "__PICAPTAIN_CLOSE_FORCE", t "${_FORCE}")'
-  nsExec::Exec `"$PowerShellPath" -NoProfile -ExecutionPolicy Bypass -Command "$$target = [System.IO.Path]::GetFullPath($$env:__PICAPTAIN_TARGET_EXE); $$force = $$env:__PICAPTAIN_CLOSE_FORCE -eq '1'; Get-CimInstance -ClassName Win32_Process | Where-Object { $$_.ExecutablePath -and ([System.IO.Path]::GetFullPath($$_.ExecutablePath).Equals($$target, [System.StringComparison]::CurrentCultureIgnoreCase)) } | ForEach-Object { if ($$force) { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue } else { try { [System.Diagnostics.Process]::GetProcessById($$_.ProcessId).CloseMainWindow() | Out-Null } catch {} } }"`
+  nsExec::Exec `"$PowerShellPath" -NoProfile -ExecutionPolicy Bypass -Command "$$target = [System.IO.Path]::GetFullPath($$env:__PICAPTAIN_TARGET_EXE); $$installer = [System.IO.Path]::GetFullPath($$env:__PICAPTAIN_INSTALLER_EXE); if ($$target.Equals($$installer, [System.StringComparison]::CurrentCultureIgnoreCase)) { exit 0 }; $$force = $$env:__PICAPTAIN_CLOSE_FORCE -eq '1'; Get-CimInstance -ClassName Win32_Process | Where-Object { $$_.ExecutablePath -and ([System.IO.Path]::GetFullPath($$_.ExecutablePath).Equals($$target, [System.StringComparison]::CurrentCultureIgnoreCase)) } | ForEach-Object { if ($$force) { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue } else { try { [System.Diagnostics.Process]::GetProcessById($$_.ProcessId).CloseMainWindow() | Out-Null } catch {} } }"`
   Pop $R2
   System::Call 'kernel32::SetEnvironmentVariable(t "__PICAPTAIN_TARGET_EXE", t "")'
+  System::Call 'kernel32::SetEnvironmentVariable(t "__PICAPTAIN_INSTALLER_EXE", t "")'
   System::Call 'kernel32::SetEnvironmentVariable(t "__PICAPTAIN_CLOSE_FORCE", t "")'
 !macroend
 
