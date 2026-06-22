@@ -11,3 +11,6 @@
 - react 状态管理优先使用 valtio，事件中用 state，渲染用 snapshot
 - react 不要用 useCallback，函数直接定义。如果作为 props 函数包裹 useMemoizedFn
 - valtio 中，对于数组 attr，不要像 state.items = newArray 直接整个替换，而应该用 push，splice，mutable 修改
+
+发布:
+scripts/release-tag.sh <版本>
