@@ -1,5 +1,6 @@
 ; Match only the installed app executable. The upstream electron-builder
 ; prefix check can match the updater installer itself when $INSTDIR is wrong.
+!ifndef BUILD_UNINSTALLER
 Function PiCaptainGetInQuotes
   Exch $R0
   Push $R1
@@ -90,6 +91,7 @@ FunctionEnd
 
   Pop $0
 !macroend
+!endif
 
 !macro findInstalledAppProcess _RETURN
   System::Call 'kernel32::SetEnvironmentVariable(t "__PICAPTAIN_TARGET_EXE", t "$INSTDIR\${APP_EXECUTABLE_FILENAME}")'
