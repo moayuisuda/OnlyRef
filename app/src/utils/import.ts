@@ -10,6 +10,7 @@ import {
   clearExternalDragSession,
   isExternalDragSessionMatch,
 } from "./externalDragSession";
+import { readFileAsDataUrl } from "./clipboardImage";
 
 type NativePathFile = File & {
   path?: string;
@@ -298,12 +299,7 @@ const importFilesInternal = async (
 
   for (const file of bufferFiles) {
     try {
-      const imageBase64 = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ""));
-        reader.onerror = () => reject(new Error("Failed to read file"));
-        reader.readAsDataURL(file);
-      });
+      const imageBase64 = await readFileAsDataUrl(file);
 
       const data = await importImage<{ success?: boolean; meta?: ImageMeta }>({
         imageBase64,

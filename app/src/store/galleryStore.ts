@@ -6,6 +6,7 @@ import {
   saveGalleryOrder,
   fetchImages,
   fetchTags,
+  releaseImageSearchSource,
   searchImagesByVectorSource,
   updateImage,
   deleteImage,
@@ -44,11 +45,11 @@ export type SearchImageSource =
       previewName: string;
     }
   | {
-      type: 'local';
-      localPath: string;
+      type: 'prepared';
+      sourceId: string;
       previewUrl: string;
       previewName: string;
-      revokePreviewUrl?: boolean;
+      revokePreviewUrl: boolean;
     };
 
 export const getImageUrl = (imagePath: string) => {
@@ -142,10 +143,17 @@ let vectorCursor: VectorCursor | null = null;
 let textCursor: TextCursor | null = null;
 
 const releaseSearchImageSource = (image: SearchImageSource | null) => {
-  if (!image || image.type !== 'local' || image.revokePreviewUrl !== true) {
+  if (!image) {
     return;
   }
-  URL.revokeObjectURL(image.previewUrl);
+  if (image.type === 'prepared') {
+    void releaseImageSearchSource(image.sourceId).catch((error) => {
+      console.error('Failed to release image search source', error);
+    });
+  }
+  if (image.type === 'prepared' && image.revokePreviewUrl) {
+    URL.revokeObjectURL(image.previewUrl);
+  }
 };
 
 const resolveVectorSearchSource = (
@@ -159,10 +167,10 @@ const resolveVectorSearchSource = (
     };
   }
 
-  if (searchImage?.type === 'local') {
+  if (searchImage?.type === 'prepared') {
     return {
-      type: 'localPath',
-      localPath: searchImage.localPath,
+      type: 'preparedImage',
+      sourceId: searchImage.sourceId,
     };
   }
 

@@ -21,6 +21,7 @@ import type { WallpaperState } from "../shared/wallpaper";
 import { importFiles } from "./utils/import";
 import { useT } from "./i18n/useT";
 import { isI18nKey } from "../shared/i18n/guards";
+import { getClipboardImageFiles } from "./utils/clipboardImage";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -162,14 +163,7 @@ function App() {
     const handlePaste = async (event: ClipboardEvent) => {
       if (document.hidden) return;
 
-      let files = Array.from(event.clipboardData?.files || []);
-      if (files.length === 0 && event.clipboardData?.items) {
-        files = Array.from(event.clipboardData.items)
-          .filter((item) => item.type.startsWith("image/"))
-          .map((item) => item.getAsFile())
-          .filter((file): file is File => file !== null);
-      }
-
+      const files = getClipboardImageFiles(event.clipboardData);
       if (files.length === 0) return;
 
       event.preventDefault();

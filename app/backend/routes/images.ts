@@ -1,4 +1,5 @@
 import path from "path";
+import os from "os";
 import express from "express";
 import { clipboard, nativeImage, shell } from "electron";
 import { fileURLToPath } from "url";
@@ -7,6 +8,7 @@ import type { ImageDb, ImageMeta, StorageIncompatibleError } from "../db";
 import type { SendToRenderer } from "../server";
 import type { I18nKey, I18nParams } from "../../shared/i18n/types";
 import { normalizeAutoTagThreshold } from "../../shared/clipAutoTag";
+import { MAX_CLIPBOARD_SEARCH_IMAGE_BYTES } from "../../shared/vectorSearch";
 import fs from "fs-extra";
 import { lockedFs, withFileLock, withFileLocks } from "../fileLock";
 
@@ -59,14 +61,33 @@ type VectorSearchSourcePayload =
       imageId: string;
     }
   | {
+      type: "preparedImage";
+      sourceId: string;
+    };
+
+type PrepareVectorSearchSourcePayload =
+  | {
       type: "localPath";
       localPath: string;
+    }
+  | {
+      type: "imageBase64";
+      imageBase64: string;
     };
 
 const VECTOR_INDEX_BATCH_SIZE = 8;
 const TAG_TEXT_VECTOR_BATCH_SIZE = 64;
 const IMPORT_BATCH_CONCURRENCY = 4;
 const IMAGE_POST_PROCESS_CONCURRENCY = 3;
+const MAX_PREPARED_VECTOR_SOURCES = 32;
+const SEARCH_IMAGE_EXTENSION_BY_MIME: Record<string, string> = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+  "image/bmp": ".bmp",
+  "image/tiff": ".tiff",
+};
 
 const isAutoTagEnabled = (settings: Record<string, unknown>): boolean =>
   settings.autoTagEnabled !== false;
@@ -156,16 +177,37 @@ const parseVectorSearchSource = (
     };
   }
 
-  if (type === "localPath") {
-    const localPath =
-      typeof payload.localPath === "string" ? payload.localPath.trim() : "";
-    if (!localPath) {
+  if (type === "preparedImage") {
+    const sourceId =
+      typeof payload.sourceId === "string" ? payload.sourceId.trim() : "";
+    if (!sourceId) {
       return null;
     }
     return {
-      type: "localPath",
-      localPath,
+      type: "preparedImage",
+      sourceId,
     };
+  }
+
+  return null;
+};
+
+const parsePrepareVectorSearchSource = (
+  raw: unknown
+): PrepareVectorSearchSourcePayload | null => {
+  if (!raw || typeof raw !== "object") return null;
+
+  const payload = raw as Record<string, unknown>;
+  if (payload.type === "localPath") {
+    const localPath =
+      typeof payload.localPath === "string" ? payload.localPath.trim() : "";
+    return localPath ? { type: "localPath", localPath } : null;
+  }
+
+  if (payload.type === "imageBase64") {
+    const imageBase64 =
+      typeof payload.imageBase64 === "string" ? payload.imageBase64 : "";
+    return imageBase64 ? { type: "imageBase64", imageBase64 } : null;
   }
 
   return null;
@@ -434,6 +476,10 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
   const router = express.Router();
   const reservedImportFilenames = new Set<string>();
   const tagVectorCache = new Map<string, number[]>();
+  const preparedVectorSources = new Map<
+    string,
+    { vector: number[]; lastAccessedAt: number }
+  >();
 
   const guardStorage = (res: express.Response): boolean => {
     const incompatibleError = deps.getIncompatibleError();
@@ -446,25 +492,54 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
     return true;
   };
 
-  const resolveVectorSearchLocalPath = async (
-    imageDb: ImageDb,
-    source: VectorSearchSourcePayload
-  ): Promise<{ mode: VectorMode; arg: string } | null> => {
-    if (source.type === "text") {
-      return {
-        mode: "encode-text",
-        arg: source.query,
-      };
-    }
+  const prunePreparedVectorSources = () => {
+    if (preparedVectorSources.size < MAX_PREPARED_VECTOR_SOURCES) return;
 
-    if (source.type === "imageId") {
-      const row = imageDb.getImageRowById(source.imageId);
-      if (!row) {
+    let oldestSourceId: string | null = null;
+    let oldestAccessedAt = Number.POSITIVE_INFINITY;
+    preparedVectorSources.forEach((source, sourceId) => {
+      if (source.lastAccessedAt < oldestAccessedAt) {
+        oldestSourceId = sourceId;
+        oldestAccessedAt = source.lastAccessedAt;
+      }
+    });
+    if (oldestSourceId) preparedVectorSources.delete(oldestSourceId);
+  };
+
+  const resolveExternalSearchImage = async (
+    source: PrepareVectorSearchSourcePayload
+  ): Promise<{
+    localPath: string;
+    cleanup?: () => Promise<void>;
+  } | null> => {
+    if (source.type === "imageBase64") {
+      const match = /^data:(image\/[a-z0-9.+-]+);base64,([a-z0-9+/=\r\n]+)$/i.exec(
+        source.imageBase64
+      );
+      const extension = match
+        ? SEARCH_IMAGE_EXTENSION_BY_MIME[match[1].toLowerCase()]
+        : undefined;
+      if (!match || !extension) {
         return null;
       }
+
+      const imageBuffer = Buffer.from(match[2], "base64");
+      if (
+        imageBuffer.length === 0 ||
+        imageBuffer.length > MAX_CLIPBOARD_SEARCH_IMAGE_BYTES ||
+        nativeImage.createFromBuffer(imageBuffer).isEmpty()
+      ) {
+        return null;
+      }
+
+      const localPath = path.join(
+        os.tmpdir(),
+        `picaptain-search-${uuidv4()}${extension}`
+      );
+      await lockedFs.writeFile(localPath, imageBuffer);
       return {
-        mode: "encode-image",
-        arg: path.join(deps.getStorageDir(), row.imagePath),
+        localPath,
+        cleanup: () => lockedFs.remove(localPath),
       };
     }
 
@@ -477,9 +552,27 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
     }
 
     return {
-      mode: "encode-image",
-      arg: resolvedPath,
+      localPath: resolvedPath,
     };
+  };
+
+  const resolveVectorSearchVector = async (
+    imageDb: ImageDb,
+    source: VectorSearchSourcePayload
+  ): Promise<number[] | null> => {
+    if (source.type === "text") {
+      return deps.runPythonVector("encode-text", source.query);
+    }
+
+    if (source.type === "imageId") {
+      const row = imageDb.getImageRowById(source.imageId);
+      return row ? imageDb.getImageVector(row.rowid) : null;
+    }
+
+    const preparedSource = preparedVectorSources.get(source.sourceId);
+    if (!preparedSource) return null;
+    preparedSource.lastAccessedAt = Date.now();
+    return preparedSource.vector;
   };
 
   const runVectorSearch = async (
@@ -503,17 +596,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
       return { items: [], nextCursor: null };
     }
 
-    const resolved = await resolveVectorSearchLocalPath(imageDb, params.source);
-    if (!resolved) {
-      return { items: [], nextCursor: null };
-    }
-
-    const vector =
-      resolved.mode === "encode-image"
-        ? await withFileLock(resolved.arg, async () =>
-            deps.runPythonVector(resolved.mode, resolved.arg)
-          )
-        : await deps.runPythonVector(resolved.mode, resolved.arg);
+    const vector = await resolveVectorSearchVector(imageDb, params.source);
 
     if (!vector) {
       return { items: [], nextCursor: null };
@@ -1238,6 +1321,61 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
       const message = error instanceof Error ? error.message : String(error);
       res.status(500).json({ error: message });
     }
+  });
+
+  router.post("/api/images/vector-search-source", async (req, res) => {
+    let cleanup: (() => Promise<void>) | undefined;
+    try {
+      if (guardStorage(res)) return;
+      const body = req.body as { source?: unknown };
+      const source = parsePrepareVectorSearchSource(body.source);
+      if (!source) {
+        res.status(400).json({ error: "Invalid vector search source" });
+        return;
+      }
+
+      const resolved = await resolveExternalSearchImage(source);
+      if (!resolved) {
+        res.status(400).json({ error: "Invalid search image" });
+        return;
+      }
+      cleanup = resolved.cleanup;
+
+      const vector = await withFileLock(resolved.localPath, async () =>
+        deps.runPythonVector("encode-image", resolved.localPath)
+      );
+      if (!vector) {
+        res.status(422).json({ error: "Failed to encode search image" });
+        return;
+      }
+
+      prunePreparedVectorSources();
+      const sourceId = uuidv4();
+      preparedVectorSources.set(sourceId, {
+        vector,
+        lastAccessedAt: Date.now(),
+      });
+      res.json({ sourceId });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    } finally {
+      try {
+        await cleanup?.();
+      } catch (error) {
+        console.error("Failed to remove temporary search image:", error);
+      }
+    }
+  });
+
+  router.delete("/api/images/vector-search-source/:sourceId", (req, res) => {
+    const sourceId = req.params.sourceId?.trim();
+    if (!sourceId) {
+      res.status(400).json({ error: "Source id is required" });
+      return;
+    }
+    preparedVectorSources.delete(sourceId);
+    res.json({ success: true });
   });
 
   router.post("/api/images/vector-search", async (req, res) => {

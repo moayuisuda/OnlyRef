@@ -89,6 +89,7 @@ export const en = {
   'toast.vectorIndexFailed': 'Failed to index vector',
   'toast.autoTagAllCompleted': 'Auto-tag completed: {{tagged}} matched, {{total}} scanned',
   'toast.autoTagAllFailed': 'Failed to run auto-tag for all images',
+  'toast.vectorWarmupPolicyUpdateFailed': 'Failed to update the engine warm-up setting',
   'toast.imageVectorSearchFailed': 'Image search failed',
   'toast.imageCopied': 'Image copied',
   'toast.copyImageFailed': 'Failed to copy image',
@@ -285,6 +286,9 @@ export const en = {
   'settings.storageFolder': 'Storage folder',
   'settings.launchAtLogin': 'Launch at login',
   'settings.launchAtLogin.desc': 'Start PiCaptain automatically after you sign in',
+  'settings.vectorOnDemandWarmup': 'Warm up engine on demand',
+  'settings.vectorOnDemandWarmup.desc':
+    'Release the engine after it is idle and warm it up again when needed. Keep this off for faster searches.',
   'settings.autoTag': 'Auto-tag threshold',
   'settings.autoTag.desc':
     'Higher values make matching stricter.',

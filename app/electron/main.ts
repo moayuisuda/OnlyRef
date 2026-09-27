@@ -56,6 +56,7 @@ import {
   readSettings as readSharedSettings,
   setStorageRoot,
   stopServer as stopApiServer,
+  warmupVectorServiceOnStartup,
   type RendererChannel,
 } from "../backend/server";
 import { configureSettingsStore } from "../backend/settingsStore";
@@ -1995,6 +1996,7 @@ async function runStartupInitialization(parent: BrowserWindow): Promise<void> {
     log.info("Ensuring startup initialization...");
     await ensureStartupInitialization(parent);
     log.info("Startup initialization ready.");
+    scheduleVectorServiceWarmup();
   })();
 
   try {
@@ -2002,6 +2004,20 @@ async function runStartupInitialization(parent: BrowserWindow): Promise<void> {
   } finally {
     startupInitializationPromise = null;
   }
+}
+
+function scheduleVectorServiceWarmup(): void {
+  void warmupVectorServiceOnStartup()
+    .then((warmedUp) => {
+      log.info(
+        warmedUp
+          ? "[vector-service] startup warmup ready."
+          : "[vector-service] startup warmup skipped by on-demand policy.",
+      );
+    })
+    .catch((error) => {
+      log.warn("[vector-service] startup warmup failed:", error);
+    });
 }
 
 async function startServer() {

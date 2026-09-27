@@ -225,6 +225,9 @@ export const zh: I18nDict = {
   'settings.storageFolder': '\u5b58\u50a8\u6587\u4ef6\u5939',
   'settings.launchAtLogin': '开机自启',
   'settings.launchAtLogin.desc': '登录系统后自动启动 PiCaptain',
+  'settings.vectorOnDemandWarmup': '按需预热引擎',
+  'settings.vectorOnDemandWarmup.desc':
+    '开启后引擎空闲时自动释放，需要时重新预热；关闭可减少搜索等待。',
   'settings.autoTag': '\u81ea\u52a8\u6807\u7b7e\u9608\u503c',
   'settings.autoTag.desc':
     '\u503c\u8d8a\u9ad8\u5339\u914d\u8d8a\u4e25\u683c',
@@ -248,6 +251,7 @@ export const zh: I18nDict = {
   'toast.autoTagAllCompleted':
     '\u5168\u91cf\u81ea\u52a8\u6253\u6807\u5b8c\u6210\uff1a{{tagged}} \u5f20\u547d\u4e2d\uff0c{{total}} \u5f20\u5df2\u626b\u63cf',
   'toast.autoTagAllFailed': '\u5168\u91cf\u81ea\u52a8\u6253\u6807\u5931\u8d25',
+  'toast.vectorWarmupPolicyUpdateFailed': '引擎预热设置更新失败',
   'autoTagAll.starting': '\u6b63\u5728\u51c6\u5907\u5168\u91cf\u81ea\u52a8\u6253\u6807',
   'autoTagAll.progress': '\u6b63\u5728\u81ea\u52a8\u6253\u6807 {{current}}/{{total}}',
   'autoTagAll.completed': '\u5168\u91cf\u81ea\u52a8\u6253\u6807\u5b8c\u6210',

@@ -10,9 +10,14 @@ import {
   settingStorage,
   syncSettingsSnapshotValue,
   updateTagColor,
+  updateVectorOnDemandWarmup,
   type TagMeta,
 } from "../service";
 import type { I18nKey, I18nMessage, I18nParams } from "../../shared/i18n/types";
+import {
+  VECTOR_ON_DEMAND_WARMUP_DEFAULT,
+  VECTOR_ON_DEMAND_WARMUP_SETTING_KEY,
+} from "../../shared/vectorService";
 
 const DEFAULT_WINDOW_ALWAYS_ON_TOP = false;
 
@@ -103,6 +108,8 @@ export interface GlobalState {
   autoTagEnabled: boolean;
   autoTagThreshold: number;
   enableVectorSearch: boolean;
+  vectorOnDemandWarmup: boolean;
+  vectorOnDemandWarmupLoading: boolean;
   llmSettings: LLMSettings;
   isAppHidden: boolean;
   windowAlwaysOnTop: boolean;
@@ -159,6 +166,8 @@ export const globalState = proxy<GlobalState>({
   autoTagEnabled: true,
   autoTagThreshold: AUTO_TAG_THRESHOLD_DEFAULT,
   enableVectorSearch: true,
+  vectorOnDemandWarmup: VECTOR_ON_DEMAND_WARMUP_DEFAULT,
+  vectorOnDemandWarmupLoading: false,
   llmSettings: {
     enabled: false,
     baseUrl: "",
@@ -200,6 +209,11 @@ export const globalActions = {
         "autoTagEnabled",
         true,
       );
+      const rawVectorOnDemandWarmup = readSetting<unknown>(
+        settings,
+        VECTOR_ON_DEMAND_WARMUP_SETTING_KEY,
+        VECTOR_ON_DEMAND_WARMUP_DEFAULT,
+      );
       const rawLlmSettings = readSetting<unknown>(settings, "llmSettings", {});
       globalState.colorSwatches = Array.isArray(rawColorSwatches)
         ? rawColorSwatches.filter(isHexColor).map((color) => normalizeHexColor(color))
@@ -218,6 +232,7 @@ export const globalActions = {
       );
       globalState.enableVectorSearch = true;
       void settingStorage.set("enableVectorSearch", true);
+      globalState.vectorOnDemandWarmup = rawVectorOnDemandWarmup === true;
       globalState.windowAlwaysOnTop = rawWindowAlwaysOnTop === true;
 
       if (isRecord(rawLlmSettings)) {
@@ -264,6 +279,27 @@ export const globalActions = {
   setEnableVectorSearch: (enabled: boolean) => {
     globalState.enableVectorSearch = enabled;
     void settingStorage.set("enableVectorSearch", enabled);
+  },
+
+  setVectorOnDemandWarmup: async (enabled: boolean) => {
+    if (globalState.vectorOnDemandWarmupLoading) return;
+
+    const previous = globalState.vectorOnDemandWarmup;
+    globalState.vectorOnDemandWarmup = enabled;
+    globalState.vectorOnDemandWarmupLoading = true;
+    try {
+      await updateVectorOnDemandWarmup(enabled);
+      syncSettingsSnapshotValue(VECTOR_ON_DEMAND_WARMUP_SETTING_KEY, enabled);
+    } catch (error) {
+      globalState.vectorOnDemandWarmup = previous;
+      console.error("Failed to update vector warmup policy", error);
+      globalActions.pushToast(
+        { key: "toast.vectorWarmupPolicyUpdateFailed" },
+        "error",
+      );
+    } finally {
+      globalState.vectorOnDemandWarmupLoading = false;
+    }
   },
 
   setTagMetas: (tagMetas: TagMeta[]) => {

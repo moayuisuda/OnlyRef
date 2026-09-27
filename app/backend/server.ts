@@ -30,6 +30,11 @@ import {
 } from "./tagsStore";
 import { getDominantColor, calculateTone } from "./imageAnalysis";
 import { ensurePythonRuntime } from "./pythonRuntime";
+import {
+  VECTOR_ON_DEMAND_WARMUP_DEFAULT,
+  VECTOR_ON_DEMAND_WARMUP_SETTING_KEY,
+  VECTOR_SERVICE_IDLE_TIMEOUT_MS,
+} from "../shared/vectorService";
 
 export type RendererChannel =
   | "image-updated"
@@ -54,7 +59,6 @@ const DEFAULT_STORAGE_DIR = path.join(
 );
 const HTTP_SERVER_SHUTDOWN_TIMEOUT_MS = 1000;
 const PROCESS_SHUTDOWN_TIMEOUT_MS = 2500;
-const VECTOR_SERVICE_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
 const loadStorageRoot = async (): Promise<string> => {
   // 1. Try reading from config file in userData
@@ -581,7 +585,9 @@ class PythonVectorService extends BasePythonService {
   private activeRequestCount = 0;
   private idleStopTimer: NodeJS.Timeout | null = null;
   private idleStopPromise: Promise<void> | null = null;
+  private warmupPromise: Promise<void> | null = null;
   private warmupInProgress = false;
+  private onDemandWarmupEnabled = VECTOR_ON_DEMAND_WARMUP_DEFAULT;
   private onWarmupStateChange: ((isWarming: boolean) => void) | null = null;
 
   constructor() {
@@ -617,7 +623,11 @@ class PythonVectorService extends BasePythonService {
 
   private scheduleIdleStop(): void {
     this.clearIdleStopTimer();
-    if (this.activeRequestCount > 0 || !this.process) {
+    if (
+      !this.onDemandWarmupEnabled ||
+      this.activeRequestCount > 0 ||
+      !this.process
+    ) {
       return;
     }
 
@@ -644,6 +654,43 @@ class PythonVectorService extends BasePythonService {
           }
         });
     }, VECTOR_SERVICE_IDLE_TIMEOUT_MS);
+  }
+
+  isOnDemandWarmupEnabled(): boolean {
+    return this.onDemandWarmupEnabled;
+  }
+
+  setOnDemandWarmupEnabled(enabled: boolean): void {
+    this.onDemandWarmupEnabled = enabled;
+    if (enabled) {
+      this.scheduleIdleStop();
+      return;
+    }
+    this.clearIdleStopTimer();
+  }
+
+  async warmup(): Promise<void> {
+    if (
+      this.process &&
+      this.activeRequestCount === 0 &&
+      this.idleStopPromise === null
+    ) {
+      return;
+    }
+    if (this.warmupPromise) {
+      await this.warmupPromise;
+      return;
+    }
+
+    const warmupPromise = this.run("encode-text", "warmup").then(() => undefined);
+    this.warmupPromise = warmupPromise;
+    try {
+      await warmupPromise;
+    } finally {
+      if (this.warmupPromise === warmupPromise) {
+        this.warmupPromise = null;
+      }
+    }
   }
 
   protected override async sendRequest(req: unknown): Promise<unknown> {
@@ -747,6 +794,7 @@ class PythonVectorService extends BasePythonService {
     }
 
     await super.stop();
+    this.warmupPromise = null;
   }
 
   async run(
@@ -888,6 +936,38 @@ const getVectorService = (): PythonVectorService => {
     vectorServiceSingleton = new PythonVectorService();
   }
   return vectorServiceSingleton;
+};
+
+const readVectorOnDemandWarmup = (
+  settings: Record<string, unknown>,
+): boolean =>
+  settings[VECTOR_ON_DEMAND_WARMUP_SETTING_KEY] === true;
+
+export const warmupVectorServiceOnStartup = async (): Promise<boolean> => {
+  const vectorService = getVectorService();
+  const settings = await readSettings();
+  const onDemandWarmup = readVectorOnDemandWarmup(settings);
+  vectorService.setOnDemandWarmupEnabled(onDemandWarmup);
+  if (onDemandWarmup) return false;
+
+  await vectorService.warmup();
+  return true;
+};
+
+const updateVectorOnDemandWarmup = async (enabled: boolean): Promise<void> => {
+  const vectorService = getVectorService();
+  const previous = vectorService.isOnDemandWarmupEnabled();
+  vectorService.setOnDemandWarmupEnabled(enabled);
+
+  try {
+    if (!enabled) {
+      await vectorService.warmup();
+    }
+    await patchSettings({ [VECTOR_ON_DEMAND_WARMUP_SETTING_KEY]: enabled });
+  } catch (error) {
+    vectorService.setOnDemandWarmupEnabled(previous);
+    throw error;
+  }
 };
 
 function downloadImage(url: string, dest: string): Promise<void> {
@@ -1052,8 +1132,24 @@ export async function startServer(
   server.use(bodyParser.json({ limit: "25mb" }));
 
   const vectorService = getVectorService();
+  const settings = await readSettings();
+  vectorService.setOnDemandWarmupEnabled(
+    readVectorOnDemandWarmup(settings),
+  );
+  let shouldNotifyVectorWarmup = false;
   vectorService.setWarmupStateListener((isWarming) => {
-    sendToRenderer?.("vector-service-status", { isWarming });
+    if (isWarming) {
+      shouldNotifyVectorWarmup = vectorService.isOnDemandWarmupEnabled();
+      if (shouldNotifyVectorWarmup) {
+        sendToRenderer?.("vector-service-status", { isWarming: true });
+      }
+      return;
+    }
+
+    if (shouldNotifyVectorWarmup) {
+      shouldNotifyVectorWarmup = false;
+      sendToRenderer?.("vector-service-status", { isWarming: false });
+    }
   });
 
   const runPythonVector = async (
@@ -1118,6 +1214,7 @@ export async function startServer(
         vectorService.downloadModel((data) => {
           onProgress(mapModelDownloadProgress(data));
         }),
+      setOnDemandWarmup: updateVectorOnDemandWarmup,
       sendToRenderer: sendRenderer,
     }),
   );

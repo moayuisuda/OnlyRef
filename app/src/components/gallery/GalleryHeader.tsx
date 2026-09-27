@@ -17,11 +17,19 @@ import {
   createTag,
   deleteTag as deleteTagService,
   getLocalImagePreviewUrl,
+  prepareImageSearchSource,
+  releaseImageSearchSource,
   renameTag,
+  type PrepareVectorSearchSource,
 } from "../../service";
 import { useT } from "../../i18n/useT";
 import type { I18nKey } from "../../../shared/i18n/types";
 import { useClickOutside } from "../../hooks/useClickOutside";
+import {
+  getClipboardImageFiles,
+  readFileAsDataUrl,
+} from "../../utils/clipboardImage";
+import { MAX_CLIPBOARD_SEARCH_IMAGE_BYTES } from "../../../shared/vectorSearch";
 
 const POPOVER_WIDTH = 280;
 type NativePathFile = File & { path?: string };
@@ -96,6 +104,12 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
   const [showLoading, setShowLoading] = useState(false);
   const [searchDraft, setSearchDraft] = useState(snap.searchQuery);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const searchImagePrepareIdRef = useRef(0);
+  const searchImageIdentity = snap.searchImage
+    ? snap.searchImage.type === "library"
+      ? `library:${snap.searchImage.imageId}`
+      : `prepared:${snap.searchImage.sourceId}`
+    : "";
 
   const debouncedSetSearchQuery = useMemo(
     () =>
@@ -110,10 +124,50 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
   }, [snap.searchQuery]);
 
   useEffect(() => {
+    searchImagePrepareIdRef.current += 1;
+  }, [searchImageIdentity]);
+
+  useEffect(() => {
     return () => {
+      searchImagePrepareIdRef.current += 1;
       debouncedSetSearchQuery.cancel();
     };
   }, [debouncedSetSearchQuery]);
+
+  const prepareSearchImage = async (
+    requestId: number,
+    source: PrepareVectorSearchSource,
+    previewName: string,
+    createPreviewUrl: () => string,
+    revokePreviewUrl: boolean,
+  ) => {
+    try {
+      const prepared = await prepareImageSearchSource(source);
+      if (searchImagePrepareIdRef.current !== requestId) {
+        void releaseImageSearchSource(prepared.sourceId).catch((error) => {
+          console.error("Failed to release stale image search source", error);
+        });
+        return;
+      }
+
+      debouncedSetSearchQuery.cancel();
+      setSearchDraft("");
+      actions.setSearchImageSource({
+        type: "prepared",
+        sourceId: prepared.sourceId,
+        previewUrl: createPreviewUrl(),
+        previewName,
+        revokePreviewUrl,
+      });
+    } catch (error) {
+      if (searchImagePrepareIdRef.current !== requestId) return;
+      console.error("Failed to prepare search image", error);
+      globalActions.pushToast(
+        { key: "toast.imageVectorSearchFailed" },
+        "error",
+      );
+    }
+  };
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
@@ -243,18 +297,25 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
   };
 
   const handlePickSearchImage = () => {
+    const requestId = searchImagePrepareIdRef.current + 1;
+    searchImagePrepareIdRef.current = requestId;
     if (window.electron?.chooseSearchImage) {
       void window.electron.chooseSearchImage().then((result) => {
-        if (!result?.path) return;
+        if (
+          !result?.path ||
+          searchImagePrepareIdRef.current !== requestId
+        ) {
+          return;
+        }
         const previewName =
           result.name.trim() || t("gallery.searchImage.defaultName");
-        actions.setSearchImageSource({
-          type: "local",
-          localPath: result.path,
-          previewUrl: getLocalImagePreviewUrl(result.path),
+        void prepareSearchImage(
+          requestId,
+          { type: "localPath", localPath: result.path },
           previewName,
-          revokePreviewUrl: false,
-        });
+          () => getLocalImagePreviewUrl(result.path),
+          false,
+        );
       });
       return;
     }
@@ -271,6 +332,9 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
     const file = event.target.files?.[0] as NativePathFile | undefined;
     if (!file) return;
 
+    const requestId = searchImagePrepareIdRef.current + 1;
+    searchImagePrepareIdRef.current = requestId;
+
     const localPath = typeof file.path === "string" ? file.path.trim() : "";
     if (!localPath) {
       globalActions.pushToast({ key: "toast.imageVectorSearchFailed" }, "error");
@@ -278,13 +342,57 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
     }
 
     const previewName = file.name.trim() || t("gallery.searchImage.defaultName");
-    actions.setSearchImageSource({
-      type: "local",
-      localPath,
-      previewUrl: getLocalImagePreviewUrl(localPath),
+    void prepareSearchImage(
+      requestId,
+      { type: "localPath", localPath },
       previewName,
-      revokePreviewUrl: false,
-    });
+      () => getLocalImagePreviewUrl(localPath),
+      false,
+    );
+  };
+
+  const handleSearchPaste = (event: React.ClipboardEvent<HTMLInputElement>) => {
+    const file = getClipboardImageFiles(event.clipboardData)[0];
+    if (!file) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const requestId = searchImagePrepareIdRef.current + 1;
+    searchImagePrepareIdRef.current = requestId;
+
+    if (file.size > MAX_CLIPBOARD_SEARCH_IMAGE_BYTES) {
+      globalActions.pushToast(
+        { key: "toast.imageVectorSearchFailed" },
+        "error",
+      );
+      return;
+    }
+
+    void readFileAsDataUrl(file)
+      .then((imageBase64) => {
+        if (searchImagePrepareIdRef.current !== requestId) return;
+        void prepareSearchImage(
+          requestId,
+          { type: "imageBase64", imageBase64 },
+          file.name.trim() || t("gallery.searchImage.defaultName"),
+          () => URL.createObjectURL(file),
+          true,
+        );
+      })
+      .catch((error) => {
+        if (searchImagePrepareIdRef.current !== requestId) return;
+        console.error("Failed to read pasted search image", error);
+        globalActions.pushToast(
+          { key: "toast.imageVectorSearchFailed" },
+          "error",
+        );
+      });
+  };
+
+  const handleClearSearchImage = () => {
+    searchImagePrepareIdRef.current += 1;
+    actions.clearSearchImageSource();
   };
 
   const searchPlaceholder = snap.searchImage
@@ -329,7 +437,7 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
                   type="button"
                   className="inline-flex h-4 w-4 items-center justify-center rounded text-neutral-400 transition-colors hover:bg-neutral-700/70 hover:text-white"
                   title={t("common.clear")}
-                  onClick={() => actions.clearSearchImageSource()}
+                  onClick={handleClearSearchImage}
                 >
                   <X size={12} />
                 </button>
@@ -361,7 +469,9 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
                 }`}
                 value={searchDraft}
                 disabled={!!snap.searchImage}
+                onPaste={handleSearchPaste}
                 onChange={(e) => {
+                  searchImagePrepareIdRef.current += 1;
                   const nextQuery = e.target.value;
                   setSearchDraft(nextQuery);
                   debouncedSetSearchQuery(nextQuery);

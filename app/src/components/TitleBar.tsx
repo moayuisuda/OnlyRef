@@ -618,6 +618,28 @@ export const TitleBar: React.FC = () => {
               </div>
             </div>
 
+            <div className="border-b border-white/6 px-3 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-xs font-medium text-neutral-200">
+                    {t("settings.vectorOnDemandWarmup")}
+                  </div>
+                  <div className="mt-1 text-[11px] leading-4 text-neutral-500">
+                    {t("settings.vectorOnDemandWarmup.desc")}
+                  </div>
+                </div>
+                <ToggleSwitch
+                  checked={snap.vectorOnDemandWarmup}
+                  disabled={snap.vectorOnDemandWarmupLoading}
+                  onToggle={() => {
+                    void globalActions.setVectorOnDemandWarmup(
+                      !globalState.vectorOnDemandWarmup,
+                    );
+                  }}
+                />
+              </div>
+            </div>
+
             {/* 暂时隐藏 LLM 翻译设置，后续若恢复可直接取消这段注释。 */}
             {/* <div className="border-b border-white/6 px-3 py-3">
               <div className="flex items-center justify-between gap-3">

@@ -99,6 +99,7 @@ export type ImageDb = {
   setImageTags: (id: string, tags: string[]) => void;
   setImageVector: (rowid: number, vector: number[]) => void;
   setImageVectors: (items: { rowid: number; vector: number[] }[]) => number[];
+  getImageVector: (rowid: number) => number[] | null;
   getImageRowById: (id: string) => ImageRow | null;
   getImageRowidById: (id: string) => number | null;
   getImageRowByFilename: (filename: string) => ImageRow | null;
@@ -144,10 +145,12 @@ CREATE TABLE IF NOT EXISTS image_tags (
 CREATE INDEX IF NOT EXISTS idx_image_tags_tag_image ON image_tags(tagId, imageId);
 `;
 
+const IMAGE_VECTOR_DIMENSIONS = 768;
+
 const schemaVector = `
 CREATE VIRTUAL TABLE IF NOT EXISTS images_vec USING vec0(
   rowid INTEGER PRIMARY KEY,
-  vector float[768]
+  vector float[${IMAGE_VECTOR_DIMENSIONS}]
 );
 `;
 
@@ -546,6 +549,30 @@ const createImageDb = (db: Database.Database): ImageDb => {
     return normalizedItems.map((item) => item.rowid);
   };
 
+  const getImageVector = (rowid: number): number[] | null => {
+    const normalizedRowid = Number(rowid);
+    if (!Number.isFinite(normalizedRowid) || !Number.isInteger(normalizedRowid)) {
+      return null;
+    }
+
+    const row = db
+      .prepare(`SELECT vector FROM images_vec WHERE rowid = ?`)
+      .get(BigInt(normalizedRowid)) as { vector?: Uint8Array } | undefined;
+    const storedVector = row?.vector;
+    if (
+      !storedVector ||
+      storedVector.byteLength !==
+        IMAGE_VECTOR_DIMENSIONS * Float32Array.BYTES_PER_ELEMENT
+    ) {
+      return null;
+    }
+
+    // better-sqlite3 返回的 Buffer 可能带有非零 byteOffset，复制后再按 Float32 解码。
+    const bytes = new Uint8Array(storedVector.byteLength);
+    bytes.set(storedVector);
+    return Array.from(new Float32Array(bytes.buffer));
+  };
+
   const setGalleryOrder = (order: string[]) => {
     const resetStmt = db.prepare(`UPDATE images SET galleryOrder = NULL WHERE galleryOrder IS NOT NULL`);
     const updateStmt = db.prepare(`UPDATE images SET galleryOrder = ? WHERE id = ?`);
@@ -835,6 +862,7 @@ const createImageDb = (db: Database.Database): ImageDb => {
     setImageTags,
     setImageVector,
     setImageVectors,
+    getImageVector,
     getImageRowById,
     getImageRowidById,
     getImageRowByFilename,

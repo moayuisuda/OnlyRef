@@ -158,10 +158,11 @@ CREATE TABLE IF NOT EXISTS image_tags (
 );
 CREATE INDEX IF NOT EXISTS idx_image_tags_tag_image ON image_tags(tagId, imageId);
 `;
+var IMAGE_VECTOR_DIMENSIONS = 768;
 var schemaVector = `
 CREATE VIRTUAL TABLE IF NOT EXISTS images_vec USING vec0(
   rowid INTEGER PRIMARY KEY,
-  vector float[768]
+  vector float[${IMAGE_VECTOR_DIMENSIONS}]
 );
 `;
 var normalizeTags = (tags) => {
@@ -436,6 +437,20 @@ var createImageDb = (db) => {
     tx();
     return normalizedItems.map((item) => item.rowid);
   };
+  const getImageVector = (rowid) => {
+    const normalizedRowid = Number(rowid);
+    if (!Number.isFinite(normalizedRowid) || !Number.isInteger(normalizedRowid)) {
+      return null;
+    }
+    const row = db.prepare(`SELECT vector FROM images_vec WHERE rowid = ?`).get(BigInt(normalizedRowid));
+    const storedVector = row == null ? void 0 : row.vector;
+    if (!storedVector || storedVector.byteLength !== IMAGE_VECTOR_DIMENSIONS * Float32Array.BYTES_PER_ELEMENT) {
+      return null;
+    }
+    const bytes = new Uint8Array(storedVector.byteLength);
+    bytes.set(storedVector);
+    return Array.from(new Float32Array(bytes.buffer));
+  };
   const setGalleryOrder = (order) => {
     const resetStmt = db.prepare(`UPDATE images SET galleryOrder = NULL WHERE galleryOrder IS NOT NULL`);
     const updateStmt = db.prepare(`UPDATE images SET galleryOrder = ? WHERE id = ?`);
@@ -672,6 +687,7 @@ var createImageDb = (db) => {
     setImageTags,
     setImageVector,
     setImageVectors,
+    getImageVector,
     getImageRowById,
     getImageRowidById,
     getImageRowByFilename,
@@ -736,6 +752,7 @@ var buildColorFilterSql = (alias, color) => {
 
 // backend/routes/images.ts
 var import_path3 = __toESM(require("path"), 1);
+var import_os = __toESM(require("os"), 1);
 var import_express = __toESM(require("express"), 1);
 var import_electron = require("electron");
 var import_url = require("url");
@@ -764,12 +781,24 @@ var normalizeAutoTagThreshold = (value) => {
   return roundToStep(numeric);
 };
 
+// shared/vectorSearch.ts
+var MAX_CLIPBOARD_SEARCH_IMAGE_BYTES = 16 * 1024 * 1024;
+
 // backend/routes/images.ts
 var import_fs_extra2 = __toESM(require("fs-extra"), 1);
 var VECTOR_INDEX_BATCH_SIZE = 8;
 var TAG_TEXT_VECTOR_BATCH_SIZE = 64;
 var IMPORT_BATCH_CONCURRENCY = 4;
 var IMAGE_POST_PROCESS_CONCURRENCY = 3;
+var MAX_PREPARED_VECTOR_SOURCES = 32;
+var SEARCH_IMAGE_EXTENSION_BY_MIME = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+  "image/bmp": ".bmp",
+  "image/tiff": ".tiff"
+};
 var isAutoTagEnabled = (settings) => settings.autoTagEnabled !== false;
 var ensureTags = (tags) => {
   if (!Array.isArray(tags)) return [];
@@ -824,15 +853,28 @@ var parseVectorSearchSource = (raw) => {
       imageId
     };
   }
-  if (type === "localPath") {
-    const localPath = typeof payload.localPath === "string" ? payload.localPath.trim() : "";
-    if (!localPath) {
+  if (type === "preparedImage") {
+    const sourceId = typeof payload.sourceId === "string" ? payload.sourceId.trim() : "";
+    if (!sourceId) {
       return null;
     }
     return {
-      type: "localPath",
-      localPath
+      type: "preparedImage",
+      sourceId
     };
+  }
+  return null;
+};
+var parsePrepareVectorSearchSource = (raw) => {
+  if (!raw || typeof raw !== "object") return null;
+  const payload = raw;
+  if (payload.type === "localPath") {
+    const localPath = typeof payload.localPath === "string" ? payload.localPath.trim() : "";
+    return localPath ? { type: "localPath", localPath } : null;
+  }
+  if (payload.type === "imageBase64") {
+    const imageBase64 = typeof payload.imageBase64 === "string" ? payload.imageBase64 : "";
+    return imageBase64 ? { type: "imageBase64", imageBase64 } : null;
   }
   return null;
 };
@@ -1041,6 +1083,7 @@ var createImagesRouter = (deps) => {
   const router = import_express.default.Router();
   const reservedImportFilenames = /* @__PURE__ */ new Set();
   const tagVectorCache = /* @__PURE__ */ new Map();
+  const preparedVectorSources = /* @__PURE__ */ new Map();
   const guardStorage = (res) => {
     const incompatibleError2 = deps.getIncompatibleError();
     if (!incompatibleError2) return false;
@@ -1051,21 +1094,39 @@ var createImagesRouter = (deps) => {
     });
     return true;
   };
-  const resolveVectorSearchLocalPath = async (imageDb2, source) => {
-    if (source.type === "text") {
-      return {
-        mode: "encode-text",
-        arg: source.query
-      };
-    }
-    if (source.type === "imageId") {
-      const row = imageDb2.getImageRowById(source.imageId);
-      if (!row) {
+  const prunePreparedVectorSources = () => {
+    if (preparedVectorSources.size < MAX_PREPARED_VECTOR_SOURCES) return;
+    let oldestSourceId = null;
+    let oldestAccessedAt = Number.POSITIVE_INFINITY;
+    preparedVectorSources.forEach((source, sourceId) => {
+      if (source.lastAccessedAt < oldestAccessedAt) {
+        oldestSourceId = sourceId;
+        oldestAccessedAt = source.lastAccessedAt;
+      }
+    });
+    if (oldestSourceId) preparedVectorSources.delete(oldestSourceId);
+  };
+  const resolveExternalSearchImage = async (source) => {
+    if (source.type === "imageBase64") {
+      const match = /^data:(image\/[a-z0-9.+-]+);base64,([a-z0-9+/=\r\n]+)$/i.exec(
+        source.imageBase64
+      );
+      const extension = match ? SEARCH_IMAGE_EXTENSION_BY_MIME[match[1].toLowerCase()] : void 0;
+      if (!match || !extension) {
         return null;
       }
+      const imageBuffer = Buffer.from(match[2], "base64");
+      if (imageBuffer.length === 0 || imageBuffer.length > MAX_CLIPBOARD_SEARCH_IMAGE_BYTES || import_electron.nativeImage.createFromBuffer(imageBuffer).isEmpty()) {
+        return null;
+      }
+      const localPath = import_path3.default.join(
+        import_os.default.tmpdir(),
+        `picaptain-search-${(0, import_uuid.v4)()}${extension}`
+      );
+      await lockedFs.writeFile(localPath, imageBuffer);
       return {
-        mode: "encode-image",
-        arg: import_path3.default.join(deps.getStorageDir(), row.imagePath)
+        localPath,
+        cleanup: () => lockedFs.remove(localPath)
       };
     }
     const resolvedPath = import_path3.default.resolve(source.localPath);
@@ -1077,9 +1138,21 @@ var createImagesRouter = (deps) => {
       return null;
     }
     return {
-      mode: "encode-image",
-      arg: resolvedPath
+      localPath: resolvedPath
     };
+  };
+  const resolveVectorSearchVector = async (imageDb2, source) => {
+    if (source.type === "text") {
+      return deps.runPythonVector("encode-text", source.query);
+    }
+    if (source.type === "imageId") {
+      const row = imageDb2.getImageRowById(source.imageId);
+      return row ? imageDb2.getImageVector(row.rowid) : null;
+    }
+    const preparedSource = preparedVectorSources.get(source.sourceId);
+    if (!preparedSource) return null;
+    preparedSource.lastAccessedAt = Date.now();
+    return preparedSource.vector;
   };
   const runVectorSearch = async (imageDb2, params) => {
     var _a, _b;
@@ -1091,14 +1164,7 @@ var createImagesRouter = (deps) => {
     if (!enableVectorSearch) {
       return { items: [], nextCursor: null };
     }
-    const resolved = await resolveVectorSearchLocalPath(imageDb2, params.source);
-    if (!resolved) {
-      return { items: [], nextCursor: null };
-    }
-    const vector = resolved.mode === "encode-image" ? await withFileLock(
-      resolved.arg,
-      async () => deps.runPythonVector(resolved.mode, resolved.arg)
-    ) : await deps.runPythonVector(resolved.mode, resolved.arg);
+    const vector = await resolveVectorSearchVector(imageDb2, params.source);
     if (!vector) {
       return { items: [], nextCursor: null };
     }
@@ -1660,6 +1726,58 @@ var createImagesRouter = (deps) => {
       const message = error instanceof Error ? error.message : String(error);
       res.status(500).json({ error: message });
     }
+  });
+  router.post("/api/images/vector-search-source", async (req, res) => {
+    let cleanup;
+    try {
+      if (guardStorage(res)) return;
+      const body = req.body;
+      const source = parsePrepareVectorSearchSource(body.source);
+      if (!source) {
+        res.status(400).json({ error: "Invalid vector search source" });
+        return;
+      }
+      const resolved = await resolveExternalSearchImage(source);
+      if (!resolved) {
+        res.status(400).json({ error: "Invalid search image" });
+        return;
+      }
+      cleanup = resolved.cleanup;
+      const vector = await withFileLock(
+        resolved.localPath,
+        async () => deps.runPythonVector("encode-image", resolved.localPath)
+      );
+      if (!vector) {
+        res.status(422).json({ error: "Failed to encode search image" });
+        return;
+      }
+      prunePreparedVectorSources();
+      const sourceId = (0, import_uuid.v4)();
+      preparedVectorSources.set(sourceId, {
+        vector,
+        lastAccessedAt: Date.now()
+      });
+      res.json({ sourceId });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    } finally {
+      try {
+        await (cleanup == null ? void 0 : cleanup());
+      } catch (error) {
+        console.error("Failed to remove temporary search image:", error);
+      }
+    }
+  });
+  router.delete("/api/images/vector-search-source/:sourceId", (req, res) => {
+    var _a;
+    const sourceId = (_a = req.params.sourceId) == null ? void 0 : _a.trim();
+    if (!sourceId) {
+      res.status(400).json({ error: "Source id is required" });
+      return;
+    }
+    preparedVectorSources.delete(sourceId);
+    res.json({ success: true });
   });
   router.post("/api/images/vector-search", async (req, res) => {
     try {
@@ -2537,6 +2655,20 @@ var createModelRouter = (deps) => {
         });
       });
       res.json({ success: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    }
+  });
+  router.put("/api/vector-service/on-demand-warmup", async (req, res) => {
+    try {
+      const { enabled } = req.body;
+      if (typeof enabled !== "boolean") {
+        res.status(400).json({ error: "Enabled must be a boolean" });
+        return;
+      }
+      await deps.setOnDemandWarmup(enabled);
+      res.json({ success: true, enabled });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       res.status(500).json({ error: message });
@@ -3987,6 +4119,11 @@ var ensurePythonRuntime = async (uvPath, reportProgress) => {
   }
 };
 
+// shared/vectorService.ts
+var VECTOR_ON_DEMAND_WARMUP_SETTING_KEY = "vectorOnDemandWarmup";
+var VECTOR_ON_DEMAND_WARMUP_DEFAULT = false;
+var VECTOR_SERVICE_IDLE_TIMEOUT_MS = 5 * 60 * 1e3;
+
 // backend/server.ts
 var DEFAULT_SERVER_PORT = 30003;
 var MAX_SERVER_PORT = 65535;
@@ -3998,7 +4135,6 @@ var DEFAULT_STORAGE_DIR = import_path5.default.join(
 );
 var HTTP_SERVER_SHUTDOWN_TIMEOUT_MS = 1e3;
 var PROCESS_SHUTDOWN_TIMEOUT_MS = 2500;
-var VECTOR_SERVICE_IDLE_TIMEOUT_MS = 5 * 60 * 1e3;
 var loadStorageRoot = async () => {
   try {
     if (await lockedFs.pathExists(CONFIG_FILE)) {
@@ -4409,7 +4545,9 @@ var PythonVectorService = class extends BasePythonService {
   activeRequestCount = 0;
   idleStopTimer = null;
   idleStopPromise = null;
+  warmupPromise = null;
   warmupInProgress = false;
+  onDemandWarmupEnabled = VECTOR_ON_DEMAND_WARMUP_DEFAULT;
   onWarmupStateChange = null;
   constructor() {
     super();
@@ -4439,7 +4577,7 @@ var PythonVectorService = class extends BasePythonService {
   }
   scheduleIdleStop() {
     this.clearIdleStopTimer();
-    if (this.activeRequestCount > 0 || !this.process) {
+    if (!this.onDemandWarmupEnabled || this.activeRequestCount > 0 || !this.process) {
       return;
     }
     this.idleStopTimer = setTimeout(() => {
@@ -4461,6 +4599,35 @@ var PythonVectorService = class extends BasePythonService {
         }
       });
     }, VECTOR_SERVICE_IDLE_TIMEOUT_MS);
+  }
+  isOnDemandWarmupEnabled() {
+    return this.onDemandWarmupEnabled;
+  }
+  setOnDemandWarmupEnabled(enabled) {
+    this.onDemandWarmupEnabled = enabled;
+    if (enabled) {
+      this.scheduleIdleStop();
+      return;
+    }
+    this.clearIdleStopTimer();
+  }
+  async warmup() {
+    if (this.process && this.activeRequestCount === 0 && this.idleStopPromise === null) {
+      return;
+    }
+    if (this.warmupPromise) {
+      await this.warmupPromise;
+      return;
+    }
+    const warmupPromise = this.run("encode-text", "warmup").then(() => void 0);
+    this.warmupPromise = warmupPromise;
+    try {
+      await warmupPromise;
+    } finally {
+      if (this.warmupPromise === warmupPromise) {
+        this.warmupPromise = null;
+      }
+    }
   }
   async sendRequest(req) {
     this.clearIdleStopTimer();
@@ -4547,6 +4714,7 @@ var PythonVectorService = class extends BasePythonService {
       await stopChildProcess(downloadProc, "Python Model Download");
     }
     await super.stop();
+    this.warmupPromise = null;
   }
   async run(mode, arg) {
     const raw = await this.sendRequest({ mode, arg });
@@ -4658,6 +4826,30 @@ var getVectorService = () => {
     vectorServiceSingleton = new PythonVectorService();
   }
   return vectorServiceSingleton;
+};
+var readVectorOnDemandWarmup = (settings) => settings[VECTOR_ON_DEMAND_WARMUP_SETTING_KEY] === true;
+var warmupVectorServiceOnStartup = async () => {
+  const vectorService = getVectorService();
+  const settings = await readSettings();
+  const onDemandWarmup = readVectorOnDemandWarmup(settings);
+  vectorService.setOnDemandWarmupEnabled(onDemandWarmup);
+  if (onDemandWarmup) return false;
+  await vectorService.warmup();
+  return true;
+};
+var updateVectorOnDemandWarmup = async (enabled) => {
+  const vectorService = getVectorService();
+  const previous = vectorService.isOnDemandWarmupEnabled();
+  vectorService.setOnDemandWarmupEnabled(enabled);
+  try {
+    if (!enabled) {
+      await vectorService.warmup();
+    }
+    await patchSettings({ [VECTOR_ON_DEMAND_WARMUP_SETTING_KEY]: enabled });
+  } catch (error) {
+    vectorService.setOnDemandWarmupEnabled(previous);
+    throw error;
+  }
 };
 function downloadImage(url, dest) {
   const REQUEST_TIMEOUT_MS = 15e3;
@@ -4778,8 +4970,23 @@ async function startServer(sendToRenderer, wallpaperHandlers) {
   server.use((0, import_cors.default)());
   server.use(import_body_parser.default.json({ limit: "25mb" }));
   const vectorService = getVectorService();
+  const settings = await readSettings();
+  vectorService.setOnDemandWarmupEnabled(
+    readVectorOnDemandWarmup(settings)
+  );
+  let shouldNotifyVectorWarmup = false;
   vectorService.setWarmupStateListener((isWarming) => {
-    sendToRenderer == null ? void 0 : sendToRenderer("vector-service-status", { isWarming });
+    if (isWarming) {
+      shouldNotifyVectorWarmup = vectorService.isOnDemandWarmupEnabled();
+      if (shouldNotifyVectorWarmup) {
+        sendToRenderer == null ? void 0 : sendToRenderer("vector-service-status", { isWarming: true });
+      }
+      return;
+    }
+    if (shouldNotifyVectorWarmup) {
+      shouldNotifyVectorWarmup = false;
+      sendToRenderer == null ? void 0 : sendToRenderer("vector-service-status", { isWarming: false });
+    }
   });
   const runPythonVector = async (mode, arg) => {
     return vectorService.run(mode, arg);
@@ -4832,6 +5039,7 @@ async function startServer(sendToRenderer, wallpaperHandlers) {
       downloadModel: (onProgress) => vectorService.downloadModel((data) => {
         onProgress(mapModelDownloadProgress(data));
       }),
+      setOnDemandWarmup: updateVectorOnDemandWarmup,
       sendToRenderer: sendRenderer
     })
   );
@@ -4981,6 +5189,7 @@ var en = {
   "toast.vectorIndexFailed": "Failed to index vector",
   "toast.autoTagAllCompleted": "Auto-tag completed: {{tagged}} matched, {{total}} scanned",
   "toast.autoTagAllFailed": "Failed to run auto-tag for all images",
+  "toast.vectorWarmupPolicyUpdateFailed": "Failed to update the engine warm-up setting",
   "toast.imageVectorSearchFailed": "Image search failed",
   "toast.imageCopied": "Image copied",
   "toast.copyImageFailed": "Failed to copy image",
@@ -5152,6 +5361,8 @@ var en = {
   "settings.storageFolder": "Storage folder",
   "settings.launchAtLogin": "Launch at login",
   "settings.launchAtLogin.desc": "Start PiCaptain automatically after you sign in",
+  "settings.vectorOnDemandWarmup": "Warm up engine on demand",
+  "settings.vectorOnDemandWarmup.desc": "Release the engine after it is idle and warm it up again when needed. Keep this off for faster searches.",
   "settings.autoTag": "Auto-tag threshold",
   "settings.autoTag.desc": "Higher values make matching stricter.",
   "settings.autoTag.loose": "Looser",
@@ -5421,6 +5632,8 @@ var zh = {
   "settings.storageFolder": "\u5B58\u50A8\u6587\u4EF6\u5939",
   "settings.launchAtLogin": "\u5F00\u673A\u81EA\u542F",
   "settings.launchAtLogin.desc": "\u767B\u5F55\u7CFB\u7EDF\u540E\u81EA\u52A8\u542F\u52A8 PiCaptain",
+  "settings.vectorOnDemandWarmup": "\u6309\u9700\u9884\u70ED\u5F15\u64CE",
+  "settings.vectorOnDemandWarmup.desc": "\u5F00\u542F\u540E\u5F15\u64CE\u7A7A\u95F2\u65F6\u81EA\u52A8\u91CA\u653E\uFF0C\u9700\u8981\u65F6\u91CD\u65B0\u9884\u70ED\uFF1B\u5173\u95ED\u53EF\u51CF\u5C11\u641C\u7D22\u7B49\u5F85\u3002",
   "settings.autoTag": "\u81EA\u52A8\u6807\u7B7E\u9608\u503C",
   "settings.autoTag.desc": "\u503C\u8D8A\u9AD8\u5339\u914D\u8D8A\u4E25\u683C",
   "settings.autoTag.loose": "\u5BBD\u677E",
@@ -5442,6 +5655,7 @@ var zh = {
   "settings.status.ready.basic": "\u641C\u7D22\u3001\u989C\u8272\u7B5B\u9009\u548C\u672C\u5730\u7D20\u6750\u7BA1\u7406\u5DF2\u5C31\u7EEA",
   "toast.autoTagAllCompleted": "\u5168\u91CF\u81EA\u52A8\u6253\u6807\u5B8C\u6210\uFF1A{{tagged}} \u5F20\u547D\u4E2D\uFF0C{{total}} \u5F20\u5DF2\u626B\u63CF",
   "toast.autoTagAllFailed": "\u5168\u91CF\u81EA\u52A8\u6253\u6807\u5931\u8D25",
+  "toast.vectorWarmupPolicyUpdateFailed": "\u5F15\u64CE\u9884\u70ED\u8BBE\u7F6E\u66F4\u65B0\u5931\u8D25",
   "autoTagAll.starting": "\u6B63\u5728\u51C6\u5907\u5168\u91CF\u81EA\u52A8\u6253\u6807",
   "autoTagAll.progress": "\u6B63\u5728\u81EA\u52A8\u6253\u6807 {{current}}/{{total}}",
   "autoTagAll.completed": "\u5168\u91CF\u81EA\u52A8\u6253\u6807\u5B8C\u6210",
@@ -7915,12 +8129,22 @@ async function runStartupInitialization(parent) {
     import_electron_log2.default.info("Ensuring startup initialization...");
     await ensureStartupInitialization(parent);
     import_electron_log2.default.info("Startup initialization ready.");
+    scheduleVectorServiceWarmup();
   })();
   try {
     await startupInitializationPromise;
   } finally {
     startupInitializationPromise = null;
   }
+}
+function scheduleVectorServiceWarmup() {
+  void warmupVectorServiceOnStartup().then((warmedUp) => {
+    import_electron_log2.default.info(
+      warmedUp ? "[vector-service] startup warmup ready." : "[vector-service] startup warmup skipped by on-demand policy."
+    );
+  }).catch((error) => {
+    import_electron_log2.default.warn("[vector-service] startup warmup failed:", error);
+  });
 }
 async function startServer2() {
   const port = await startServer(

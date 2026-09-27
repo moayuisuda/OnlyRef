@@ -157,8 +157,18 @@ export type VectorSearchSource =
       imageId: string;
     }
   | {
+      type: "preparedImage";
+      sourceId: string;
+    };
+
+export type PrepareVectorSearchSource =
+  | {
       type: "localPath";
       localPath: string;
+    }
+  | {
+      type: "imageBase64";
+      imageBase64: string;
     };
 
 export type VectorImageSearchPayload = {
@@ -226,6 +236,33 @@ export async function searchImagesByVectorSource<T = unknown>(
     method: "POST",
     signal: options.signal,
   });
+}
+
+export async function prepareImageSearchSource(
+  source: PrepareVectorSearchSource,
+): Promise<{ sourceId: string }> {
+  return localApi<{ sourceId: string }>(
+    "/api/images/vector-search-source",
+    { source },
+  );
+}
+
+export async function releaseImageSearchSource(sourceId: string): Promise<void> {
+  await localApi<{ success: boolean }>(
+    `/api/images/vector-search-source/${encodeURIComponent(sourceId)}`,
+    undefined,
+    { method: "DELETE" },
+  );
+}
+
+export async function updateVectorOnDemandWarmup(
+  enabled: boolean,
+): Promise<void> {
+  await localApi<{ success: boolean; enabled: boolean }>(
+    "/api/vector-service/on-demand-warmup",
+    { enabled },
+    { method: "PUT" },
+  );
 }
 
 export function getLocalImagePreviewUrl(localPath: string): string {
