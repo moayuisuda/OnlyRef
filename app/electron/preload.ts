@@ -72,6 +72,11 @@ contextBridge.exposeInMainWorld('electron', {
     ipcRenderer.on('updater-state', handler);
     return () => ipcRenderer.off('updater-state', handler);
   },
+  onWallpaperState: (callback: (data: unknown) => void) => {
+    const handler = (_: unknown, data: unknown) => callback(data);
+    ipcRenderer.on('wallpaper-state', handler);
+    return () => ipcRenderer.off('wallpaper-state', handler);
+  },
   log: (level: string, ...args: unknown[]) => ipcRenderer.send('log-message', level, ...args),
   getLogContent: () => ipcRenderer.invoke('get-log-content'),
 });

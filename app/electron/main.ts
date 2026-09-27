@@ -7,6 +7,8 @@ import {
   shell,
   globalShortcut,
   nativeImage,
+  Menu,
+  Tray,
 } from "electron";
 import path from "path";
 import fs from "fs-extra";
@@ -49,10 +51,11 @@ import {
   startServer as startApiServer,
   DEFAULT_SERVER_PORT,
   getStorageDir,
+  getRandomWallpaperImagePaths,
+  patchSettings as patchSharedSettings,
   readSettings as readSharedSettings,
   setStorageRoot,
   stopServer as stopApiServer,
-  writeSettings as writeSharedSettings,
   warmupVectorService,
   type RendererChannel,
 } from "../backend/server";
@@ -65,11 +68,13 @@ import { t as translate } from "../shared/i18n/t";
 import { normalizeLocale } from "../shared/i18n/locale";
 import type { I18nKey, I18nParams, Locale } from "../shared/i18n/types";
 import { debounce } from "radash";
+import { WallpaperService } from "./wallpaperService";
 
 const DEFAULT_WINDOW_ALWAYS_ON_TOP = false;
 
 let mainWindow: BrowserWindow | null = null;
 let galleryPreviewWindow: BrowserWindow | null = null;
+let wallpaperTray: Tray | null = null;
 let isAppHidden = false;
 let localServerApiBaseUrl = `http://localhost:${DEFAULT_SERVER_PORT}`;
 let isLocalServerReady = false;
@@ -96,6 +101,52 @@ let isUpdaterInitialized = false;
 let hasTriggeredStartupUpdateCheck = false;
 let isQuitPrepared = false;
 let quitPreparationPromise: Promise<void> | null = null;
+
+const wallpaperService = new WallpaperService({
+  getDisplays: () => screen.getAllDisplays(),
+  getPrimaryDisplay: () => screen.getPrimaryDisplay(),
+  getStorageDir,
+  getRandomImagePaths: getRandomWallpaperImagePaths,
+  readSettings: readSharedSettings,
+  patchSettings: patchSharedSettings,
+  onStateChange: (state) => {
+    mainWindow?.webContents.send("wallpaper-state", state);
+    syncWallpaperTray(state.settings.enabled && state.supported);
+  },
+});
+
+function syncWallpaperTray(enabled: boolean): void {
+  if (!enabled) {
+    wallpaperTray?.destroy();
+    wallpaperTray = null;
+    return;
+  }
+  if (wallpaperTray || !app.isReady()) return;
+
+  const locale = normalizeLocale(app.getLocale());
+  wallpaperTray = new Tray(WINDOW_ICON_PATH);
+  wallpaperTray.setToolTip("PiCaptain");
+  wallpaperTray.setContextMenu(
+    Menu.buildFromTemplate([
+      {
+        label: translate(locale, "wallpaper.tray.open"),
+        click: () => restoreMainWindowVisibility(),
+      },
+      {
+        label: translate(locale, "wallpaper.tray.refresh"),
+        click: () => {
+          void wallpaperService.refresh();
+        },
+      },
+      { type: "separator" },
+      {
+        label: translate(locale, "wallpaper.tray.quit"),
+        click: () => app.quit(),
+      },
+    ]),
+  );
+  wallpaperTray.on("click", () => restoreMainWindowVisibility());
+}
 
 const NORMAL_WINDOW_MIN_WIDTH = 400;
 const NORMAL_WINDOW_MIN_HEIGHT = 300;
@@ -277,11 +328,7 @@ async function writePersistedSettings(
 ): Promise<void> {
   try {
     ensureSettingsStoreConfigured();
-    const current = await readPersistedSettings();
-    await writeSharedSettings({
-      ...current,
-      ...patch,
-    });
+    await patchSharedSettings(patch);
   } catch (error) {
     log.error("Failed to write settings", error);
   }
@@ -871,6 +918,9 @@ async function prepareForAppQuit(): Promise<void> {
   quitPreparationPromise = (async () => {
     log.info("[shutdown] preparing application resources");
     globalShortcut.unregisterAll();
+    wallpaperService.stop();
+    wallpaperTray?.destroy();
+    wallpaperTray = null;
     await stopApiServer();
     isQuitPrepared = true;
     log.info("[shutdown] application resources released");
@@ -908,6 +958,24 @@ async function createWindow(options?: { load?: boolean }) {
   });
 
   syncWindowAppearance(windowAlwaysOnTop);
+
+  mainWindow.on("close", (event) => {
+    const wallpaperState = wallpaperService.getState();
+    if (
+      isQuitPrepared ||
+      !wallpaperState.supported ||
+      !wallpaperState.settings.enabled
+    ) {
+      return;
+    }
+    event.preventDefault();
+    isAppHidden = true;
+    mainWindow?.hide();
+    mainWindow?.webContents.send("renderer-event", "app-visibility", false);
+  });
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
 
   mainWindow.on("resize", () => {
     if (!mainWindow) return;
@@ -1918,11 +1986,19 @@ function scheduleVectorServiceWarmup(): void {
 }
 
 async function startServer() {
-  const port = await startApiServer((channel: RendererChannel, data: unknown) => {
-    mainWindow?.webContents.send(channel, data);
-  });
+  const port = await startApiServer(
+    (channel: RendererChannel, data: unknown) => {
+      mainWindow?.webContents.send(channel, data);
+    },
+    {
+      getState: () => wallpaperService.getState(),
+      updateSettings: (settings) => wallpaperService.updateSettings(settings),
+      refresh: () => wallpaperService.refresh(),
+    },
+  );
   localServerApiBaseUrl = `http://localhost:${port}`;
   isLocalServerReady = true;
+  await wallpaperService.start();
   return port;
 }
 
@@ -2233,6 +2309,11 @@ app.whenReady().then(async () => {
 
     await createWindow();
     registerToggleWindowShortcut(toggleWindowShortcut);
+    screen.on("display-added", () => wallpaperService.handleDisplaysChanged());
+    screen.on("display-removed", () => wallpaperService.handleDisplaysChanged());
+    screen.on("display-metrics-changed", () =>
+      wallpaperService.handleDisplaysChanged(),
+    );
 
     if (mainWindow) {
       if (hasStorageRoot) {
@@ -2300,6 +2381,12 @@ app.on("will-quit", () => {
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  const wallpaperState = wallpaperService.getState();
+  if (
+    process.platform !== "darwin" &&
+    (!wallpaperState.supported || !wallpaperState.settings.enabled)
+  ) {
+    app.quit();
+  }
 });
 // restart trigger 3

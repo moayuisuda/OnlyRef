@@ -12,9 +12,14 @@ import { createImagesRouter } from "./routes/images";
 import { createTagsRouter } from "./routes/tags";
 import { createSettingsRouter } from "./routes/settings";
 import { createModelRouter } from "./routes/model";
+import {
+  createWallpaperRouter,
+  type WallpaperRouteHandlers,
+} from "./routes/wallpaper";
 import { lockedFs, withFileLock } from "./fileLock";
 import {
   configureSettingsStore,
+  patchSettings,
   readSettings,
   writeSettings,
 } from "./settingsStore";
@@ -32,6 +37,7 @@ export type RendererChannel =
   | "model-download-progress"
   | "indexing-progress"
   | "env-init-progress"
+  | "wallpaper-state"
   | "toast";
 export type SendToRenderer = (channel: RendererChannel, data: unknown) => void;
 
@@ -98,7 +104,16 @@ const persistStorageRootConfig = async (root: string) => {
 };
 
 export const getStorageDir = (): string => STORAGE_DIR;
-export { readSettings, writeSettings };
+export { patchSettings, readSettings, writeSettings };
+
+export const getRandomWallpaperImagePaths = (count?: number): string[] => {
+  if (!imageDb) {
+    throw new Error("Database is not initialized");
+  }
+  return imageDb
+    .listRandomImages(count)
+    .map((image) => path.join(STORAGE_DIR, image.imagePath));
+};
 
 export const setStorageRoot = async (root: string) => {
   const trimmed = root.trim();
@@ -971,6 +986,7 @@ const listenOnAvailablePort = (
 
 export async function startServer(
   sendToRenderer?: SendToRenderer,
+  wallpaperHandlers?: WallpaperRouteHandlers,
 ): Promise<number> {
   if (activeHttpServer && activeServerPort !== null) {
     return activeServerPort;
@@ -1035,7 +1051,10 @@ export async function startServer(
     return imageDb;
   };
 
-  server.use(createSettingsRouter({ readSettings, writeSettings }));
+  server.use(createSettingsRouter({ readSettings, patchSettings }));
+  if (wallpaperHandlers) {
+    server.use(createWallpaperRouter(wallpaperHandlers));
+  }
   server.use(
     createModelRouter({
       downloadModel: (onProgress) =>

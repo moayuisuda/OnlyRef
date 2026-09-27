@@ -23,11 +23,11 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 
 // electron/main.ts
 var import_electron4 = require("electron");
-var import_path6 = __toESM(require("path"), 1);
-var import_fs_extra6 = __toESM(require("fs-extra"), 1);
+var import_path7 = __toESM(require("path"), 1);
+var import_fs_extra7 = __toESM(require("fs-extra"), 1);
 var import_electron_log2 = __toESM(require("electron-log"), 1);
 var import_electron_updater = require("electron-updater");
-var import_child_process3 = require("child_process");
+var import_child_process4 = require("child_process");
 
 // backend/fileLock.ts
 var import_fs_extra = __toESM(require("fs-extra"), 1);
@@ -102,7 +102,7 @@ var import_zlib = __toESM(require("zlib"), 1);
 // backend/server.ts
 var import_electron3 = require("electron");
 var import_path5 = __toESM(require("path"), 1);
-var import_express5 = __toESM(require("express"), 1);
+var import_express6 = __toESM(require("express"), 1);
 var import_cors = __toESM(require("cors"), 1);
 var import_body_parser = __toESM(require("body-parser"), 1);
 var import_fs_extra5 = __toESM(require("fs-extra"), 1);
@@ -292,6 +292,13 @@ var createImageDb = (db) => {
     const map = new Map(rows.map((row) => [row.id, row]));
     const orderedRows = ids.map((id) => map.get(id)).filter((row) => Boolean(row));
     return mapImages(db, orderedRows);
+  };
+  const listRandomImages = (limit) => {
+    const selectSql = `SELECT rowid, id, filename, imagePath, createdAt, pageUrl, dominantColor, dominantL, dominantC, dominantH, tone, galleryOrder
+      FROM images
+      ORDER BY RANDOM()`;
+    const rows = typeof limit === "number" ? db.prepare(`${selectSql} LIMIT ?`).all(Math.max(1, Math.floor(limit))) : db.prepare(selectSql).all();
+    return mapImages(db, rows);
   };
   const insertImage = (data) => {
     const info = insertImageStmt.run({
@@ -654,6 +661,7 @@ var createImageDb = (db) => {
     getImageById,
     listImages,
     listImagesByIds,
+    listRandomImages,
     setGalleryOrder,
     moveGalleryOrder,
     searchImages,
@@ -2502,9 +2510,7 @@ var createSettingsRouter = (deps) => {
         return;
       }
       const { value } = req.body;
-      const settings = await deps.readSettings();
-      const next = { ...settings, [key]: value };
-      await deps.writeSettings(next);
+      await deps.patchSettings({ [key]: value });
       res.json({ success: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2539,6 +2545,83 @@ var createModelRouter = (deps) => {
   return router;
 };
 
+// backend/routes/wallpaper.ts
+var import_express5 = __toESM(require("express"), 1);
+
+// shared/wallpaper.ts
+var WALLPAPER_INTERVAL_OPTIONS = [
+  15,
+  30,
+  60,
+  180,
+  360,
+  720,
+  1440,
+  4320,
+  10080
+];
+var WALLPAPER_IMAGE_COUNT_OPTIONS = [4, 6, 9, 12, 18, 24];
+var DEFAULT_WALLPAPER_SETTINGS = {
+  enabled: false,
+  intervalMinutes: 60,
+  imageCount: 6,
+  targetDisplayIds: null
+};
+var isOneOf = (value, options) => typeof value === "number" && options.includes(value);
+var parseWallpaperSettings = (value) => {
+  if (value === void 0) {
+    return { ...DEFAULT_WALLPAPER_SETTINGS };
+  }
+  if (!value || typeof value !== "object") {
+    throw new Error("Invalid wallpaper settings");
+  }
+  const settings = value;
+  if (typeof settings.enabled !== "boolean" || !isOneOf(settings.intervalMinutes, WALLPAPER_INTERVAL_OPTIONS) || !isOneOf(settings.imageCount, WALLPAPER_IMAGE_COUNT_OPTIONS) || !(settings.targetDisplayIds === null || Array.isArray(settings.targetDisplayIds) && settings.targetDisplayIds.every(
+    (id) => typeof id === "string" && id.length > 0
+  )) || settings.enabled === true && Array.isArray(settings.targetDisplayIds) && settings.targetDisplayIds.length === 0) {
+    throw new Error("Invalid wallpaper settings");
+  }
+  return {
+    enabled: settings.enabled,
+    intervalMinutes: settings.intervalMinutes,
+    imageCount: settings.imageCount,
+    targetDisplayIds: settings.targetDisplayIds === null ? null : [...new Set(settings.targetDisplayIds)]
+  };
+};
+
+// backend/routes/wallpaper.ts
+var createWallpaperRouter = (handlers) => {
+  const router = import_express5.default.Router();
+  router.get("/api/wallpaper", (_req, res) => {
+    res.json(handlers.getState());
+  });
+  router.put("/api/wallpaper/settings", async (req, res) => {
+    let settings;
+    try {
+      settings = parseWallpaperSettings(req.body);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(400).json({ error: message });
+      return;
+    }
+    try {
+      res.json(await handlers.updateSettings(settings));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    }
+  });
+  router.post("/api/wallpaper/refresh", async (_req, res) => {
+    try {
+      res.json(await handlers.refresh());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    }
+  });
+  return router;
+};
+
 // backend/settingsStore.ts
 var import_fs_extra3 = __toESM(require("fs-extra"), 1);
 var settingsFilePath = "";
@@ -2557,20 +2640,21 @@ var getSettingsFilePath = () => {
   }
   return settingsFilePath;
 };
+var readSettingsFile = async (filePath) => {
+  if (!await import_fs_extra3.default.pathExists(filePath)) return {};
+  const raw = await import_fs_extra3.default.readJson(filePath);
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Settings file must contain an object");
+  }
+  return raw;
+};
 var readSettings = async () => {
   const filePath = getSettingsFilePath();
   if (settingsCache) return settingsCache;
   return withFileLock(filePath, async () => {
-    if (!await import_fs_extra3.default.pathExists(filePath)) {
-      settingsCache = {};
-      return settingsCache;
-    }
     try {
-      const raw = await import_fs_extra3.default.readJson(filePath);
-      if (raw && typeof raw === "object") {
-        settingsCache = raw;
-        return settingsCache;
-      }
+      settingsCache = await readSettingsFile(filePath);
+      return settingsCache;
     } catch (error) {
       console.error("Failed to read settings file", error);
     }
@@ -2580,13 +2664,19 @@ var readSettings = async () => {
 };
 var writeSettings = async (settings) => {
   const filePath = getSettingsFilePath();
-  settingsCache = settings;
   await withFileLock(filePath, async () => {
-    try {
-      await import_fs_extra3.default.writeJson(filePath, settings);
-    } catch (error) {
-      console.error("Failed to write settings file", error);
-    }
+    await import_fs_extra3.default.writeJson(filePath, settings);
+    settingsCache = settings;
+  });
+};
+var patchSettings = async (patch) => {
+  const filePath = getSettingsFilePath();
+  return withFileLock(filePath, async () => {
+    const current = settingsCache ?? await readSettingsFile(filePath);
+    const next = { ...current, ...patch };
+    await import_fs_extra3.default.writeJson(filePath, next);
+    settingsCache = next;
+    return next;
   });
 };
 
@@ -3921,6 +4011,12 @@ var persistStorageRootConfig = async (root) => {
   });
 };
 var getStorageDir = () => STORAGE_DIR;
+var getRandomWallpaperImagePaths = (count) => {
+  if (!imageDb) {
+    throw new Error("Database is not initialized");
+  }
+  return imageDb.listRandomImages(count).map((image) => import_path5.default.join(STORAGE_DIR, image.imagePath));
+};
 var setStorageRoot = async (root) => {
   const trimmed = root.trim();
   if (!trimmed) return;
@@ -4605,12 +4701,12 @@ var listenOnAvailablePort = (appServer, startPort) => new Promise((resolve, reje
   };
   tryListen(startPort);
 });
-async function startServer(sendToRenderer) {
+async function startServer(sendToRenderer, wallpaperHandlers) {
   if (activeHttpServer && activeServerPort !== null) {
     return activeServerPort;
   }
   await initializeStorage();
-  const server = (0, import_express5.default)();
+  const server = (0, import_express6.default)();
   server.use((0, import_cors.default)());
   server.use(import_body_parser.default.json({ limit: "25mb" }));
   const vectorService = getVectorService();
@@ -4656,7 +4752,10 @@ async function startServer(sendToRenderer) {
     }
     return imageDb;
   };
-  server.use(createSettingsRouter({ readSettings, writeSettings }));
+  server.use(createSettingsRouter({ readSettings, patchSettings }));
+  if (wallpaperHandlers) {
+    server.use(createWallpaperRouter(wallpaperHandlers));
+  }
   server.use(
     createModelRouter({
       downloadModel: (onProgress) => vectorService.downloadModel((data) => {
@@ -4692,7 +4791,7 @@ async function startServer(sendToRenderer) {
       sendToRenderer: sendRenderer
     })
   );
-  server.use("/images", import_express5.default.static(STORAGE_DIR));
+  server.use("/images", import_express6.default.static(STORAGE_DIR));
   server.use(
     (err, req, res, _next) => {
       const message = err instanceof Error ? err.message : String(err);
@@ -4995,7 +5094,42 @@ var en = {
   "settings.status.indexingDetailFallback": "Refreshing your local reference library and metadata.",
   "settings.status.ready.semanticAndTranslation": "Semantic search and query translation are active.",
   "settings.status.ready.semantic": "Semantic search is active for your local library.",
-  "settings.status.ready.basic": "Search, color filtering, and local library management are ready."
+  "settings.status.ready.basic": "Search, color filtering, and local library management are ready.",
+  "wallpaper.open": "Desktop wallpaper",
+  "wallpaper.title": "Desktop wallpaper",
+  "wallpaper.description": "Randomly compose images from your library for the displays you choose.",
+  "wallpaper.displays": "Displays",
+  "wallpaper.displays.selected": "{{selected}} of {{total}} selected",
+  "wallpaper.displays.empty": "No available displays detected",
+  "wallpaper.displayName": "Display {{index}}",
+  "wallpaper.primaryDisplay": "Primary",
+  "wallpaper.interval": "Change every",
+  "wallpaper.interval.15": "15 minutes",
+  "wallpaper.interval.30": "30 minutes",
+  "wallpaper.interval.60": "1 hour",
+  "wallpaper.interval.180": "3 hours",
+  "wallpaper.interval.360": "6 hours",
+  "wallpaper.interval.720": "12 hours",
+  "wallpaper.interval.1440": "1 day",
+  "wallpaper.interval.4320": "3 days",
+  "wallpaper.interval.10080": "7 days",
+  "wallpaper.imageCount": "Collage density",
+  "wallpaper.refreshNow": "Change now",
+  "wallpaper.status.ready": "Ready to compose a wallpaper",
+  "wallpaper.status.noDisplaySelected": "Select at least one display",
+  "wallpaper.status.updating": "Composing a new wallpaper\u2026",
+  "wallpaper.status.nextUpdate": "Next change at {{time}}",
+  "wallpaper.status.lastUpdate": "Last changed at {{time}}",
+  "wallpaper.status.notEnoughImages": "Add at least two images first",
+  "wallpaper.status.generationFailed": "Could not compose the wallpaper",
+  "wallpaper.status.applyFailed": "Could not apply the system wallpaper",
+  "wallpaper.status.cleanupFailed": "Wallpaper changed, but old files could not be cleaned",
+  "wallpaper.status.displayUnavailable": "The selected display is unavailable",
+  "wallpaper.status.requestFailed": "Could not reach the local wallpaper service",
+  "wallpaper.status.unsupported": "This system does not support wallpaper updates",
+  "wallpaper.tray.open": "Open PiCaptain",
+  "wallpaper.tray.refresh": "Change wallpaper now",
+  "wallpaper.tray.quit": "Quit PiCaptain"
 };
 
 // shared/i18n/locales/zh.ts
@@ -5100,7 +5234,7 @@ var zh = {
   "errors.failedToLoadLogs": "\u52A0\u8F7D\u65E5\u5FD7\u5931\u8D25\uFF1A{{message}}",
   "errors.copyLog": "\u590D\u5236\u65E5\u5FD7",
   "errors.reloadApplication": "\u91CD\u65B0\u52A0\u8F7D\u5E94\u7528",
-  "gallery.searchPlaceholder": "\u8BF7\u7528\u82F1\u6587\u641C\u7D22\uFF0C\u6216\u5148\u8BD1\u6210\u82F1\u6587",
+  "gallery.searchPlaceholder": "\u4F7F\u7528\u82F1\u6587\u641C\u7D22\u4EE5\u83B7\u5F97\u6700\u4F73\u6548\u679C",
   "gallery.filter": "\u7B5B\u9009",
   "gallery.filterSummary.color": "\u989C\u8272\uFF1A{{color}}",
   "gallery.filterSummary.tone": "\u8272\u8C03\uFF1A{{tone}}",
@@ -5272,7 +5406,42 @@ var zh = {
   "titleBar.version.restartToInstall": "\u91CD\u542F\u5B89\u88C5",
   "titleBar.version.upToDate": "\u5F53\u524D\u5DF2\u662F\u6700\u65B0\u7248\u672C\u3002",
   "titleBar.version.updateAvailable": "\u53EF\u66F4\u65B0\u81F3 v{{version}}",
-  "toast.updateDownloaded": "\u66F4\u65B0\u5DF2\u4E0B\u8F7D\u5B8C\u6210\uFF0C\u53EF\u91CD\u542F\u5B89\u88C5 v{{version}}"
+  "toast.updateDownloaded": "\u66F4\u65B0\u5DF2\u4E0B\u8F7D\u5B8C\u6210\uFF0C\u53EF\u91CD\u542F\u5B89\u88C5 v{{version}}",
+  "wallpaper.open": "\u684C\u9762\u58C1\u7EB8",
+  "wallpaper.title": "\u684C\u9762\u58C1\u7EB8",
+  "wallpaper.description": "\u4ECE\u56FE\u5E93\u968F\u673A\u53D6\u56FE\uFF0C\u4E3A\u9009\u4E2D\u7684\u663E\u793A\u5668\u5206\u522B\u751F\u6210\u684C\u9762\u753B\u9762\u3002",
+  "wallpaper.displays": "\u5E94\u7528\u5230\u663E\u793A\u5668",
+  "wallpaper.displays.selected": "\u5DF2\u9009 {{selected}} / {{total}}",
+  "wallpaper.displays.empty": "\u672A\u68C0\u6D4B\u5230\u53EF\u7528\u663E\u793A\u5668",
+  "wallpaper.displayName": "\u663E\u793A\u5668 {{index}}",
+  "wallpaper.primaryDisplay": "\u4E3B\u5C4F",
+  "wallpaper.interval": "\u66F4\u6362\u9891\u7387",
+  "wallpaper.interval.15": "15 \u5206\u949F",
+  "wallpaper.interval.30": "30 \u5206\u949F",
+  "wallpaper.interval.60": "1 \u5C0F\u65F6",
+  "wallpaper.interval.180": "3 \u5C0F\u65F6",
+  "wallpaper.interval.360": "6 \u5C0F\u65F6",
+  "wallpaper.interval.720": "12 \u5C0F\u65F6",
+  "wallpaper.interval.1440": "1 \u5929",
+  "wallpaper.interval.4320": "3 \u5929",
+  "wallpaper.interval.10080": "7 \u5929",
+  "wallpaper.imageCount": "\u62FC\u8D34\u5BC6\u5EA6",
+  "wallpaper.refreshNow": "\u7ACB\u5373\u66F4\u6362",
+  "wallpaper.status.ready": "\u5DF2\u51C6\u5907\u597D\u751F\u6210\u58C1\u7EB8",
+  "wallpaper.status.noDisplaySelected": "\u8BF7\u81F3\u5C11\u9009\u62E9\u4E00\u53F0\u663E\u793A\u5668",
+  "wallpaper.status.updating": "\u6B63\u5728\u62FC\u63A5\u65B0\u58C1\u7EB8\u2026",
+  "wallpaper.status.nextUpdate": "\u4E0B\u6B21\u66F4\u6362 {{time}}",
+  "wallpaper.status.lastUpdate": "\u4E0A\u6B21\u66F4\u6362 {{time}}",
+  "wallpaper.status.notEnoughImages": "\u8BF7\u5148\u6DFB\u52A0\u81F3\u5C11\u4E24\u5F20\u56FE\u7247",
+  "wallpaper.status.generationFailed": "\u58C1\u7EB8\u62FC\u63A5\u5931\u8D25",
+  "wallpaper.status.applyFailed": "\u7CFB\u7EDF\u58C1\u7EB8\u8BBE\u7F6E\u5931\u8D25",
+  "wallpaper.status.cleanupFailed": "\u58C1\u7EB8\u5DF2\u66F4\u6362\uFF0C\u4F46\u65E7\u6587\u4EF6\u6E05\u7406\u5931\u8D25",
+  "wallpaper.status.displayUnavailable": "\u9009\u4E2D\u7684\u663E\u793A\u5668\u5F53\u524D\u4E0D\u53EF\u7528",
+  "wallpaper.status.requestFailed": "\u65E0\u6CD5\u8FDE\u63A5\u672C\u5730\u58C1\u7EB8\u670D\u52A1",
+  "wallpaper.status.unsupported": "\u5F53\u524D\u7CFB\u7EDF\u4E0D\u652F\u6301\u58C1\u7EB8\u66F4\u65B0",
+  "wallpaper.tray.open": "\u6253\u5F00 PiCaptain",
+  "wallpaper.tray.refresh": "\u7ACB\u5373\u66F4\u6362\u58C1\u7EB8",
+  "wallpaper.tray.quit": "\u9000\u51FA PiCaptain"
 };
 
 // shared/i18n/t.ts
@@ -5308,6 +5477,803 @@ var normalizeLocale = (value, fallback = DEFAULT_LOCALE) => {
 
 // electron/main.ts
 var import_radash = require("radash");
+
+// electron/wallpaperService.ts
+var import_child_process3 = require("child_process");
+var import_crypto2 = require("crypto");
+var import_path6 = __toESM(require("path"), 1);
+var import_util = require("util");
+var import_fs_extra6 = __toESM(require("fs-extra"), 1);
+var import_sharp2 = __toESM(require("sharp"), 1);
+var execFileAsync = (0, import_util.promisify)(import_child_process3.execFile);
+var SETTINGS_KEY = "wallpaperSettings";
+var ORIGINAL_WALLPAPERS_KEY = "wallpaperOriginals";
+var GENERATED_DIR_NAME = "wallpapers";
+var DISPLAY_DIR_PATTERN = /^display-[a-f0-9]{16}$/;
+var GENERATED_FILE_PREFIX = "picaptain-wallpaper-";
+var GENERATED_FILE_PATTERN = /^picaptain-wallpaper-\d+\.jpg$/;
+var GENERATED_TEMP_PATTERN = /^picaptain-wallpaper-\d+\.tmp\.jpg$/;
+var DISPLAY_CHANGE_DEBOUNCE_MS = 800;
+var DEFAULT_IMAGE_SCALE = 0.5;
+var MAX_DISPLAY_IMAGE_RATIO = 2 / 3;
+var WINDOWS_DESKTOP_API_SOURCE = [
+  "using System;",
+  "using System.Collections.Generic;",
+  "using System.Runtime.InteropServices;",
+  "namespace PiCaptain {",
+  "  [StructLayout(LayoutKind.Sequential)]",
+  "  public struct NativeRect { public int Left; public int Top; public int Right; public int Bottom; }",
+  '  [ComImport, Guid("B92B56A9-8B55-4E14-9A89-0199BBB6F93B"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]',
+  "  internal interface IDesktopWallpaper {",
+  "    [PreserveSig] int SetWallpaper([MarshalAs(UnmanagedType.LPWStr)] string monitorId, [MarshalAs(UnmanagedType.LPWStr)] string wallpaper);",
+  "    [PreserveSig] int GetWallpaper([MarshalAs(UnmanagedType.LPWStr)] string monitorId, [MarshalAs(UnmanagedType.LPWStr)] out string wallpaper);",
+  "    [PreserveSig] int GetMonitorDevicePathAt(uint monitorIndex, [MarshalAs(UnmanagedType.LPWStr)] out string monitorId);",
+  "    [PreserveSig] int GetMonitorDevicePathCount(out uint count);",
+  "    [PreserveSig] int GetMonitorRECT([MarshalAs(UnmanagedType.LPWStr)] string monitorId, out NativeRect displayRect);",
+  "  }",
+  "  public sealed class WallpaperDisplayInfo {",
+  "    public string Id { get; set; }",
+  "    public int Left { get; set; }",
+  "    public int Top { get; set; }",
+  "    public int Width { get; set; }",
+  "    public int Height { get; set; }",
+  "  }",
+  "  public static class DesktopWallpaperApi {",
+  "    private static IDesktopWallpaper Create() {",
+  '      var type = Type.GetTypeFromCLSID(new Guid("C2CF3110-460E-4FC1-B9D0-8A1C0C9CC4BD"));',
+  "      return (IDesktopWallpaper)Activator.CreateInstance(type);",
+  "    }",
+  "    private static void ThrowIfFailed(int hresult) { if (hresult < 0) Marshal.ThrowExceptionForHR(hresult); }",
+  "    public static WallpaperDisplayInfo[] GetDisplays() {",
+  "      var api = Create();",
+  "      try {",
+  "        uint count; ThrowIfFailed(api.GetMonitorDevicePathCount(out count));",
+  "        var displays = new List<WallpaperDisplayInfo>();",
+  "        for (uint index = 0; index < count; index++) {",
+  "          string id; ThrowIfFailed(api.GetMonitorDevicePathAt(index, out id));",
+  "          NativeRect rect; var result = api.GetMonitorRECT(id, out rect);",
+  "          if (result == 1) continue;",
+  "          ThrowIfFailed(result);",
+  "          displays.Add(new WallpaperDisplayInfo { Id = id, Left = rect.Left, Top = rect.Top, Width = rect.Right - rect.Left, Height = rect.Bottom - rect.Top });",
+  "        }",
+  "        return displays.ToArray();",
+  "      } finally { Marshal.FinalReleaseComObject(api); }",
+  "    }",
+  "    public static void SetWallpaper(string monitorId, string wallpaper) {",
+  "      var api = Create();",
+  "      try { ThrowIfFailed(api.SetWallpaper(monitorId, wallpaper)); }",
+  "      finally { Marshal.FinalReleaseComObject(api); }",
+  "    }",
+  "    public static string GetWallpaper(string monitorId) {",
+  "      var api = Create();",
+  "      try { string wallpaper; ThrowIfFailed(api.GetWallpaper(monitorId, out wallpaper)); return wallpaper; }",
+  "      finally { Marshal.FinalReleaseComObject(api); }",
+  "    }",
+  "  }",
+  "}"
+].join("\n");
+var escapePowerShellLiteral = (value) => value.replace(/'/g, "''");
+var getWindowsApiScript = (body) => [
+  "$ErrorActionPreference = 'Stop'",
+  "$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()",
+  "Add-Type -TypeDefinition @'",
+  WINDOWS_DESKTOP_API_SOURCE,
+  "'@",
+  body
+].join("\n");
+var listWindowsDisplays = async () => {
+  const script = getWindowsApiScript(
+    "[PiCaptain.DesktopWallpaperApi]::GetDisplays() | ConvertTo-Json -Compress"
+  );
+  const { stdout } = await execFileAsync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    { windowsHide: true, maxBuffer: 1024 * 1024 }
+  );
+  const raw = stdout.trim();
+  if (!raw) return [];
+  const parsed = JSON.parse(raw);
+  const records = Array.isArray(parsed) ? parsed : [parsed];
+  return records.map((display, index) => ({
+    id: display.Id,
+    index,
+    name: "",
+    width: display.Width,
+    height: display.Height,
+    isPrimary: display.Left === 0 && display.Top === 0
+  }));
+};
+var listMacDisplays = (displays, primaryDisplay) => displays.map((display, index) => ({
+  id: String(display.id),
+  index,
+  name: display.label,
+  width: Math.max(1, Math.round(display.size.width * display.scaleFactor)),
+  height: Math.max(1, Math.round(display.size.height * display.scaleFactor)),
+  isPrimary: display.id === primaryDisplay.id
+}));
+var listSystemDisplays = async (deps) => {
+  if (process.platform === "win32") return listWindowsDisplays();
+  if (process.platform === "darwin") {
+    return listMacDisplays(deps.getDisplays(), deps.getPrimaryDisplay());
+  }
+  return [];
+};
+var applyWindowsWallpaper = async (displayId, imagePath) => {
+  const wallpaperArgument = imagePath === null ? "$null" : `'${escapePowerShellLiteral(imagePath)}'`;
+  const script = getWindowsApiScript(
+    `[PiCaptain.DesktopWallpaperApi]::SetWallpaper('${escapePowerShellLiteral(displayId)}', ${wallpaperArgument})`
+  );
+  await execFileAsync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    { windowsHide: true }
+  );
+};
+var getWindowsWallpaper = async (displayId) => {
+  const script = getWindowsApiScript(
+    `[PiCaptain.DesktopWallpaperApi]::GetWallpaper('${escapePowerShellLiteral(displayId)}') | ConvertTo-Json -Compress`
+  );
+  const { stdout } = await execFileAsync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    { windowsHide: true }
+  );
+  const raw = stdout.trim();
+  if (!raw) return null;
+  const wallpaper = JSON.parse(raw);
+  return typeof wallpaper === "string" && wallpaper.length > 0 ? wallpaper : null;
+};
+var applyMacWallpaper = async (displayIndex, imagePath) => {
+  const escapedPath = imagePath.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const script = `tell application "System Events" to set picture of desktop ${displayIndex + 1} to POSIX file "${escapedPath}"`;
+  await execFileAsync("/usr/bin/osascript", ["-e", script]);
+};
+var getMacWallpaper = async (displayIndex) => {
+  const script = `tell application "System Events" to get picture of desktop ${displayIndex + 1}`;
+  const { stdout } = await execFileAsync("/usr/bin/osascript", ["-e", script]);
+  const wallpaper = stdout.trim();
+  return wallpaper.length > 0 ? wallpaper : null;
+};
+var applySystemWallpaper = async (display, imagePath) => {
+  if (process.platform === "win32") {
+    await applyWindowsWallpaper(display.id, imagePath);
+    return;
+  }
+  if (process.platform === "darwin") {
+    if (imagePath === null) throw new Error("macOS wallpaper path is unavailable");
+    await applyMacWallpaper(display.index, imagePath);
+    return;
+  }
+  throw new Error("Unsupported platform");
+};
+var getSystemWallpaper = async (display) => {
+  if (process.platform === "win32") return getWindowsWallpaper(display.id);
+  if (process.platform === "darwin") return getMacWallpaper(display.index);
+  throw new Error("Unsupported platform");
+};
+var loadImageLayout = async (imagePath) => {
+  const input = await lockedFs.readFile(imagePath);
+  const metadata = await (0, import_sharp2.default)(input).metadata();
+  const { width, height } = metadata.autoOrient;
+  return {
+    input,
+    width,
+    height
+  };
+};
+var splitProportionally = (total, weights) => {
+  const weightTotal = weights.reduce((sum, weight) => sum + weight, 0);
+  const exact = weights.map((weight) => total * weight / weightTotal);
+  const values = exact.map(Math.floor);
+  const remainder = total - values.reduce((sum, value) => sum + value, 0);
+  const remainderOrder = exact.map((value, index) => ({ index, fraction: value - values[index] })).sort((left, right) => right.fraction - left.fraction);
+  for (let index = 0; index < remainder; index += 1) {
+    values[remainderOrder[index].index] += 1;
+  }
+  return values;
+};
+var createHorizontalNode = (children) => ({
+  type: "horizontal",
+  children,
+  aspectRatio: children.reduce((sum, child) => sum + child.aspectRatio, 0),
+  maximumHeight: Math.min(...children.map((child) => child.maximumHeight))
+});
+var createVerticalNode = (children) => {
+  const aspectRatio = 1 / children.reduce((sum, child) => sum + 1 / child.aspectRatio, 0);
+  return {
+    type: "vertical",
+    children,
+    aspectRatio,
+    maximumHeight: Math.min(
+      ...children.map(
+        (child) => child.maximumHeight * child.aspectRatio / aspectRatio
+      )
+    )
+  };
+};
+var buildRecursiveMosaic = (images, targetAspectRatio) => {
+  if (images.length === 1) {
+    const prepared = images[0];
+    return {
+      type: "image",
+      prepared,
+      aspectRatio: prepared.aspectRatio,
+      maximumHeight: prepared.maximumHeight
+    };
+  }
+  const areas = images.map(
+    (image) => image.preferredWidth * image.preferredHeight
+  );
+  const totalArea = areas.reduce((sum, area) => sum + area, 0);
+  let firstArea = 0;
+  let splitIndex = 1;
+  let closestDistance = Number.POSITIVE_INFINITY;
+  for (let index = 1; index < images.length; index += 1) {
+    firstArea += areas[index - 1];
+    const distance = Math.abs(totalArea / 2 - firstArea);
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      splitIndex = index;
+    }
+  }
+  const firstImages = images.slice(0, splitIndex);
+  const secondImages = images.slice(splitIndex);
+  const firstShare = areas.slice(0, splitIndex).reduce((sum, area) => sum + area, 0) / totalArea;
+  if (targetAspectRatio >= 1) {
+    return createHorizontalNode([
+      buildRecursiveMosaic(firstImages, targetAspectRatio * firstShare),
+      buildRecursiveMosaic(
+        secondImages,
+        targetAspectRatio * (1 - firstShare)
+      )
+    ]);
+  }
+  return createVerticalNode([
+    buildRecursiveMosaic(firstImages, targetAspectRatio / firstShare),
+    buildRecursiveMosaic(
+      secondImages,
+      targetAspectRatio / (1 - firstShare)
+    )
+  ]);
+};
+var appendMosaicTiles = (node, rect, displayWidth, displayHeight, tiles) => {
+  if (node.type === "image") {
+    const visibleLeft = Math.max(0, rect.left);
+    const visibleTop = Math.max(0, rect.top);
+    const visibleRight = Math.min(displayWidth, rect.left + rect.width);
+    const visibleBottom = Math.min(displayHeight, rect.top + rect.height);
+    const visibleWidth = visibleRight - visibleLeft;
+    const visibleHeight = visibleBottom - visibleTop;
+    if (visibleWidth <= 0 || visibleHeight <= 0) return;
+    tiles.push({
+      image: node.prepared.image,
+      renderedWidth: rect.width,
+      renderedHeight: rect.height,
+      source: {
+        left: visibleLeft - rect.left,
+        top: visibleTop - rect.top,
+        width: visibleWidth,
+        height: visibleHeight
+      },
+      rect: {
+        left: visibleLeft,
+        top: visibleTop,
+        width: visibleWidth,
+        height: visibleHeight
+      }
+    });
+    return;
+  }
+  if (node.type === "horizontal") {
+    const widths = splitProportionally(
+      rect.width,
+      node.children.map((child) => child.aspectRatio)
+    );
+    let left = rect.left;
+    node.children.forEach((child, index) => {
+      appendMosaicTiles(
+        child,
+        { left, top: rect.top, width: widths[index], height: rect.height },
+        displayWidth,
+        displayHeight,
+        tiles
+      );
+      left += widths[index];
+    });
+    return;
+  }
+  const heights = splitProportionally(
+    rect.height,
+    node.children.map((child) => 1 / child.aspectRatio)
+  );
+  let top = rect.top;
+  node.children.forEach((child, index) => {
+    appendMosaicTiles(
+      child,
+      { left: rect.left, top, width: rect.width, height: heights[index] },
+      displayWidth,
+      displayHeight,
+      tiles
+    );
+    top += heights[index];
+  });
+};
+var renderMosaicRoot = (root, display) => {
+  const displayAspectRatio = display.width / display.height;
+  const renderedHeight = root.aspectRatio >= displayAspectRatio ? display.height : display.width / root.aspectRatio;
+  const rootHeight = Math.max(1, Math.ceil(renderedHeight));
+  const rootWidth = Math.max(
+    display.width,
+    Math.ceil(rootHeight * root.aspectRatio)
+  );
+  const tiles = [];
+  appendMosaicTiles(
+    root,
+    {
+      left: Math.floor((display.width - rootWidth) / 2),
+      top: Math.floor((display.height - rootHeight) / 2),
+      width: rootWidth,
+      height: rootHeight
+    },
+    display.width,
+    display.height,
+    tiles
+  );
+  return tiles;
+};
+var buildPackedTiles = async (imagePaths, display, targetImageCount) => {
+  const preparedImages = [];
+  const displayAspectRatio = display.width / display.height;
+  for (const imagePath of imagePaths) {
+    const image = await loadImageLayout(imagePath);
+    const preferredScale = Math.min(
+      DEFAULT_IMAGE_SCALE,
+      display.width * MAX_DISPLAY_IMAGE_RATIO / image.width,
+      display.height * MAX_DISPLAY_IMAGE_RATIO / image.height
+    );
+    const maximumScale = Math.min(
+      1,
+      display.width * MAX_DISPLAY_IMAGE_RATIO / image.width,
+      display.height * MAX_DISPLAY_IMAGE_RATIO / image.height
+    );
+    preparedImages.push({
+      image,
+      aspectRatio: image.width / image.height,
+      preferredWidth: image.width * preferredScale,
+      preferredHeight: image.height * preferredScale,
+      maximumHeight: image.height * maximumScale
+    });
+    if (preparedImages.length < targetImageCount) continue;
+    const root = buildRecursiveMosaic(preparedImages, displayAspectRatio);
+    const renderedHeight = root.aspectRatio >= displayAspectRatio ? display.height : display.width / root.aspectRatio;
+    if (renderedHeight > root.maximumHeight) continue;
+    return renderMosaicRoot(root, display);
+  }
+  throw new Error("Not enough images to fill the wallpaper");
+};
+var getDisplayDirectoryName = (displayId) => {
+  const digest = (0, import_crypto2.createHash)("sha256").update(displayId).digest("hex").slice(0, 16);
+  return `display-${digest}`;
+};
+var sameDisplaySelection = (left, right) => {
+  if (left === null || right === null) return left === right;
+  if (left.length !== right.length) return false;
+  const rightSet = new Set(right);
+  return left.every((id) => rightSet.has(id));
+};
+var parseOriginalWallpapers = (value) => {
+  if (value === void 0) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Invalid original wallpaper settings");
+  }
+  const entries = Object.entries(value);
+  if (entries.some(
+    ([displayId, wallpaper]) => displayId.length === 0 || wallpaper !== null && (typeof wallpaper !== "string" || wallpaper.length === 0)
+  )) {
+    throw new Error("Invalid original wallpaper settings");
+  }
+  return Object.fromEntries(entries);
+};
+var hasOriginalWallpaper = (originals, displayId) => Object.prototype.hasOwnProperty.call(originals, displayId);
+var WallpaperService = class {
+  deps;
+  settings = { ...DEFAULT_WALLPAPER_SETTINGS };
+  originalWallpapers = {};
+  timer = null;
+  displayChangeTimer = null;
+  updateTask = null;
+  state = {
+    supported: process.platform === "win32" || process.platform === "darwin",
+    displays: [],
+    settings: { ...DEFAULT_WALLPAPER_SETTINGS },
+    updating: false,
+    lastUpdatedAt: null,
+    nextUpdatedAt: null,
+    errorCode: null
+  };
+  constructor(deps) {
+    this.deps = deps;
+  }
+  async start() {
+    await this.refreshDisplays();
+    const persisted = await this.deps.readSettings();
+    this.settings = parseWallpaperSettings(persisted[SETTINGS_KEY]);
+    this.originalWallpapers = parseOriginalWallpapers(
+      persisted[ORIGINAL_WALLPAPERS_KEY]
+    );
+    this.patchState({ settings: { ...this.settings } });
+    try {
+      await this.cleanupTemporaryFiles();
+    } catch (error) {
+      console.error("[wallpaper] startup cleanup failed", error);
+      this.patchState({ errorCode: "cleanup-failed" });
+    }
+    if (this.settings.enabled && this.state.supported) {
+      await this.refresh();
+    }
+  }
+  stop() {
+    this.clearTimer();
+    if (this.displayChangeTimer) {
+      clearTimeout(this.displayChangeTimer);
+      this.displayChangeTimer = null;
+    }
+  }
+  getState() {
+    return {
+      ...this.state,
+      displays: this.state.displays.map((display) => ({ ...display })),
+      settings: {
+        ...this.state.settings,
+        targetDisplayIds: this.state.settings.targetDisplayIds === null ? null : [...this.state.settings.targetDisplayIds]
+      }
+    };
+  }
+  async refreshDisplays() {
+    if (!this.state.supported) return;
+    try {
+      const displays = await listSystemDisplays(this.deps);
+      this.patchState({ displays, errorCode: null });
+    } catch (error) {
+      console.error("[wallpaper] failed to enumerate displays", error);
+      this.patchState({ displays: [], errorCode: "display-unavailable" });
+    }
+  }
+  handleDisplaysChanged() {
+    if (this.displayChangeTimer) clearTimeout(this.displayChangeTimer);
+    this.displayChangeTimer = setTimeout(() => {
+      this.displayChangeTimer = null;
+      void (async () => {
+        await this.refreshDisplays();
+        if (this.updateTask) await this.updateTask;
+        const restoreError = await this.restoreUnmanagedDisplays();
+        if (!this.settings.enabled) {
+          if (restoreError) this.patchState({ errorCode: restoreError });
+          return;
+        }
+        await this.refresh();
+        if (restoreError) this.patchState({ errorCode: restoreError });
+      })();
+    }, DISPLAY_CHANGE_DEBOUNCE_MS);
+  }
+  async updateSettings(settings) {
+    const previous = this.settings;
+    await this.deps.patchSettings({ [SETTINGS_KEY]: settings });
+    this.settings = {
+      ...settings,
+      targetDisplayIds: settings.targetDisplayIds === null ? null : [...settings.targetDisplayIds]
+    };
+    this.patchState({ settings: { ...this.settings }, errorCode: null });
+    const restoreError = await this.restoreUnmanagedDisplays();
+    if (!settings.enabled || !this.state.supported) {
+      this.clearTimer();
+      if (restoreError) this.patchState({ errorCode: restoreError });
+      return this.getState();
+    }
+    const shouldRefresh = !previous.enabled || previous.imageCount !== settings.imageCount || !sameDisplaySelection(
+      previous.targetDisplayIds,
+      settings.targetDisplayIds
+    );
+    if (shouldRefresh) {
+      await this.refresh();
+    } else {
+      this.scheduleNextUpdate();
+    }
+    if (restoreError) this.patchState({ errorCode: restoreError });
+    return this.getState();
+  }
+  refresh() {
+    if (this.updateTask) return this.updateTask;
+    this.updateTask = this.performRefresh().finally(() => {
+      this.updateTask = null;
+    });
+    return this.updateTask;
+  }
+  getTargetDisplays() {
+    const targets = this.settings.targetDisplayIds;
+    if (targets === null) {
+      return this.state.displays.filter((display) => display.isPrimary);
+    }
+    const targetSet = new Set(targets);
+    return this.state.displays.filter((display) => targetSet.has(display.id));
+  }
+  isDisplayTargeted(displayId) {
+    const targets = this.settings.targetDisplayIds;
+    if (targets !== null) return targets.includes(displayId);
+    return this.state.displays.some(
+      (display) => display.id === displayId && display.isPrimary
+    );
+  }
+  async persistOriginalWallpapers() {
+    await this.deps.patchSettings({
+      [ORIGINAL_WALLPAPERS_KEY]: { ...this.originalWallpapers }
+    });
+  }
+  async ensureOriginalWallpaper(display) {
+    if (hasOriginalWallpaper(this.originalWallpapers, display.id)) return;
+    const currentWallpaper = await getSystemWallpaper(display);
+    const generatedRoot = `${import_path6.default.resolve(
+      this.deps.getStorageDir(),
+      GENERATED_DIR_NAME
+    )}${import_path6.default.sep}`;
+    const wallpaper = currentWallpaper !== null && import_path6.default.resolve(currentWallpaper).startsWith(generatedRoot) ? null : currentWallpaper;
+    this.originalWallpapers[display.id] = wallpaper;
+    try {
+      await this.persistOriginalWallpapers();
+    } catch (error) {
+      delete this.originalWallpapers[display.id];
+      throw error;
+    }
+  }
+  async restoreUnmanagedDisplays() {
+    let errorCode = null;
+    let originalsChanged = false;
+    for (const display of this.state.displays) {
+      if (!hasOriginalWallpaper(this.originalWallpapers, display.id)) continue;
+      if (this.settings.enabled && this.isDisplayTargeted(display.id)) continue;
+      try {
+        await applySystemWallpaper(
+          display,
+          this.originalWallpapers[display.id]
+        );
+      } catch (error) {
+        console.error(
+          `[wallpaper] failed to restore wallpaper for ${display.id}`,
+          error
+        );
+        errorCode ??= "apply-failed";
+        continue;
+      }
+      delete this.originalWallpapers[display.id];
+      originalsChanged = true;
+      try {
+        await this.cleanupDisplayWallpapers(display.id);
+      } catch (error) {
+        console.error(
+          `[wallpaper] failed to clean restored display ${display.id}`,
+          error
+        );
+        errorCode ??= "cleanup-failed";
+      }
+    }
+    if (originalsChanged) {
+      try {
+        await this.persistOriginalWallpapers();
+      } catch (error) {
+        console.error("[wallpaper] failed to persist restored displays", error);
+        errorCode ??= "request-failed";
+      }
+    }
+    return errorCode;
+  }
+  async performRefresh() {
+    if (!this.state.supported) {
+      this.patchState({ errorCode: "unsupported-platform" });
+      return this.getState();
+    }
+    this.clearTimer();
+    this.patchState({ updating: true, errorCode: null });
+    let errorCode = null;
+    let updatedDisplayCount = 0;
+    try {
+      const displays = this.getTargetDisplays();
+      if (displays.length === 0) {
+        errorCode = "display-unavailable";
+      } else {
+        for (const display of displays) {
+          const imagePaths = this.deps.getRandomImagePaths();
+          if (imagePaths.length < 2) {
+            errorCode = "not-enough-images";
+            break;
+          }
+          let outputPath = "";
+          try {
+            outputPath = await this.generateWallpaper(imagePaths, display);
+          } catch (error) {
+            console.error(
+              `[wallpaper] generation failed for ${display.id}`,
+              error
+            );
+            errorCode ??= "generation-failed";
+            continue;
+          }
+          try {
+            await this.ensureOriginalWallpaper(display);
+            await applySystemWallpaper(display, outputPath);
+          } catch (error) {
+            console.error(`[wallpaper] apply failed for ${display.id}`, error);
+            await lockedFs.remove(outputPath).catch(() => void 0);
+            errorCode = "apply-failed";
+            continue;
+          }
+          updatedDisplayCount += 1;
+          try {
+            await this.cleanupGeneratedWallpapers(outputPath);
+          } catch (error) {
+            console.error(`[wallpaper] cleanup failed for ${display.id}`, error);
+            errorCode ??= "cleanup-failed";
+          }
+        }
+      }
+      if (updatedDisplayCount > 0) {
+        try {
+          await this.cleanupDetachedDisplayDirectories();
+        } catch (error) {
+          console.error("[wallpaper] detached display cleanup failed", error);
+          errorCode ??= "cleanup-failed";
+        }
+      }
+    } catch (error) {
+      console.error("[wallpaper] update failed", error);
+      errorCode ??= "generation-failed";
+    } finally {
+      this.patchState({
+        updating: false,
+        lastUpdatedAt: updatedDisplayCount > 0 ? Date.now() : this.state.lastUpdatedAt,
+        errorCode
+      });
+      if (this.settings.enabled) this.scheduleNextUpdate();
+    }
+    return this.getState();
+  }
+  async generateWallpaper(imagePaths, display) {
+    const generatedDir = import_path6.default.join(
+      this.deps.getStorageDir(),
+      GENERATED_DIR_NAME,
+      getDisplayDirectoryName(display.id)
+    );
+    await lockedFs.ensureDir(generatedDir);
+    const timestamp = Date.now();
+    const outputPath = import_path6.default.join(
+      generatedDir,
+      `${GENERATED_FILE_PREFIX}${timestamp}.jpg`
+    );
+    const tempPath = import_path6.default.join(
+      generatedDir,
+      `${GENERATED_FILE_PREFIX}${timestamp}.tmp.jpg`
+    );
+    try {
+      const tiles = await buildPackedTiles(
+        imagePaths,
+        display,
+        this.settings.imageCount
+      );
+      await withFileLocks([tempPath, outputPath], async () => {
+        const tileLayers = await Promise.all(
+          tiles.map(async ({
+            image,
+            renderedWidth,
+            renderedHeight,
+            source,
+            rect
+          }) => {
+            const input = await (0, import_sharp2.default)(image.input).rotate().resize(renderedWidth, renderedHeight, {
+              fit: "fill",
+              withoutEnlargement: true
+            }).extract(source).flatten({ background: "#ffffff" }).jpeg({ quality: 92, chromaSubsampling: "4:4:4" }).toBuffer();
+            return {
+              input,
+              left: rect.left,
+              top: rect.top
+            };
+          })
+        );
+        await (0, import_sharp2.default)({
+          create: {
+            width: display.width,
+            height: display.height,
+            channels: 3,
+            background: { r: 0, g: 0, b: 0 }
+          }
+        }).composite(tileLayers).jpeg({ quality: 92, chromaSubsampling: "4:4:4" }).toFile(tempPath);
+        await import_fs_extra6.default.rename(tempPath, outputPath);
+      });
+    } catch (error) {
+      await Promise.all([
+        lockedFs.remove(tempPath).catch(() => void 0),
+        lockedFs.remove(outputPath).catch(() => void 0)
+      ]);
+      throw error;
+    }
+    return outputPath;
+  }
+  async cleanupTemporaryFiles() {
+    const generatedRoot = import_path6.default.join(
+      this.deps.getStorageDir(),
+      GENERATED_DIR_NAME
+    );
+    if (!await lockedFs.pathExists(generatedRoot)) return;
+    const entries = await lockedFs.readdir(generatedRoot);
+    await Promise.all(
+      entries.filter((name) => DISPLAY_DIR_PATTERN.test(name)).map(async (directoryName) => {
+        const directoryPath = import_path6.default.join(generatedRoot, directoryName);
+        const files = await lockedFs.readdir(directoryPath);
+        await Promise.all(
+          files.filter((name) => GENERATED_TEMP_PATTERN.test(name)).map((name) => lockedFs.remove(import_path6.default.join(directoryPath, name)))
+        );
+      })
+    );
+  }
+  async cleanupGeneratedWallpapers(activePath) {
+    const generatedDir = import_path6.default.dirname(activePath);
+    const entries = await lockedFs.readdir(generatedDir);
+    const activeName = import_path6.default.basename(activePath);
+    await Promise.all(
+      entries.filter(
+        (name) => name !== activeName && (GENERATED_FILE_PATTERN.test(name) || GENERATED_TEMP_PATTERN.test(name))
+      ).map((name) => lockedFs.remove(import_path6.default.join(generatedDir, name)))
+    );
+  }
+  async cleanupDisplayWallpapers(displayId) {
+    const generatedDir = import_path6.default.join(
+      this.deps.getStorageDir(),
+      GENERATED_DIR_NAME,
+      getDisplayDirectoryName(displayId)
+    );
+    if (await lockedFs.pathExists(generatedDir)) {
+      await lockedFs.remove(generatedDir);
+    }
+  }
+  async cleanupDetachedDisplayDirectories() {
+    const generatedRoot = import_path6.default.join(
+      this.deps.getStorageDir(),
+      GENERATED_DIR_NAME
+    );
+    if (!await lockedFs.pathExists(generatedRoot)) return;
+    const attachedDirectories = new Set(
+      this.state.displays.map((display) => getDisplayDirectoryName(display.id))
+    );
+    const entries = await lockedFs.readdir(generatedRoot);
+    await Promise.all(
+      entries.filter(
+        (name) => DISPLAY_DIR_PATTERN.test(name) && !attachedDirectories.has(name)
+      ).map((name) => lockedFs.remove(import_path6.default.join(generatedRoot, name)))
+    );
+  }
+  scheduleNextUpdate() {
+    this.clearTimer();
+    if (!this.settings.enabled || !this.state.supported) return;
+    const delayMs = this.settings.intervalMinutes * 60 * 1e3;
+    this.timer = setTimeout(() => {
+      void this.refresh();
+    }, delayMs);
+    this.patchState({ nextUpdatedAt: Date.now() + delayMs });
+  }
+  clearTimer() {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.patchState({ nextUpdatedAt: null });
+  }
+  patchState(patch) {
+    var _a, _b;
+    this.state = { ...this.state, ...patch };
+    (_b = (_a = this.deps).onStateChange) == null ? void 0 : _b.call(_a, this.getState());
+  }
+};
+
+// electron/main.ts
 if (!import_electron4.app.isPackaged) {
   import_electron4.app.setName("PiCaptain");
 }
@@ -5316,8 +6282,8 @@ import_electron_log2.default.transports.file.level = "info";
 import_electron_log2.default.transports.file.maxSize = 5 * 1024 * 1024;
 import_electron_log2.default.transports.file.archiveLog = (file) => {
   const filePath = file.toString();
-  const info = import_path6.default.parse(filePath);
-  const dest = import_path6.default.join(info.dir, info.name + ".old" + info.ext);
+  const info = import_path7.default.parse(filePath);
+  const dest = import_path7.default.join(info.dir, info.name + ".old" + info.ext);
   lockedFs.rename(filePath, dest).catch((e) => {
     console.warn("Could not rotate log", e);
   });
@@ -5325,6 +6291,7 @@ import_electron_log2.default.transports.file.archiveLog = (file) => {
 var DEFAULT_WINDOW_ALWAYS_ON_TOP = false;
 var mainWindow = null;
 var galleryPreviewWindow = null;
+var wallpaperTray = null;
 var isAppHidden = false;
 var localServerApiBaseUrl = `http://localhost:${DEFAULT_SERVER_PORT}`;
 var isLocalServerReady = false;
@@ -5333,8 +6300,8 @@ var APP_ID = "com.picaptain.app";
 var UPDATE_FEED_URL = "https://xget-5sd.pages.dev/gh/moayuisuda/OnlyRef/releases/latest/download";
 var DEV_APP_UPDATE_CONFIG_FILE = "dev-app-update.yml";
 var DEV_UPDATER_CACHE_DIR_NAME = "picaptain-updater";
-var WINDOW_ICON_PATH = import_path6.default.join(__dirname, "../resources/icon.png");
-var STORAGE_ROOT_CONFIG_PATH = import_path6.default.join(
+var WINDOW_ICON_PATH = import_path7.default.join(__dirname, "../resources/icon.png");
+var STORAGE_ROOT_CONFIG_PATH = import_path7.default.join(
   import_electron4.app.getPath("userData"),
   "picaptain_config.json"
 );
@@ -5347,6 +6314,49 @@ var isUpdaterInitialized = false;
 var hasTriggeredStartupUpdateCheck = false;
 var isQuitPrepared = false;
 var quitPreparationPromise = null;
+var wallpaperService = new WallpaperService({
+  getDisplays: () => import_electron4.screen.getAllDisplays(),
+  getPrimaryDisplay: () => import_electron4.screen.getPrimaryDisplay(),
+  getStorageDir,
+  getRandomImagePaths: getRandomWallpaperImagePaths,
+  readSettings,
+  patchSettings,
+  onStateChange: (state) => {
+    mainWindow == null ? void 0 : mainWindow.webContents.send("wallpaper-state", state);
+    syncWallpaperTray(state.settings.enabled && state.supported);
+  }
+});
+function syncWallpaperTray(enabled) {
+  if (!enabled) {
+    wallpaperTray == null ? void 0 : wallpaperTray.destroy();
+    wallpaperTray = null;
+    return;
+  }
+  if (wallpaperTray || !import_electron4.app.isReady()) return;
+  const locale = normalizeLocale(import_electron4.app.getLocale());
+  wallpaperTray = new import_electron4.Tray(WINDOW_ICON_PATH);
+  wallpaperTray.setToolTip("PiCaptain");
+  wallpaperTray.setContextMenu(
+    import_electron4.Menu.buildFromTemplate([
+      {
+        label: t(locale, "wallpaper.tray.open"),
+        click: () => restoreMainWindowVisibility()
+      },
+      {
+        label: t(locale, "wallpaper.tray.refresh"),
+        click: () => {
+          void wallpaperService.refresh();
+        }
+      },
+      { type: "separator" },
+      {
+        label: t(locale, "wallpaper.tray.quit"),
+        click: () => import_electron4.app.quit()
+      }
+    ])
+  );
+  wallpaperTray.on("click", () => restoreMainWindowVisibility());
+}
 var NORMAL_WINDOW_MIN_WIDTH = 400;
 var NORMAL_WINDOW_MIN_HEIGHT = 300;
 var updaterState = {
@@ -5363,7 +6373,7 @@ if (!hasSingleInstanceLock) {
   import_electron4.app.quit();
 }
 var ensureSettingsStoreConfigured = () => {
-  configureSettingsStore(import_path6.default.join(getStorageDir(), "settings.json"));
+  configureSettingsStore(import_path7.default.join(getStorageDir(), "settings.json"));
 };
 async function hasPersistedStorageRoot() {
   if (!await lockedFs.pathExists(STORAGE_ROOT_CONFIG_PATH)) {
@@ -5380,7 +6390,7 @@ async function hasPersistedStorageRoot() {
   }
 }
 var normalizeComparablePath = (targetPath) => {
-  const resolved = import_path6.default.resolve(targetPath).replace(/[\\/]+$/, "");
+  const resolved = import_path7.default.resolve(targetPath).replace(/[\\/]+$/, "");
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 };
 var isSameOrNestedPath = (parentPath, childPath) => {
@@ -5389,11 +6399,11 @@ var isSameOrNestedPath = (parentPath, childPath) => {
   if (normalizedParent === normalizedChild) {
     return true;
   }
-  const relative = import_path6.default.relative(normalizedParent, normalizedChild);
-  return relative !== "" && !relative.startsWith("..") && !import_path6.default.isAbsolute(relative);
+  const relative = import_path7.default.relative(normalizedParent, normalizedChild);
+  return relative !== "" && !relative.startsWith("..") && !import_path7.default.isAbsolute(relative);
 };
 var validateStorageRoot = (candidatePath) => {
-  const installDir = import_path6.default.dirname(import_electron4.app.getPath("exe"));
+  const installDir = import_path7.default.dirname(import_electron4.app.getPath("exe"));
   if (isSameOrNestedPath(installDir, candidatePath)) {
     return { valid: false, installDir };
   }
@@ -5462,11 +6472,7 @@ async function readPersistedSettings() {
 async function writePersistedSettings(patch) {
   try {
     ensureSettingsStoreConfigured();
-    const current = await readPersistedSettings();
-    await writeSettings({
-      ...current,
-      ...patch
-    });
+    await patchSettings(patch);
   } catch (error) {
     import_electron_log2.default.error("Failed to write settings", error);
   }
@@ -5506,11 +6512,11 @@ function normalizeWindowBounds(bounds) {
   };
 }
 var resolveDragImagePath = (imagePath) => {
-  if (import_path6.default.isAbsolute(imagePath)) {
-    return import_path6.default.normalize(imagePath);
+  if (import_path7.default.isAbsolute(imagePath)) {
+    return import_path7.default.normalize(imagePath);
   }
   const normalizedRelativePath = imagePath.replace(/^[/\\]+/, "");
-  return import_path6.default.join(getStorageDir(), normalizedRelativePath);
+  return import_path7.default.join(getStorageDir(), normalizedRelativePath);
 };
 var createDragPreviewIcon = (iconPath) => {
   const maxSide = 72;
@@ -5594,7 +6600,7 @@ function loadMainWindow() {
     import_electron_log2.default.info("Loading renderer from localhost");
     void mainWindow.loadURL(`http://localhost:5173/?${query}`);
   } else {
-    const filePath = import_path6.default.join(__dirname, "../dist-renderer/index.html");
+    const filePath = import_path7.default.join(__dirname, "../dist-renderer/index.html");
     import_electron_log2.default.info("Loading renderer from file:", filePath);
     void mainWindow.loadFile(filePath, {
       query: {
@@ -5612,7 +6618,7 @@ function loadGalleryPreviewWindow(targetWindow) {
     void targetWindow.loadURL(`http://localhost:5173/?${query}`);
     return;
   }
-  const filePath = import_path6.default.join(__dirname, "../dist-renderer/index.html");
+  const filePath = import_path7.default.join(__dirname, "../dist-renderer/index.html");
   void targetWindow.loadFile(filePath, {
     query: {
       apiBaseUrl: localServerApiBaseUrl,
@@ -5662,7 +6668,7 @@ function createGalleryPreviewWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: import_path6.default.join(__dirname, "preload.cjs")
+      preload: import_path7.default.join(__dirname, "preload.cjs")
     }
   });
   previewWindow.on("closed", () => {
@@ -5700,7 +6706,7 @@ function isAutoUpdateSupported() {
   return process.platform === "darwin" || process.platform === "win32";
 }
 function getDevAppUpdateConfigPath() {
-  return import_path6.default.join(import_electron4.app.getAppPath(), DEV_APP_UPDATE_CONFIG_FILE);
+  return import_path7.default.join(import_electron4.app.getAppPath(), DEV_APP_UPDATE_CONFIG_FILE);
 }
 function buildDevAppUpdateConfig() {
   return [
@@ -5906,6 +6912,9 @@ async function prepareForAppQuit() {
   quitPreparationPromise = (async () => {
     import_electron_log2.default.info("[shutdown] preparing application resources");
     import_electron4.globalShortcut.unregisterAll();
+    wallpaperService.stop();
+    wallpaperTray == null ? void 0 : wallpaperTray.destroy();
+    wallpaperTray = null;
     await stopServer();
     isQuitPrepared = true;
     import_electron_log2.default.info("[shutdown] application resources released");
@@ -5928,7 +6937,7 @@ async function createWindow(options) {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: import_path6.default.join(__dirname, "preload.cjs")
+      preload: import_path7.default.join(__dirname, "preload.cjs")
     },
     frame: false,
     transparent: false,
@@ -5937,6 +6946,19 @@ async function createWindow(options) {
     hasShadow: true
   });
   syncWindowAppearance(windowAlwaysOnTop);
+  mainWindow.on("close", (event) => {
+    const wallpaperState = wallpaperService.getState();
+    if (isQuitPrepared || !wallpaperState.supported || !wallpaperState.settings.enabled) {
+      return;
+    }
+    event.preventDefault();
+    isAppHidden = true;
+    mainWindow == null ? void 0 : mainWindow.hide();
+    mainWindow == null ? void 0 : mainWindow.webContents.send("renderer-event", "app-visibility", false);
+  });
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
   mainWindow.on("resize", () => {
     if (!mainWindow) return;
     if (mainWindow.isMinimized() || mainWindow.isMaximized()) {
@@ -6040,7 +7062,7 @@ async function createWindow(options) {
         const start = Math.max(0, size - READ_SIZE);
         return await withFileLock(logPath, () => {
           return new Promise((resolve, reject) => {
-            const stream = import_fs_extra6.default.createReadStream(logPath, {
+            const stream = import_fs_extra7.default.createReadStream(logPath, {
               start,
               encoding: "utf8"
             });
@@ -6159,20 +7181,20 @@ function registerToggleWindowShortcut(accelerator) {
   );
 }
 function getModelDir() {
-  return import_path6.default.join(getStorageDir(), "model");
+  return import_path7.default.join(getStorageDir(), "model");
 }
 async function hasRequiredModelFiles(modelDir) {
   const hasConfig = await lockedFs.pathExists(
-    import_path6.default.join(modelDir, "config.json")
+    import_path7.default.join(modelDir, "config.json")
   );
   const hasWeights = await lockedFs.pathExists(
-    import_path6.default.join(modelDir, "model.safetensors")
+    import_path7.default.join(modelDir, "model.safetensors")
   );
   const hasProcessor = await lockedFs.pathExists(
-    import_path6.default.join(modelDir, "preprocessor_config.json")
+    import_path7.default.join(modelDir, "preprocessor_config.json")
   );
   const hasTokenizer = await lockedFs.pathExists(
-    import_path6.default.join(modelDir, "tokenizer.json")
+    import_path7.default.join(modelDir, "tokenizer.json")
   );
   return hasConfig && hasWeights && hasProcessor && hasTokenizer;
 }
@@ -6195,7 +7217,7 @@ function getUvCandidates() {
   return uniq;
 }
 function getManagedUvPath() {
-  return import_path6.default.join(
+  return import_path7.default.join(
     import_electron4.app.getPath("userData"),
     "uv",
     process.platform === "win32" ? "uv.exe" : "uv"
@@ -6204,8 +7226,8 @@ function getManagedUvPath() {
 function getBundledUvPath() {
   const executable = process.platform === "win32" ? "uv.exe" : "uv";
   const target = `${process.platform}-${process.arch}`;
-  const root = import_electron4.app.isPackaged ? import_path6.default.join(process.resourcesPath, "uv") : import_path6.default.join(__dirname, "../resources/uv");
-  return import_path6.default.join(root, target, executable);
+  const root = import_electron4.app.isPackaged ? import_path7.default.join(process.resourcesPath, "uv") : import_path7.default.join(__dirname, "../resources/uv");
+  return import_path7.default.join(root, target, executable);
 }
 var UV_VERSION = "latest";
 function resolveUvReleaseAsset() {
@@ -6410,7 +7432,7 @@ async function ensureUvInstalled(onProgress) {
   let existing = "";
   onProgress == null ? void 0 : onProgress("envInit.checkingUv", 0.08);
   for (const c of candidates) {
-    if (import_path6.default.isAbsolute(c) && await lockedFs.pathExists(c)) {
+    if (import_path7.default.isAbsolute(c) && await lockedFs.pathExists(c)) {
       existing = c;
       break;
     }
@@ -6421,7 +7443,7 @@ async function ensureUvInstalled(onProgress) {
     process.env.PROREF_UV_PATH = uvPath;
     return uvPath;
   }
-  await lockedFs.ensureDir(import_path6.default.dirname(uvPath));
+  await lockedFs.ensureDir(import_path7.default.dirname(uvPath));
   const { url, kind } = resolveUvReleaseAsset();
   import_electron_log2.default.info(`Downloading uv from: ${url}`);
   onProgress == null ? void 0 : onProgress("envInit.downloadingUv", 0.18);
@@ -6451,7 +7473,7 @@ async function ensureUvInstalled(onProgress) {
   }
   await lockedFs.writeFile(uvPath, binary);
   if (process.platform !== "win32") {
-    await withFileLock(uvPath, () => import_fs_extra6.default.chmod(uvPath, 493));
+    await withFileLock(uvPath, () => import_fs_extra7.default.chmod(uvPath, 493));
   }
   process.env.PROREF_UV_PATH = uvPath;
   return uvPath;
@@ -6535,7 +7557,7 @@ async function ensureModelReady(parent, options = {}) {
   let percentText = "0%";
   let progress = 0;
   sendProgress("model.downloading", percentText, progress);
-  const proc = (0, import_child_process3.spawn)(
+  const proc = (0, import_child_process4.spawn)(
     pythonPath,
     [scriptPath, "--download-model"],
     {
@@ -6720,11 +7742,19 @@ function scheduleVectorServiceWarmup() {
   })();
 }
 async function startServer2() {
-  const port = await startServer((channel, data) => {
-    mainWindow == null ? void 0 : mainWindow.webContents.send(channel, data);
-  });
+  const port = await startServer(
+    (channel, data) => {
+      mainWindow == null ? void 0 : mainWindow.webContents.send(channel, data);
+    },
+    {
+      getState: () => wallpaperService.getState(),
+      updateSettings: (settings) => wallpaperService.updateSettings(settings),
+      refresh: () => wallpaperService.refresh()
+    }
+  );
   localServerApiBaseUrl = `http://localhost:${port}`;
   isLocalServerReady = true;
+  await wallpaperService.start();
   return port;
 }
 import_electron4.app.on("second-instance", () => {
@@ -6842,7 +7872,7 @@ import_electron4.ipcMain.handle("choose-search-image", async () => {
   const filePath = result.filePaths[0];
   return {
     path: filePath,
-    name: import_path6.default.basename(filePath)
+    name: import_path7.default.basename(filePath)
   };
 });
 import_electron4.ipcMain.handle(
@@ -6964,6 +7994,12 @@ import_electron4.app.whenReady().then(async () => {
     }
     await createWindow();
     registerToggleWindowShortcut(toggleWindowShortcut);
+    import_electron4.screen.on("display-added", () => wallpaperService.handleDisplaysChanged());
+    import_electron4.screen.on("display-removed", () => wallpaperService.handleDisplaysChanged());
+    import_electron4.screen.on(
+      "display-metrics-changed",
+      () => wallpaperService.handleDisplaysChanged()
+    );
     if (mainWindow) {
       if (hasStorageRoot) {
         await runStartupInitialization(mainWindow);
@@ -7019,5 +8055,8 @@ import_electron4.app.on("will-quit", () => {
   import_electron4.globalShortcut.unregisterAll();
 });
 import_electron4.app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") import_electron4.app.quit();
+  const wallpaperState = wallpaperService.getState();
+  if (process.platform !== "darwin" && (!wallpaperState.supported || !wallpaperState.settings.enabled)) {
+    import_electron4.app.quit();
+  }
 });

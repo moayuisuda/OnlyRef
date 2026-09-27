@@ -2,7 +2,9 @@ import express from "express";
 
 type SettingsRouteDeps = {
   readSettings: () => Promise<Record<string, unknown>>;
-  writeSettings: (settings: Record<string, unknown>) => Promise<void>;
+  patchSettings: (
+    patch: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>>;
 };
 
 export const createSettingsRouter = (deps: SettingsRouteDeps) => {
@@ -54,9 +56,7 @@ export const createSettingsRouter = (deps: SettingsRouteDeps) => {
         return;
       }
       const { value } = req.body as { value?: unknown };
-      const settings = await deps.readSettings();
-      const next: Record<string, unknown> = { ...settings, [key]: value };
-      await deps.writeSettings(next);
+      await deps.patchSettings({ [key]: value });
       res.json({ success: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

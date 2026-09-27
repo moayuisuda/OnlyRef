@@ -1,6 +1,10 @@
 import { API_BASE_URL } from "../config";
 import { normalizeLocale } from "../shared/i18n/locale";
 import type { Locale } from "../shared/i18n/types";
+import type {
+  WallpaperSettings,
+  WallpaperState,
+} from "../shared/wallpaper";
 
 export interface settingStorageGetOptions<T> {
   key: string;
@@ -390,6 +394,19 @@ export async function runAutoTagAll<T = unknown>(): Promise<T> {
     mode: "auto-tag-all",
   });
 }
+
+export const getWallpaperState = (): Promise<WallpaperState> =>
+  localApi<WallpaperState>("/api/wallpaper");
+
+export const updateWallpaperSettings = (
+  settings: WallpaperSettings,
+): Promise<WallpaperState> =>
+  localApi<WallpaperState>("/api/wallpaper/settings", settings, {
+    method: "PUT",
+  });
+
+export const refreshWallpaper = (): Promise<WallpaperState> =>
+  localApi<WallpaperState>("/api/wallpaper/refresh", {}, { method: "POST" });
 
 export async function localApi<TResponse>(
   endpoint: string,

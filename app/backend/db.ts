@@ -54,6 +54,7 @@ export type ImageDb = {
     cursor?: { galleryOrder: number | null; createdAt: number; rowid: number } | null;
   }) => ImageMeta[];
   listImagesByIds: (ids: string[]) => ImageMeta[];
+  listRandomImages: (limit?: number) => ImageMeta[];
   setGalleryOrder: (order: string[]) => void;
   moveGalleryOrder: (activeId: string, overId: string) => void;
   searchImages: (params: {
@@ -352,6 +353,19 @@ const createImageDb = (db: Database.Database): ImageDb => {
       .map((id) => map.get(id))
       .filter((row): row is ImageRow => Boolean(row));
     return mapImages(db, orderedRows);
+  };
+
+  const listRandomImages = (limit?: number): ImageMeta[] => {
+    const selectSql = `SELECT rowid, id, filename, imagePath, createdAt, pageUrl, dominantColor, dominantL, dominantC, dominantH, tone, galleryOrder
+      FROM images
+      ORDER BY RANDOM()`;
+    const rows =
+      typeof limit === "number"
+        ? (db
+            .prepare(`${selectSql} LIMIT ?`)
+            .all(Math.max(1, Math.floor(limit))) as ImageRow[])
+        : (db.prepare(selectSql).all() as ImageRow[]);
+    return mapImages(db, rows);
   };
 
   const insertImage = (data: {
@@ -810,6 +824,7 @@ const createImageDb = (db: Database.Database): ImageDb => {
     getImageById,
     listImages,
     listImagesByIds,
+    listRandomImages,
     setGalleryOrder,
     moveGalleryOrder,
     searchImages,

@@ -4,6 +4,7 @@ import {
   FolderOpen,
   Minus,
   Pin,
+  Images,
   Settings,
   Sparkles,
   Square,
@@ -30,6 +31,11 @@ import { useClickOutside } from "../hooks/useClickOutside";
 import { ShortcutInput } from "./ShortcutInput";
 import { BrandWheelIcon } from "./BrandWheelIcon";
 import { ToggleSwitch } from "./ToggleSwitch";
+import { WallpaperPanel } from "./WallpaperPanel";
+import {
+  wallpaperActions,
+  wallpaperState,
+} from "../store/wallpaperStore";
 import type { I18nKey, I18nParams } from "../../shared/i18n/types";
 import { isI18nKey } from "../../shared/i18n/guards";
 
@@ -64,6 +70,7 @@ export const TitleBar: React.FC = () => {
   const gallerySnap = useSnapshot(galleryState);
   const indexingSnap = useSnapshot(indexingState);
   const versionSnap = useSnapshot(versionState);
+  const wallpaperSnap = useSnapshot(wallpaperState);
   const { t, locale, setLocale } = useT();
   const isAlwaysOnTop = snap.windowAlwaysOnTop;
 
@@ -76,9 +83,14 @@ export const TitleBar: React.FC = () => {
 
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const settingsPanelRef = useRef<HTMLDivElement>(null);
+  const wallpaperButtonRef = useRef<HTMLButtonElement>(null);
+  const wallpaperPanelRef = useRef<HTMLDivElement>(null);
 
   useClickOutside<HTMLElement>([settingsButtonRef, settingsPanelRef], () => {
     setSettingsOpen(false);
+  });
+  useClickOutside<HTMLElement>([wallpaperButtonRef, wallpaperPanelRef], () => {
+    wallpaperActions.setPanelOpen(false);
   });
 
   useEffect(() => {
@@ -433,6 +445,22 @@ export const TitleBar: React.FC = () => {
             <Pin size={14} className={clsx(isAlwaysOnTop && "text-[var(--color-primary)]")} />
           </button>
           <button
+            ref={wallpaperButtonRef}
+            type="button"
+            className={clsx(
+              iconButtonClass,
+              wallpaperSnap.panelOpen &&
+                "bg-white/[0.08] text-[var(--color-primary)]",
+            )}
+            title={t("wallpaper.open")}
+            onClick={() => {
+              setSettingsOpen(false);
+              wallpaperActions.setPanelOpen(!wallpaperState.panelOpen);
+            }}
+          >
+            <Images size={14} />
+          </button>
+          <button
             ref={settingsButtonRef}
             type="button"
             className={clsx(
@@ -441,7 +469,10 @@ export const TitleBar: React.FC = () => {
               settingsOpen && "bg-white/[0.08] text-[var(--color-primary)]",
             )}
             title={t("settings.open")}
-            onClick={() => setSettingsOpen((open) => !open)}
+            onClick={() => {
+              wallpaperActions.setPanelOpen(false);
+              setSettingsOpen((open) => !open);
+            }}
           >
             <Settings size={14} />
             {hasVersionUpdate && (
@@ -475,6 +506,15 @@ export const TitleBar: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {wallpaperSnap.panelOpen && (
+        <div
+          ref={wallpaperPanelRef}
+          className="no-drag absolute right-3 top-[calc(100%+0.5rem)] z-40 max-h-[calc(100vh-56px)] overflow-y-auto rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(20,20,20,0.98),rgba(10,10,10,0.98))] shadow-[0_20px_50px_rgba(0,0,0,0.45)] backdrop-blur-xl"
+        >
+          <WallpaperPanel />
+        </div>
+      )}
 
       {settingsOpen && (
         <div

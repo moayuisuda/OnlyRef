@@ -67,6 +67,7 @@ declare global {
       downloadAppUpdate: () => Promise<{ success: boolean; error?: string }>;
       quitAndInstallAppUpdate: () => Promise<{ success: boolean; error?: string }>;
       onUpdaterState: (callback: (data: UpdaterState) => void) => () => void;
+      onWallpaperState: (callback: (data: unknown) => void) => () => void;
       getStorageDir: () => Promise<string>;
       openStorageDir: () => Promise<{ success: boolean; error?: string }>;
       chooseStorageDir: () => Promise<string | null>;

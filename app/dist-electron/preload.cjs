@@ -61,6 +61,11 @@ import_electron.contextBridge.exposeInMainWorld("electron", {
     import_electron.ipcRenderer.on("updater-state", handler);
     return () => import_electron.ipcRenderer.off("updater-state", handler);
   },
+  onWallpaperState: (callback) => {
+    const handler = (_, data) => callback(data);
+    import_electron.ipcRenderer.on("wallpaper-state", handler);
+    return () => import_electron.ipcRenderer.off("wallpaper-state", handler);
+  },
   log: (level, ...args) => import_electron.ipcRenderer.send("log-message", level, ...args),
   getLogContent: () => import_electron.ipcRenderer.invoke("get-log-content")
 });

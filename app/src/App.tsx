@@ -16,6 +16,8 @@ import {
   type ToastType,
 } from "./store/globalStore";
 import { versionActions } from "./store/versionStore";
+import { wallpaperActions } from "./store/wallpaperStore";
+import type { WallpaperState } from "../shared/wallpaper";
 import { importFiles } from "./utils/import";
 import { useT } from "./i18n/useT";
 import { isI18nKey } from "../shared/i18n/guards";
@@ -67,6 +69,12 @@ function App() {
       globalActions.pushToast({ key: data.key, params }, type);
     });
 
+    const cleanupWallpaper = window.electron?.onWallpaperState?.((data) => {
+      if (isRecord(data) && typeof data.supported === "boolean") {
+        wallpaperActions.sync(data as WallpaperState);
+      }
+    });
+
     const cleanupVisibility = window.electron?.onRendererEvent?.(
       (event: string, ...args: unknown[]) => {
         if (event === "app-visibility") {
@@ -101,6 +109,7 @@ function App() {
       cleanupUpdate?.();
       cleanupEnv?.();
       cleanupToast?.();
+      cleanupWallpaper?.();
       cleanupVisibility?.();
     };
   }, []);

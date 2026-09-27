@@ -20,22 +20,25 @@ const getSettingsFilePath = (): string => {
   return settingsFilePath;
 };
 
+const readSettingsFile = async (
+  filePath: string,
+): Promise<Record<string, unknown>> => {
+  if (!(await fs.pathExists(filePath))) return {};
+  const raw = await fs.readJson(filePath);
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Settings file must contain an object");
+  }
+  return raw as Record<string, unknown>;
+};
+
 export const readSettings = async (): Promise<Record<string, unknown>> => {
   const filePath = getSettingsFilePath();
   if (settingsCache) return settingsCache;
 
   return withFileLock(filePath, async () => {
-    if (!(await fs.pathExists(filePath))) {
-      settingsCache = {};
-      return settingsCache;
-    }
-
     try {
-      const raw = await fs.readJson(filePath);
-      if (raw && typeof raw === "object") {
-        settingsCache = raw as Record<string, unknown>;
-        return settingsCache;
-      }
+      settingsCache = await readSettingsFile(filePath);
+      return settingsCache;
     } catch (error) {
       console.error("Failed to read settings file", error);
     }
@@ -49,13 +52,22 @@ export const writeSettings = async (
   settings: Record<string, unknown>,
 ): Promise<void> => {
   const filePath = getSettingsFilePath();
-  settingsCache = settings;
 
   await withFileLock(filePath, async () => {
-    try {
-      await fs.writeJson(filePath, settings);
-    } catch (error) {
-      console.error("Failed to write settings file", error);
-    }
+    await fs.writeJson(filePath, settings);
+    settingsCache = settings;
+  });
+};
+
+export const patchSettings = async (
+  patch: Record<string, unknown>,
+): Promise<Record<string, unknown>> => {
+  const filePath = getSettingsFilePath();
+  return withFileLock(filePath, async () => {
+    const current = settingsCache ?? (await readSettingsFile(filePath));
+    const next = { ...current, ...patch };
+    await fs.writeJson(filePath, next);
+    settingsCache = next;
+    return next;
   });
 };
