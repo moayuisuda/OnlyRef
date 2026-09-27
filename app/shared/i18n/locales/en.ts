@@ -75,6 +75,7 @@ export const en = {
   'toast.tagRenameFailed': 'Failed to rename tag',
   'toast.tagDeleted': 'Tag deleted',
   'toast.tagDeleteFailed': 'Failed to delete tag',
+  'toast.importingImages': 'Importing images…',
   'toast.importImageFailed': 'Failed to import image',
   'toast.createTagFailed': 'Failed to create tag',
   'toast.updateTagsFailed': 'Failed to update tags',

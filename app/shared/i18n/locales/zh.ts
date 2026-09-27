@@ -58,6 +58,7 @@ export const zh: I18nDict = {
   'toast.tagRenameFailed': '重命名标签失败',
   'toast.tagDeleted': '标签已删除',
   'toast.tagDeleteFailed': '删除标签失败',
+  'toast.importingImages': '正在导入图片…',
   'toast.importImageFailed': '导入图片失败',
   'toast.createTagFailed': '创建标签失败',
   'toast.updateTagsFailed': '更新标签失败',

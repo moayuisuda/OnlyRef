@@ -1,4 +1,5 @@
 import { actions, type ImageMeta } from "../store/galleryStore";
+import { globalActions } from "../store/globalStore";
 import { importImage, importImagesBatch } from "../service";
 import {
   extractDroppedImageUrl,
@@ -16,6 +17,46 @@ type NativePathFile = File & {
 };
 
 const MAX_DROP_SCAN_CONCURRENCY = 16;
+const IMPORT_MESSAGE_DELAY_MS = 500;
+
+let visibleImportMessageCount = 0;
+let importMessageToastId: string | null = null;
+
+const showImportMessage = () => {
+  visibleImportMessageCount += 1;
+  if (importMessageToastId !== null) return;
+
+  importMessageToastId = globalActions.pushToast(
+    { key: "toast.importingImages" },
+    "loading",
+    0,
+  );
+};
+
+const hideImportMessage = () => {
+  visibleImportMessageCount = Math.max(0, visibleImportMessageCount - 1);
+  if (visibleImportMessageCount > 0 || importMessageToastId === null) return;
+
+  globalActions.removeToast(importMessageToastId);
+  importMessageToastId = null;
+};
+
+const withImportMessage = async <T>(task: () => Promise<T>): Promise<T> => {
+  let messageVisible = false;
+  const timer = window.setTimeout(() => {
+    messageVisible = true;
+    showImportMessage();
+  }, IMPORT_MESSAGE_DELAY_MS);
+
+  try {
+    return await task();
+  } finally {
+    window.clearTimeout(timer);
+    if (messageVisible) {
+      hideImportMessage();
+    }
+  }
+};
 
 const clampInt = (value: number, min: number, max: number) => {
   if (!Number.isFinite(value)) return min;
@@ -207,7 +248,7 @@ const resolveDroppedFiles = async (
   return mergeDroppedFiles(scannedFiles, directFiles);
 };
 
-export const importFiles = async (
+const importFilesInternal = async (
   files: File[],
   tags?: string[],
 ): Promise<ImageMeta[]> => {
@@ -286,7 +327,13 @@ export const importFiles = async (
   return importedImages;
 };
 
-export const importImageUrl = async (
+export const importFiles = (
+  files: File[],
+  tags?: string[],
+): Promise<ImageMeta[]> =>
+  withImportMessage(() => importFilesInternal(files, tags));
+
+const importImageUrlInternal = async (
   imageUrl: string,
   tags?: string[],
 ): Promise<ImageMeta> => {
@@ -310,22 +357,29 @@ export const importImageUrl = async (
   return data.meta;
 };
 
-export const importDroppedData = async (
+export const importImageUrl = (
+  imageUrl: string,
+  tags?: string[],
+): Promise<ImageMeta> =>
+  withImportMessage(() => importImageUrlInternal(imageUrl, tags));
+
+export const importDroppedData = (
   dataTransfer: DataTransfer,
   tags?: string[],
-): Promise<ImageMeta[]> => {
-  const files = await resolveDroppedFiles(dataTransfer);
-  const filteredFiles = await filterOutExistingLibraryFiles(files);
+): Promise<ImageMeta[]> =>
+  withImportMessage(async () => {
+    const files = await resolveDroppedFiles(dataTransfer);
+    const filteredFiles = await filterOutExistingLibraryFiles(files);
 
-  const imageUrl = extractDroppedImageUrl(dataTransfer);
-  if (imageUrl) {
-    const image = await importImageUrl(imageUrl, tags);
-    return [image];
-  }
+    const imageUrl = extractDroppedImageUrl(dataTransfer);
+    if (imageUrl) {
+      const image = await importImageUrlInternal(imageUrl, tags);
+      return [image];
+    }
 
-  if (filteredFiles.length > 0) {
-    return importFiles(filteredFiles, tags);
-  }
+    if (filteredFiles.length > 0) {
+      return importFilesInternal(filteredFiles, tags);
+    }
 
-  return [];
-};
+    return [];
+  });
