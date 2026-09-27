@@ -2,7 +2,7 @@
   "name": "pic-captain",
   "productName": "PiCaptain",
   "private": true,
-  "version": "1.0.15",
+  "version": "1.0.16",
   "type": "module",
   "main": "dist-electron/main.cjs",
   "scripts": {
