@@ -79,7 +79,7 @@ export const envInitActions = {
   },
 };
 
-export type ToastType = "success" | "error" | "info" | "warning";
+export type ToastType = "success" | "error" | "info" | "warning" | "loading";
 
 export type Toast = {
   id: string;
@@ -245,19 +245,20 @@ export const globalActions = {
 
   pushToast: (message: I18nMessage, type: ToastType = "info", timeoutMs = 3200) => {
     const id = `toast_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-    globalState.toasts = [
-      ...globalState.toasts,
-      { id, message, type, createdAt: Date.now() },
-    ];
+    globalState.toasts.push({ id, message, type, createdAt: Date.now() });
     if (timeoutMs > 0) {
       window.setTimeout(() => {
         globalActions.removeToast(id);
       }, timeoutMs);
     }
+    return id;
   },
 
   removeToast: (id: string) => {
-    globalState.toasts = globalState.toasts.filter((toast) => toast.id !== id);
+    const index = globalState.toasts.findIndex((toast) => toast.id === id);
+    if (index >= 0) {
+      globalState.toasts.splice(index, 1);
+    }
   },
 
   setEnableVectorSearch: (enabled: boolean) => {

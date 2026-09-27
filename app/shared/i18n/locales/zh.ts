@@ -47,6 +47,7 @@ export const zh: I18nDict = {
   'toast.noUnindexedImages': '没有未入库的图片',
   'toast.indexCompleted': '索引完成：新增 {{created}}，更新 {{updated}}，删除 {{deleted}}',
   'toast.modelReady': '搜索模型已就绪',
+  'toast.modelWarming': '正在预热引擎中…',
   'toast.modelCheckFailed': '模型检查失败：{{error}}',
   'toast.settingsUpdateFailed': '更新设置失败',
   'toast.translationWarning': '翻译警告：{{warning}}',

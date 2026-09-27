@@ -55,6 +55,11 @@ contextBridge.exposeInMainWorld('electron', {
     ipcRenderer.on('search-updated', handler);
     return () => ipcRenderer.off('search-updated', handler);
   },
+  onVectorServiceStatus: (callback: (data: unknown) => void) => {
+    const handler = (_: unknown, data: unknown) => callback(data);
+    ipcRenderer.on('vector-service-status', handler);
+    return () => ipcRenderer.off('vector-service-status', handler);
+  },
   onEnvInitProgress: (callback: (data: unknown) => void) => {
     const handler = (_: unknown, data: unknown) => callback(data);
     ipcRenderer.on('env-init-progress', handler);

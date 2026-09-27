@@ -64,6 +64,7 @@ export const en = {
   'toast.noUnindexedImages': 'No unindexed images found',
   'toast.indexCompleted': 'Index completed: {{created}} created, {{updated}} updated, {{deleted}} deleted',
   'toast.modelReady': 'AI Model is ready',
+  'toast.modelWarming': 'Warming up engine…',
   'toast.modelCheckFailed': 'Model check failed: {{error}}',
   'toast.settingsUpdateFailed': 'Failed to update settings',
   'toast.translationWarning': 'Translation warning: {{warning}}',

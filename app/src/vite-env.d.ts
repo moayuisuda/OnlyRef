@@ -64,6 +64,7 @@ declare global {
       setSettingsOpen: (open: boolean) => void;
       onImageUpdated: (callback: (data: unknown) => void) => () => void;
       onSearchUpdated: (callback: (data: unknown) => void) => () => void;
+      onVectorServiceStatus: (callback: (data: unknown) => void) => () => void;
       onEnvInitProgress: (callback: (data: unknown) => void) => () => void;
       onIndexingProgress: (callback: (data: unknown) => void) => () => void;
       onToast: (callback: (data: unknown) => void) => () => void;

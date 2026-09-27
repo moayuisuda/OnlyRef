@@ -43,6 +43,11 @@ import_electron.contextBridge.exposeInMainWorld("electron", {
     import_electron.ipcRenderer.on("search-updated", handler);
     return () => import_electron.ipcRenderer.off("search-updated", handler);
   },
+  onVectorServiceStatus: (callback) => {
+    const handler = (_, data) => callback(data);
+    import_electron.ipcRenderer.on("vector-service-status", handler);
+    return () => import_electron.ipcRenderer.off("vector-service-status", handler);
+  },
   onEnvInitProgress: (callback) => {
     const handler = (_, data) => callback(data);
     import_electron.ipcRenderer.on("env-init-progress", handler);

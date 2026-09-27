@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { clsx } from "clsx";
 import { useSnapshot } from "valtio";
 import { getRuntimeWindowType } from "../config";
@@ -25,11 +25,21 @@ import { isI18nKey } from "../shared/i18n/guards";
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
+const toastToneByType: Record<ToastType, string> = {
+  success: "border-emerald-700/60 bg-emerald-950/80 text-emerald-100",
+  error: "border-red-700/60 bg-red-950/80 text-red-100",
+  warning: "border-yellow-700/60 bg-yellow-950/80 text-yellow-100",
+  info: "border-neutral-700/70 bg-neutral-900/90 text-neutral-100",
+  loading:
+    "border-[rgba(57,197,187,0.48)] bg-[rgba(14,54,52,0.92)] text-[#b9f3ef] hover:bg-[rgba(18,69,65,0.94)]",
+};
+
 function App() {
   const windowType = getRuntimeWindowType();
   const globalSnap = useSnapshot(globalState);
   const { t } = useT();
   const isPreviewWindow = windowType === "gallery-preview";
+  const vectorWarmupToastIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -54,13 +64,38 @@ function App() {
       }
     });
 
+    const cleanupVectorService = window.electron?.onVectorServiceStatus?.(
+      (data) => {
+        if (!isRecord(data) || typeof data.isWarming !== "boolean") {
+          return;
+        }
+
+        if (data.isWarming) {
+          if (vectorWarmupToastIdRef.current === null) {
+            vectorWarmupToastIdRef.current = globalActions.pushToast(
+              { key: "toast.modelWarming" },
+              "loading",
+              0,
+            );
+          }
+          return;
+        }
+
+        if (vectorWarmupToastIdRef.current !== null) {
+          globalActions.removeToast(vectorWarmupToastIdRef.current);
+          vectorWarmupToastIdRef.current = null;
+        }
+      },
+    );
+
     const cleanupToast = window.electron?.onToast?.((data) => {
       if (!isRecord(data) || !isI18nKey(data.key)) return;
       const type =
         data.type === "success" ||
         data.type === "error" ||
         data.type === "warning" ||
-        data.type === "info"
+          data.type === "info" ||
+          data.type === "loading"
           ? (data.type as ToastType)
           : "info";
       const params = isRecord(data.params)
@@ -108,6 +143,11 @@ function App() {
       disposed = true;
       cleanupUpdate?.();
       cleanupEnv?.();
+      cleanupVectorService?.();
+      if (vectorWarmupToastIdRef.current !== null) {
+        globalActions.removeToast(vectorWarmupToastIdRef.current);
+        vectorWarmupToastIdRef.current = null;
+      }
       cleanupToast?.();
       cleanupWallpaper?.();
       cleanupVisibility?.();
@@ -147,15 +187,6 @@ function App() {
         {globalSnap.toasts.length > 0 && (
           <div className="fixed right-4 top-4 z-[9999] flex flex-col gap-2">
             {globalSnap.toasts.map((toast) => {
-              const tone =
-                toast.type === "success"
-                  ? "border-emerald-700/60 bg-emerald-950/80 text-emerald-100"
-                  : toast.type === "error"
-                    ? "border-red-700/60 bg-red-950/80 text-red-100"
-                    : toast.type === "warning"
-                      ? "border-yellow-700/60 bg-yellow-950/80 text-yellow-100"
-                      : "border-neutral-700/70 bg-neutral-900/90 text-neutral-100";
-
               return (
                 <button
                   key={toast.id}
@@ -163,7 +194,7 @@ function App() {
                   className={clsx(
                     "rounded border text-left text-xs shadow-lg backdrop-blur transition-colors hover:bg-neutral-800/90",
                     "max-w-[320px] px-3 py-2",
-                    tone,
+                    toastToneByType[toast.type],
                   )}
                   onClick={() => globalActions.removeToast(toast.id)}
                 >
@@ -196,15 +227,6 @@ function App() {
       {globalSnap.toasts.length > 0 && (
         <div className="fixed right-4 top-14 z-[9999] flex flex-col gap-2 no-drag">
           {globalSnap.toasts.map((toast) => {
-            const tone =
-              toast.type === "success"
-                ? "border-emerald-700/60 bg-emerald-950/80 text-emerald-100"
-                : toast.type === "error"
-                  ? "border-red-700/60 bg-red-950/80 text-red-100"
-                  : toast.type === "warning"
-                    ? "border-yellow-700/60 bg-yellow-950/80 text-yellow-100"
-                    : "border-neutral-700/70 bg-neutral-900/90 text-neutral-100";
-
             return (
               <button
                 key={toast.id}
@@ -212,7 +234,7 @@ function App() {
                 className={clsx(
                   "rounded border text-left text-xs shadow-lg backdrop-blur transition-colors hover:bg-neutral-800/90",
                   "max-w-[320px] px-3 py-2",
-                  tone,
+                  toastToneByType[toast.type],
                 )}
                 onClick={() => globalActions.removeToast(toast.id)}
               >

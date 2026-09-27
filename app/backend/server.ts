@@ -34,6 +34,7 @@ import { ensurePythonRuntime } from "./pythonRuntime";
 export type RendererChannel =
   | "image-updated"
   | "search-updated"
+  | "vector-service-status"
   | "model-download-progress"
   | "indexing-progress"
   | "env-init-progress"
@@ -53,6 +54,7 @@ const DEFAULT_STORAGE_DIR = path.join(
 );
 const HTTP_SERVER_SHUTDOWN_TIMEOUT_MS = 1000;
 const PROCESS_SHUTDOWN_TIMEOUT_MS = 2500;
+const VECTOR_SERVICE_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
 const loadStorageRoot = async (): Promise<string> => {
   // 1. Try reading from config file in userData
@@ -575,44 +577,97 @@ class BasePythonService {
 }
 
 class PythonVectorService extends BasePythonService {
-  private warmupPromise: Promise<void> | null = null;
-  private warmedUp = false;
   private modelDownloadProcess: ChildProcess | null = null;
+  private activeRequestCount = 0;
+  private idleStopTimer: NodeJS.Timeout | null = null;
+  private idleStopPromise: Promise<void> | null = null;
+  private warmupInProgress = false;
+  private onWarmupStateChange: ((isWarming: boolean) => void) | null = null;
 
   constructor() {
     super();
     this.serviceName = "Python Vector Service";
   }
 
-  protected override attachProcess(proc: ChildProcess) {
-    super.attachProcess(proc);
-    proc.once("exit", () => {
-      this.warmedUp = false;
-      this.warmupPromise = null;
-    });
+  setWarmupStateListener(
+    listener: ((isWarming: boolean) => void) | null,
+  ): void {
+    this.onWarmupStateChange = listener;
   }
 
-  async warmup(): Promise<void> {
-    if (this.warmedUp) {
+  private setWarmupInProgress(isWarming: boolean): void {
+    if (this.warmupInProgress === isWarming) {
       return;
     }
-    if (this.warmupPromise) {
-      await this.warmupPromise;
+    this.warmupInProgress = isWarming;
+    try {
+      this.onWarmupStateChange?.(isWarming);
+    } catch (error) {
+      console.error(`${this.serviceName} warmup status update failed`, error);
+    }
+  }
+
+  private clearIdleStopTimer(): void {
+    if (!this.idleStopTimer) {
+      return;
+    }
+    clearTimeout(this.idleStopTimer);
+    this.idleStopTimer = null;
+  }
+
+  private scheduleIdleStop(): void {
+    this.clearIdleStopTimer();
+    if (this.activeRequestCount > 0 || !this.process) {
       return;
     }
 
-    this.warmupPromise = (async () => {
-      await this.start();
-      await this.run("encode-text", "warmup");
-      this.warmedUp = true;
-    })();
+    this.idleStopTimer = setTimeout(() => {
+      this.idleStopTimer = null;
+      if (this.activeRequestCount > 0 || !this.process) {
+        return;
+      }
+
+      const stopPromise = super.stop();
+      this.idleStopPromise = stopPromise;
+      void stopPromise
+        .then(() => {
+          console.log(
+            `${this.serviceName} stopped after ${VECTOR_SERVICE_IDLE_TIMEOUT_MS / 60_000} minutes idle`,
+          );
+        })
+        .catch((error) => {
+          console.error(`${this.serviceName} idle stop failed`, error);
+        })
+        .finally(() => {
+          if (this.idleStopPromise === stopPromise) {
+            this.idleStopPromise = null;
+          }
+        });
+    }, VECTOR_SERVICE_IDLE_TIMEOUT_MS);
+  }
+
+  protected override async sendRequest(req: unknown): Promise<unknown> {
+    this.clearIdleStopTimer();
+    this.activeRequestCount += 1;
+    const ownsWarmupStatus =
+      (!this.process || this.idleStopPromise !== null) &&
+      !this.warmupInProgress;
+
+    if (ownsWarmupStatus) {
+      this.setWarmupInProgress(true);
+    }
 
     try {
-      await this.warmupPromise;
-    } finally {
-      if (!this.warmedUp) {
-        this.warmupPromise = null;
+      if (this.idleStopPromise) {
+        await this.idleStopPromise;
       }
+      return await super.sendRequest(req);
+    } finally {
+      if (ownsWarmupStatus) {
+        this.setWarmupInProgress(false);
+      }
+      this.activeRequestCount -= 1;
+      this.scheduleIdleStop();
     }
   }
 
@@ -680,14 +735,17 @@ class PythonVectorService extends BasePythonService {
   }
 
   override async stop(): Promise<void> {
+    this.clearIdleStopTimer();
+    if (this.idleStopPromise) {
+      await this.idleStopPromise;
+    }
+
     const downloadProc = this.modelDownloadProcess;
     this.modelDownloadProcess = null;
     if (downloadProc) {
       await stopChildProcess(downloadProc, "Python Model Download");
     }
 
-    this.warmedUp = false;
-    this.warmupPromise = null;
     await super.stop();
   }
 
@@ -830,10 +888,6 @@ const getVectorService = (): PythonVectorService => {
     vectorServiceSingleton = new PythonVectorService();
   }
   return vectorServiceSingleton;
-};
-
-export const warmupVectorService = async (): Promise<void> => {
-  await getVectorService().warmup();
 };
 
 function downloadImage(url: string, dest: string): Promise<void> {
@@ -998,6 +1052,9 @@ export async function startServer(
   server.use(bodyParser.json({ limit: "25mb" }));
 
   const vectorService = getVectorService();
+  vectorService.setWarmupStateListener((isWarming) => {
+    sendToRenderer?.("vector-service-status", { isWarming });
+  });
 
   const runPythonVector = async (
     mode: "encode-image" | "encode-text",

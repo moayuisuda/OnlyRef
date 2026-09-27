@@ -3998,6 +3998,7 @@ var DEFAULT_STORAGE_DIR = import_path5.default.join(
 );
 var HTTP_SERVER_SHUTDOWN_TIMEOUT_MS = 1e3;
 var PROCESS_SHUTDOWN_TIMEOUT_MS = 2500;
+var VECTOR_SERVICE_IDLE_TIMEOUT_MS = 5 * 60 * 1e3;
 var loadStorageRoot = async () => {
   try {
     if (await lockedFs.pathExists(CONFIG_FILE)) {
@@ -4404,39 +4405,81 @@ var BasePythonService = class {
   }
 };
 var PythonVectorService = class extends BasePythonService {
-  warmupPromise = null;
-  warmedUp = false;
   modelDownloadProcess = null;
+  activeRequestCount = 0;
+  idleStopTimer = null;
+  idleStopPromise = null;
+  warmupInProgress = false;
+  onWarmupStateChange = null;
   constructor() {
     super();
     this.serviceName = "Python Vector Service";
   }
-  attachProcess(proc) {
-    super.attachProcess(proc);
-    proc.once("exit", () => {
-      this.warmedUp = false;
-      this.warmupPromise = null;
-    });
+  setWarmupStateListener(listener) {
+    this.onWarmupStateChange = listener;
   }
-  async warmup() {
-    if (this.warmedUp) {
+  setWarmupInProgress(isWarming) {
+    var _a;
+    if (this.warmupInProgress === isWarming) {
       return;
     }
-    if (this.warmupPromise) {
-      await this.warmupPromise;
-      return;
-    }
-    this.warmupPromise = (async () => {
-      await this.start();
-      await this.run("encode-text", "warmup");
-      this.warmedUp = true;
-    })();
+    this.warmupInProgress = isWarming;
     try {
-      await this.warmupPromise;
-    } finally {
-      if (!this.warmedUp) {
-        this.warmupPromise = null;
+      (_a = this.onWarmupStateChange) == null ? void 0 : _a.call(this, isWarming);
+    } catch (error) {
+      console.error(`${this.serviceName} warmup status update failed`, error);
+    }
+  }
+  clearIdleStopTimer() {
+    if (!this.idleStopTimer) {
+      return;
+    }
+    clearTimeout(this.idleStopTimer);
+    this.idleStopTimer = null;
+  }
+  scheduleIdleStop() {
+    this.clearIdleStopTimer();
+    if (this.activeRequestCount > 0 || !this.process) {
+      return;
+    }
+    this.idleStopTimer = setTimeout(() => {
+      this.idleStopTimer = null;
+      if (this.activeRequestCount > 0 || !this.process) {
+        return;
       }
+      const stopPromise = super.stop();
+      this.idleStopPromise = stopPromise;
+      void stopPromise.then(() => {
+        console.log(
+          `${this.serviceName} stopped after ${VECTOR_SERVICE_IDLE_TIMEOUT_MS / 6e4} minutes idle`
+        );
+      }).catch((error) => {
+        console.error(`${this.serviceName} idle stop failed`, error);
+      }).finally(() => {
+        if (this.idleStopPromise === stopPromise) {
+          this.idleStopPromise = null;
+        }
+      });
+    }, VECTOR_SERVICE_IDLE_TIMEOUT_MS);
+  }
+  async sendRequest(req) {
+    this.clearIdleStopTimer();
+    this.activeRequestCount += 1;
+    const ownsWarmupStatus = (!this.process || this.idleStopPromise !== null) && !this.warmupInProgress;
+    if (ownsWarmupStatus) {
+      this.setWarmupInProgress(true);
+    }
+    try {
+      if (this.idleStopPromise) {
+        await this.idleStopPromise;
+      }
+      return await super.sendRequest(req);
+    } finally {
+      if (ownsWarmupStatus) {
+        this.setWarmupInProgress(false);
+      }
+      this.activeRequestCount -= 1;
+      this.scheduleIdleStop();
     }
   }
   downloadModel(onProgress) {
@@ -4494,13 +4537,15 @@ var PythonVectorService = class extends BasePythonService {
     });
   }
   async stop() {
+    this.clearIdleStopTimer();
+    if (this.idleStopPromise) {
+      await this.idleStopPromise;
+    }
     const downloadProc = this.modelDownloadProcess;
     this.modelDownloadProcess = null;
     if (downloadProc) {
       await stopChildProcess(downloadProc, "Python Model Download");
     }
-    this.warmedUp = false;
-    this.warmupPromise = null;
     await super.stop();
   }
   async run(mode, arg) {
@@ -4613,9 +4658,6 @@ var getVectorService = () => {
     vectorServiceSingleton = new PythonVectorService();
   }
   return vectorServiceSingleton;
-};
-var warmupVectorService = async () => {
-  await getVectorService().warmup();
 };
 function downloadImage(url, dest) {
   const REQUEST_TIMEOUT_MS = 15e3;
@@ -4736,6 +4778,9 @@ async function startServer(sendToRenderer, wallpaperHandlers) {
   server.use((0, import_cors.default)());
   server.use(import_body_parser.default.json({ limit: "25mb" }));
   const vectorService = getVectorService();
+  vectorService.setWarmupStateListener((isWarming) => {
+    sendToRenderer == null ? void 0 : sendToRenderer("vector-service-status", { isWarming });
+  });
   const runPythonVector = async (mode, arg) => {
     return vectorService.run(mode, arg);
   };
@@ -4911,6 +4956,7 @@ var en = {
   "toast.noUnindexedImages": "No unindexed images found",
   "toast.indexCompleted": "Index completed: {{created}} created, {{updated}} updated, {{deleted}} deleted",
   "toast.modelReady": "AI Model is ready",
+  "toast.modelWarming": "Warming up engine\u2026",
   "toast.modelCheckFailed": "Model check failed: {{error}}",
   "toast.settingsUpdateFailed": "Failed to update settings",
   "toast.translationWarning": "Translation warning: {{warning}}",
@@ -5210,6 +5256,7 @@ var zh = {
   "toast.noUnindexedImages": "\u6CA1\u6709\u672A\u5165\u5E93\u7684\u56FE\u7247",
   "toast.indexCompleted": "\u7D22\u5F15\u5B8C\u6210\uFF1A\u65B0\u589E {{created}}\uFF0C\u66F4\u65B0 {{updated}}\uFF0C\u5220\u9664 {{deleted}}",
   "toast.modelReady": "\u641C\u7D22\u6A21\u578B\u5DF2\u5C31\u7EEA",
+  "toast.modelWarming": "\u6B63\u5728\u9884\u70ED\u5F15\u64CE\u4E2D\u2026",
   "toast.modelCheckFailed": "\u6A21\u578B\u68C0\u67E5\u5931\u8D25\uFF1A{{error}}",
   "toast.settingsUpdateFailed": "\u66F4\u65B0\u8BBE\u7F6E\u5931\u8D25",
   "toast.translationWarning": "\u7FFB\u8BD1\u8B66\u544A\uFF1A{{warning}}",
@@ -7866,23 +7913,12 @@ async function runStartupInitialization(parent) {
     import_electron_log2.default.info("Ensuring startup initialization...");
     await ensureStartupInitialization(parent);
     import_electron_log2.default.info("Startup initialization ready.");
-    scheduleVectorServiceWarmup();
   })();
   try {
     await startupInitializationPromise;
   } finally {
     startupInitializationPromise = null;
   }
-}
-function scheduleVectorServiceWarmup() {
-  void (async () => {
-    try {
-      await warmupVectorService();
-      import_electron_log2.default.info("[vector-service] warmup ready.");
-    } catch (error) {
-      import_electron_log2.default.warn("[vector-service] warmup failed:", error);
-    }
-  })();
 }
 async function startServer2() {
   const port = await startServer(
