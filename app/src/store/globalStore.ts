@@ -106,6 +106,8 @@ export interface GlobalState {
   llmSettings: LLMSettings;
   isAppHidden: boolean;
   windowAlwaysOnTop: boolean;
+  launchAtLogin: boolean;
+  launchAtLoginLoading: boolean;
 }
 
 const DEFAULT_COLOR_SWATCHES = [
@@ -165,6 +167,8 @@ export const globalState = proxy<GlobalState>({
   },
   isAppHidden: false,
   windowAlwaysOnTop: DEFAULT_WINDOW_ALWAYS_ON_TOP,
+  launchAtLogin: false,
+  launchAtLoginLoading: false,
 });
 
 export const globalActions = {
@@ -375,5 +379,58 @@ export const globalActions = {
 
   toggleWindowAlwaysOnTop: async () => {
     return globalActions.setWindowAlwaysOnTop(!globalState.windowAlwaysOnTop);
+  },
+
+  loadLaunchAtLogin: async () => {
+    if (!window.electron?.getLaunchAtLogin) return false;
+
+    globalState.launchAtLoginLoading = true;
+    try {
+      const result = await window.electron.getLaunchAtLogin();
+      if (result.success !== true) {
+        globalActions.pushToast(
+          {
+            key: "toast.launchAtLoginUpdateFailed",
+            params: { error: result.error ?? "" },
+          },
+          "error",
+        );
+        return false;
+      }
+
+      globalState.launchAtLogin = result.enabled;
+      return true;
+    } finally {
+      globalState.launchAtLoginLoading = false;
+    }
+  },
+
+  setLaunchAtLogin: async (enabled: boolean) => {
+    if (
+      globalState.launchAtLoginLoading ||
+      globalState.launchAtLogin === enabled ||
+      !window.electron?.setLaunchAtLogin
+    ) {
+      return false;
+    }
+
+    globalState.launchAtLoginLoading = true;
+    try {
+      const result = await window.electron.setLaunchAtLogin(enabled);
+      globalState.launchAtLogin = result.enabled;
+      if (result.success !== true) {
+        globalActions.pushToast(
+          {
+            key: "toast.launchAtLoginUpdateFailed",
+            params: { error: result.error ?? "" },
+          },
+          "error",
+        );
+        return false;
+      }
+      return true;
+    } finally {
+      globalState.launchAtLoginLoading = false;
+    }
   },
 };

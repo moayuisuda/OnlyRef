@@ -102,6 +102,35 @@ let hasTriggeredStartupUpdateCheck = false;
 let isQuitPrepared = false;
 let quitPreparationPromise: Promise<void> | null = null;
 
+function getLoginItemTarget(): { path: string; args: string[] } | undefined {
+  if (!process.defaultApp) return undefined;
+  return {
+    path: process.execPath,
+    args: [app.getAppPath()],
+  };
+}
+
+function isLaunchAtLoginEnabled(): boolean {
+  const settings = app.getLoginItemSettings(getLoginItemTarget());
+  return (
+    settings.openAtLogin &&
+    (process.platform !== "win32" || settings.enabled)
+  );
+}
+
+function setLaunchAtLogin(enabled: boolean): boolean {
+  if (process.platform !== "win32" && process.platform !== "darwin") {
+    throw new Error("Launch at login is unsupported on this platform");
+  }
+
+  app.setLoginItemSettings({
+    openAtLogin: enabled,
+    enabled,
+    ...getLoginItemTarget(),
+  });
+  return isLaunchAtLoginEnabled();
+}
+
 const wallpaperService = new WallpaperService({
   getDisplays: () => screen.getAllDisplays(),
   getPrimaryDisplay: () => screen.getPrimaryDisplay(),
@@ -2357,6 +2386,41 @@ ipcMain.handle(
     return registerToggleWindowShortcut(accelerator);
   },
 );
+
+ipcMain.handle("get-launch-at-login", () => {
+  try {
+    return { success: true, enabled: isLaunchAtLoginEnabled() };
+  } catch (error) {
+    log.error("Failed to read launch-at-login state", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      enabled: false,
+    };
+  }
+});
+
+ipcMain.handle("set-launch-at-login", (_event, enabled: unknown) => {
+  let currentEnabled = false;
+  try {
+    currentEnabled = isLaunchAtLoginEnabled();
+    if (typeof enabled !== "boolean") {
+      throw new Error("Invalid launch-at-login value");
+    }
+    const appliedEnabled = setLaunchAtLogin(enabled);
+    if (appliedEnabled !== enabled) {
+      throw new Error("The operating system did not apply the requested state");
+    }
+    return { success: true, enabled: appliedEnabled };
+  } catch (error) {
+    log.error("Failed to update launch-at-login state", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      enabled: currentEnabled,
+    };
+  }
+});
 
 ipcMain.on("settings-open-changed", (_event, open: boolean) => {
   isSettingsOpen = Boolean(open);

@@ -74,6 +74,7 @@ export const zh: I18nDict = {
   'toast.windowDisplayModeUpdateFailed': '切换浮窗模式失败：{{error}}',
 
   'toast.windowAlwaysOnTopUpdateFailed': '\u66f4\u65b0\u7f6e\u9876\u72b6\u6001\u5931\u8d25\uff1a{{error}}',
+  'toast.launchAtLoginUpdateFailed': '更新开机自启失败：{{error}}',
 
   'envInit.brandTitle': 'PiCaptain',
   'envInit.heading': '正在准备 PiCaptain…',
@@ -220,6 +221,8 @@ export const zh: I18nDict = {
   'titleBar.maximize': '\u6700\u5927\u5316',
   'settings.open': '\u6253\u5f00\u8bbe\u7f6e',
   'settings.storageFolder': '\u5b58\u50a8\u6587\u4ef6\u5939',
+  'settings.launchAtLogin': '开机自启',
+  'settings.launchAtLogin.desc': '登录系统后自动启动 PiCaptain',
   'settings.autoTag': '\u81ea\u52a8\u6807\u7b7e\u9608\u503c',
   'settings.autoTag.desc':
     '\u503c\u8d8a\u9ad8\u5339\u914d\u8d8a\u4e25\u683c',
@@ -314,6 +317,9 @@ export const zh: I18nDict = {
   'wallpaper.interval.4320': '3 天',
   'wallpaper.interval.10080': '7 天',
   'wallpaper.imageCount': '拼贴密度',
+  'wallpaper.density.sparse': '稀疏',
+  'wallpaper.density.medium': '中等',
+  'wallpaper.density.dense': '密集',
   'wallpaper.refreshNow': '立即更换',
   'wallpaper.status.ready': '已准备好生成壁纸',
   'wallpaper.status.noDisplaySelected': '请至少选择一台显示器',

@@ -95,6 +95,7 @@ export const en = {
   'toast.shortcutUpdateFailed': 'Failed to update shortcut: {{error}}',
   'toast.windowDisplayModeUpdateFailed': 'Failed to switch floating mode: {{error}}',
   'toast.windowAlwaysOnTopUpdateFailed': 'Failed to update always-on-top: {{error}}',
+  'toast.launchAtLoginUpdateFailed': 'Failed to update launch at login: {{error}}',
   'toast.updateDownloaded': 'Update downloaded. Restart to install v{{version}}',
 
   'envInit.brandTitle': 'PiCaptain',
@@ -280,6 +281,8 @@ export const en = {
   'settings.llm.model': 'Model',
   'settings.open': 'Open settings',
   'settings.storageFolder': 'Storage folder',
+  'settings.launchAtLogin': 'Launch at login',
+  'settings.launchAtLogin.desc': 'Start PiCaptain automatically after you sign in',
   'settings.autoTag': 'Auto-tag threshold',
   'settings.autoTag.desc':
     'Higher values make matching stricter.',
@@ -321,6 +324,9 @@ export const en = {
   'wallpaper.interval.4320': '3 days',
   'wallpaper.interval.10080': '7 days',
   'wallpaper.imageCount': 'Collage density',
+  'wallpaper.density.sparse': 'Sparse',
+  'wallpaper.density.medium': 'Medium',
+  'wallpaper.density.dense': 'Dense',
   'wallpaper.refreshNow': 'Change now',
   'wallpaper.status.ready': 'Ready to compose a wallpaper',
   'wallpaper.status.noDisplaySelected': 'Select at least one display',

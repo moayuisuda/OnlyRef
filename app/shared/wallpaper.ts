@@ -9,7 +9,7 @@ export const WALLPAPER_INTERVAL_OPTIONS = [
   4320,
   10080,
 ] as const;
-export const WALLPAPER_IMAGE_COUNT_OPTIONS = [4, 6, 9, 12, 18, 24] as const;
+export const WALLPAPER_IMAGE_COUNT_OPTIONS = [4, 16, 32] as const;
 
 export type WallpaperIntervalMinutes = (typeof WALLPAPER_INTERVAL_OPTIONS)[number];
 export type WallpaperImageCount = (typeof WALLPAPER_IMAGE_COUNT_OPTIONS)[number];
@@ -53,7 +53,7 @@ export type WallpaperState = {
 export const DEFAULT_WALLPAPER_SETTINGS: WallpaperSettings = {
   enabled: false,
   intervalMinutes: 60,
-  imageCount: 6,
+  imageCount: 16,
   targetDisplayIds: null,
 };
 

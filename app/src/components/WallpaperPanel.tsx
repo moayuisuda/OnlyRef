@@ -1,6 +1,13 @@
 import { useEffect, useMemo } from "react";
 import { clsx } from "clsx";
-import { Check, Image, Monitor, RefreshCw, TimerReset } from "lucide-react";
+import {
+  Check,
+  Clock3,
+  Image,
+  Monitor,
+  RefreshCw,
+  TimerReset,
+} from "lucide-react";
 import { useSnapshot } from "valtio";
 import {
   WALLPAPER_IMAGE_COUNT_OPTIONS,
@@ -14,6 +21,7 @@ import {
   wallpaperState,
 } from "../store/wallpaperStore";
 import { ToggleSwitch } from "./ToggleSwitch";
+import { CompactSelect } from "./CompactSelect";
 import type { I18nKey } from "../../shared/i18n/types";
 
 const INTERVAL_KEY_BY_MINUTES: Record<WallpaperIntervalMinutes, I18nKey> = {
@@ -26,6 +34,12 @@ const INTERVAL_KEY_BY_MINUTES: Record<WallpaperIntervalMinutes, I18nKey> = {
   1440: "wallpaper.interval.1440",
   4320: "wallpaper.interval.4320",
   10080: "wallpaper.interval.10080",
+};
+
+const DENSITY_KEY_BY_COUNT: Record<WallpaperImageCount, I18nKey> = {
+  4: "wallpaper.density.sparse",
+  16: "wallpaper.density.medium",
+  32: "wallpaper.density.dense",
 };
 
 const formatTime = (timestamp: number | null, locale: string): string => {
@@ -242,46 +256,43 @@ export const WallpaperPanel = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-3 border-b border-white/[0.07] py-3">
-        <label className="text-xs text-neutral-300" htmlFor="wallpaper-interval">
-          {t("wallpaper.interval")}
-        </label>
-        <select
-          id="wallpaper-interval"
-          className="w-32 rounded-lg border border-white/10 bg-neutral-900 px-2.5 py-1.5 text-right text-xs text-neutral-100 outline-none transition-colors focus:border-[var(--color-primary)] disabled:opacity-45"
-          value={snap.settings.intervalMinutes}
-          disabled={!snap.supported || snap.saving || snap.updating}
-          onChange={(event) =>
-            updateSettings({
-              intervalMinutes: Number(event.target.value) as WallpaperIntervalMinutes,
-            })
-          }
-        >
-          {WALLPAPER_INTERVAL_OPTIONS.map((minutes) => (
-            <option key={minutes} value={minutes}>
-              {t(INTERVAL_KEY_BY_MINUTES[minutes])}
-            </option>
-          ))}
-        </select>
+      <div className="space-y-3 border-b border-white/[0.07] py-3">
+        <div className="flex items-center justify-between gap-4">
+          <div className="text-xs text-neutral-300">{t("wallpaper.interval")}</div>
+          <CompactSelect
+            ariaLabel={t("wallpaper.interval")}
+            disabled={!snap.supported || snap.saving || snap.updating}
+            icon={<Clock3 size={13} />}
+            options={WALLPAPER_INTERVAL_OPTIONS.map((minutes) => ({
+              value: minutes,
+              label: t(INTERVAL_KEY_BY_MINUTES[minutes]),
+            }))}
+            value={snap.settings.intervalMinutes}
+            onChange={(intervalMinutes) => updateSettings({ intervalMinutes })}
+          />
+        </div>
 
-        <div className="text-xs text-neutral-300">{t("wallpaper.imageCount")}</div>
-        <div className="grid grid-cols-6 rounded-lg border border-white/10 bg-neutral-900 p-0.5">
-          {WALLPAPER_IMAGE_COUNT_OPTIONS.map((count) => (
-            <button
-              key={count}
-              type="button"
-              className={clsx(
-                "h-6 min-w-8 rounded-md px-1.5 text-xs transition-colors",
-                snap.settings.imageCount === count
-                  ? "bg-white/[0.1] text-white"
-                  : "text-neutral-500 hover:text-neutral-200",
-              )}
-              disabled={!snap.supported || snap.saving || snap.updating}
-              onClick={() => updateSettings({ imageCount: count })}
-            >
-              {count}
-            </button>
-          ))}
+        <div className="flex items-center justify-between gap-4">
+          <div className="text-xs text-neutral-300">{t("wallpaper.imageCount")}</div>
+          <div className="grid w-48 grid-cols-3 gap-1 rounded-xl border border-white/10 bg-neutral-950/70 p-1">
+            {WALLPAPER_IMAGE_COUNT_OPTIONS.map((count) => (
+              <button
+                key={count}
+                type="button"
+                aria-pressed={snap.settings.imageCount === count}
+                className={clsx(
+                  "h-7 rounded-lg px-2 text-[11px] font-medium transition-colors",
+                  snap.settings.imageCount === count
+                    ? "bg-[color-mix(in_srgb,var(--color-primary)_14%,transparent)] text-[var(--color-primary)]"
+                    : "text-neutral-500 hover:bg-white/[0.04] hover:text-neutral-200",
+                )}
+                disabled={!snap.supported || snap.saving || snap.updating}
+                onClick={() => updateSettings({ imageCount: count })}
+              >
+                {t(DENSITY_KEY_BY_COUNT[count])}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 

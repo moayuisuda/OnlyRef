@@ -8,6 +8,8 @@ import_electron.contextBridge.exposeInMainWorld("electron", {
   focus: () => import_electron.ipcRenderer.send("window-focus"),
   setWindowBounds: (bounds) => import_electron.ipcRenderer.send("set-window-bounds", bounds),
   setWindowAlwaysOnTop: (alwaysOnTop) => import_electron.ipcRenderer.invoke("set-window-always-on-top", alwaysOnTop),
+  getLaunchAtLogin: () => import_electron.ipcRenderer.invoke("get-launch-at-login"),
+  setLaunchAtLogin: (enabled) => import_electron.ipcRenderer.invoke("set-launch-at-login", enabled),
   setToggleWindowShortcut: (accelerator) => import_electron.ipcRenderer.invoke("set-toggle-window-shortcut", accelerator),
   onRendererEvent: (callback) => {
     const handler = (_, event, ...args) => callback(event, ...args);

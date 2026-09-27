@@ -10,6 +10,9 @@ contextBridge.exposeInMainWorld('electron', {
     ipcRenderer.send('set-window-bounds', bounds),
   setWindowAlwaysOnTop: (alwaysOnTop: boolean) =>
     ipcRenderer.invoke('set-window-always-on-top', alwaysOnTop),
+  getLaunchAtLogin: () => ipcRenderer.invoke('get-launch-at-login'),
+  setLaunchAtLogin: (enabled: boolean) =>
+    ipcRenderer.invoke('set-launch-at-login', enabled),
   setToggleWindowShortcut: (accelerator: string) =>
     ipcRenderer.invoke('set-toggle-window-shortcut', accelerator),
   onRendererEvent: (callback: (event: string, ...args: unknown[]) => void) => {

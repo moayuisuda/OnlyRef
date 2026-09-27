@@ -9,17 +9,20 @@ import { lockedFs, withFileLocks } from "../backend/fileLock";
 import type {
   WallpaperDisplay,
   WallpaperErrorCode,
+  WallpaperImageCount,
   WallpaperSettings,
   WallpaperState,
 } from "../shared/wallpaper";
 import {
   DEFAULT_WALLPAPER_SETTINGS,
   parseWallpaperSettings,
+  WALLPAPER_IMAGE_COUNT_OPTIONS,
 } from "../shared/wallpaper";
 
 const execFileAsync = promisify(execFile);
 const SETTINGS_KEY = "wallpaperSettings";
 const ORIGINAL_WALLPAPERS_KEY = "wallpaperOriginals";
+const LAST_UPDATED_AT_KEY = "wallpaperLastUpdatedAt";
 const GENERATED_DIR_NAME = "wallpapers";
 const DISPLAY_DIR_PATTERN = /^display-[a-f0-9]{16}$/;
 const GENERATED_FILE_PREFIX = "picaptain-wallpaper-";
@@ -27,7 +30,12 @@ const GENERATED_FILE_PATTERN = /^picaptain-wallpaper-\d+\.jpg$/;
 const GENERATED_TEMP_PATTERN = /^picaptain-wallpaper-\d+\.tmp\.jpg$/;
 const DISPLAY_CHANGE_DEBOUNCE_MS = 800;
 const DEFAULT_IMAGE_SCALE = 0.5;
-const MAX_DISPLAY_IMAGE_RATIO = 2 / 3;
+const MAX_DISPLAY_IMAGE_RATIO = 1;
+const DENSITY_SCALE_BY_IMAGE_COUNT: Record<WallpaperImageCount, number> = {
+  4: 1,
+  16: 1.6,
+  32: 2.5,
+};
 
 const WINDOWS_DESKTOP_API_SOURCE = [
   "using System;",
@@ -488,10 +496,11 @@ const renderMosaicRoot = (
 const buildPackedTiles = async (
   imagePaths: string[],
   display: WallpaperDisplay,
-  targetImageCount: number,
+  targetImageCount: WallpaperImageCount,
 ): Promise<PackedTile[]> => {
   const preparedImages: PreparedImage[] = [];
   const displayAspectRatio = display.width / display.height;
+  let densityImageCount: number | null = null;
 
   for (const imagePath of imagePaths) {
     const image = await loadImageLayout(imagePath);
@@ -512,7 +521,13 @@ const buildPackedTiles = async (
       preferredHeight: image.height * preferredScale,
       maximumHeight: image.height * maximumScale,
     });
-    if (preparedImages.length < targetImageCount) continue;
+    if (preparedImages.length < WALLPAPER_IMAGE_COUNT_OPTIONS[0]) continue;
+    if (
+      densityImageCount !== null &&
+      preparedImages.length < densityImageCount
+    ) {
+      continue;
+    }
 
     const root = buildRecursiveMosaic(preparedImages, displayAspectRatio);
     const renderedHeight =
@@ -520,6 +535,18 @@ const buildPackedTiles = async (
         ? display.height
         : display.width / root.aspectRatio;
     if (renderedHeight > root.maximumHeight) continue;
+
+    if (densityImageCount === null) {
+      // 先找到无放大铺满屏幕所需的基准数量，再按密度拉开图片数量。
+      densityImageCount = Math.max(
+        targetImageCount,
+        Math.ceil(
+          preparedImages.length *
+            DENSITY_SCALE_BY_IMAGE_COUNT[targetImageCount],
+        ),
+      );
+      if (preparedImages.length < densityImageCount) continue;
+    }
     return renderMosaicRoot(root, display);
   }
 
@@ -568,6 +595,18 @@ const hasOriginalWallpaper = (
   displayId: string,
 ): boolean => Object.prototype.hasOwnProperty.call(originals, displayId);
 
+const parseLastUpdatedAt = (value: unknown): number | null => {
+  if (value === undefined || value === null) return null;
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value <= 0
+  ) {
+    throw new Error("Invalid wallpaper last updated time");
+  }
+  return Math.floor(value);
+};
+
 export class WallpaperService {
   private readonly deps: WallpaperServiceDeps;
   private settings: WallpaperSettings = { ...DEFAULT_WALLPAPER_SETTINGS };
@@ -596,7 +635,8 @@ export class WallpaperService {
     this.originalWallpapers = parseOriginalWallpapers(
       persisted[ORIGINAL_WALLPAPERS_KEY],
     );
-    this.patchState({ settings: { ...this.settings } });
+    const lastUpdatedAt = parseLastUpdatedAt(persisted[LAST_UPDATED_AT_KEY]);
+    this.patchState({ settings: { ...this.settings }, lastUpdatedAt });
     try {
       await this.cleanupTemporaryFiles();
     } catch (error) {
@@ -605,7 +645,11 @@ export class WallpaperService {
     }
 
     if (this.settings.enabled && this.state.supported) {
-      await this.refresh();
+      if (this.isUpdateDue()) {
+        await this.refresh();
+      } else {
+        this.scheduleNextUpdate();
+      }
     }
   }
 
@@ -687,7 +731,7 @@ export class WallpaperService {
         previous.targetDisplayIds,
         settings.targetDisplayIds,
       );
-    if (shouldRefresh) {
+    if (shouldRefresh || this.isUpdateDue()) {
       await this.refresh();
     } else {
       this.scheduleNextUpdate();
@@ -806,6 +850,7 @@ export class WallpaperService {
     this.patchState({ updating: true, errorCode: null });
     let errorCode: WallpaperErrorCode | null = null;
     let updatedDisplayCount = 0;
+    let successfulUpdatedAt: number | null = null;
 
     try {
       const displays = this.getTargetDisplays();
@@ -852,6 +897,16 @@ export class WallpaperService {
       }
 
       if (updatedDisplayCount > 0) {
+        successfulUpdatedAt = Date.now();
+        try {
+          await this.deps.patchSettings({
+            [LAST_UPDATED_AT_KEY]: successfulUpdatedAt,
+          });
+        } catch (error) {
+          console.error("[wallpaper] failed to persist update time", error);
+          errorCode ??= "request-failed";
+        }
+
         try {
           await this.cleanupDetachedDisplayDirectories();
         } catch (error) {
@@ -866,10 +921,12 @@ export class WallpaperService {
       this.patchState({
         updating: false,
         lastUpdatedAt:
-          updatedDisplayCount > 0 ? Date.now() : this.state.lastUpdatedAt,
+          successfulUpdatedAt ?? this.state.lastUpdatedAt,
         errorCode,
       });
-      if (this.settings.enabled) this.scheduleNextUpdate();
+      if (this.settings.enabled) {
+        this.scheduleNextUpdate(successfulUpdatedAt ?? Date.now());
+      }
     }
 
     return this.getState();
@@ -1024,14 +1081,31 @@ export class WallpaperService {
     );
   }
 
-  private scheduleNextUpdate(): void {
+  private scheduleNextUpdate(
+    referenceTime = this.state.lastUpdatedAt ?? Date.now(),
+  ): void {
     this.clearTimer();
     if (!this.settings.enabled || !this.state.supported) return;
-    const delayMs = this.settings.intervalMinutes * 60 * 1000;
+    const nextUpdatedAt = this.getNextUpdateAt(referenceTime);
+    const delayMs = Math.max(0, nextUpdatedAt - Date.now());
     this.timer = setTimeout(() => {
       void this.refresh();
     }, delayMs);
-    this.patchState({ nextUpdatedAt: Date.now() + delayMs });
+    this.patchState({ nextUpdatedAt });
+  }
+
+  private getNextUpdateAt(
+    referenceTime = this.state.lastUpdatedAt ?? Date.now(),
+  ): number {
+    const intervalMs = this.settings.intervalMinutes * 60 * 1000;
+    return referenceTime + intervalMs;
+  }
+
+  private isUpdateDue(): boolean {
+    return (
+      this.state.lastUpdatedAt === null ||
+      this.getNextUpdateAt() <= Date.now()
+    );
   }
 
   private clearTimer(): void {

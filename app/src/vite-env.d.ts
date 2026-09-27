@@ -50,6 +50,14 @@ declare global {
       setWindowAlwaysOnTop: (
         alwaysOnTop: boolean,
       ) => Promise<{ success: boolean; error?: string; alwaysOnTop: boolean }>;
+      getLaunchAtLogin: () => Promise<{
+        success: boolean;
+        error?: string;
+        enabled: boolean;
+      }>;
+      setLaunchAtLogin: (
+        enabled: boolean,
+      ) => Promise<{ success: boolean; error?: string; enabled: boolean }>;
       setToggleWindowShortcut: (
         accelerator: string,
       ) => Promise<{ success: boolean; error?: string; accelerator?: string }>;

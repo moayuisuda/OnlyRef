@@ -2560,11 +2560,11 @@ var WALLPAPER_INTERVAL_OPTIONS = [
   4320,
   10080
 ];
-var WALLPAPER_IMAGE_COUNT_OPTIONS = [4, 6, 9, 12, 18, 24];
+var WALLPAPER_IMAGE_COUNT_OPTIONS = [4, 16, 32];
 var DEFAULT_WALLPAPER_SETTINGS = {
   enabled: false,
   intervalMinutes: 60,
-  imageCount: 6,
+  imageCount: 16,
   targetDisplayIds: null
 };
 var isOneOf = (value, options) => typeof value === "number" && options.includes(value);
@@ -4916,6 +4916,7 @@ var en = {
   "toast.shortcutUpdateFailed": "Failed to update shortcut: {{error}}",
   "toast.windowDisplayModeUpdateFailed": "Failed to switch floating mode: {{error}}",
   "toast.windowAlwaysOnTopUpdateFailed": "Failed to update always-on-top: {{error}}",
+  "toast.launchAtLoginUpdateFailed": "Failed to update launch at login: {{error}}",
   "toast.updateDownloaded": "Update downloaded. Restart to install v{{version}}",
   "envInit.brandTitle": "PiCaptain",
   "envInit.heading": "Preparing PiCaptain...",
@@ -5076,6 +5077,8 @@ var en = {
   "settings.llm.model": "Model",
   "settings.open": "Open settings",
   "settings.storageFolder": "Storage folder",
+  "settings.launchAtLogin": "Launch at login",
+  "settings.launchAtLogin.desc": "Start PiCaptain automatically after you sign in",
   "settings.autoTag": "Auto-tag threshold",
   "settings.autoTag.desc": "Higher values make matching stricter.",
   "settings.autoTag.loose": "Looser",
@@ -5114,6 +5117,9 @@ var en = {
   "wallpaper.interval.4320": "3 days",
   "wallpaper.interval.10080": "7 days",
   "wallpaper.imageCount": "Collage density",
+  "wallpaper.density.sparse": "Sparse",
+  "wallpaper.density.medium": "Medium",
+  "wallpaper.density.dense": "Dense",
   "wallpaper.refreshNow": "Change now",
   "wallpaper.status.ready": "Ready to compose a wallpaper",
   "wallpaper.status.noDisplaySelected": "Select at least one display",
@@ -5204,6 +5210,7 @@ var zh = {
   "toast.shortcutUpdateFailed": "\u66F4\u65B0\u5FEB\u6377\u952E\u5931\u8D25\uFF1A{{error}}",
   "toast.windowDisplayModeUpdateFailed": "\u5207\u6362\u6D6E\u7A97\u6A21\u5F0F\u5931\u8D25\uFF1A{{error}}",
   "toast.windowAlwaysOnTopUpdateFailed": "\u66F4\u65B0\u7F6E\u9876\u72B6\u6001\u5931\u8D25\uFF1A{{error}}",
+  "toast.launchAtLoginUpdateFailed": "\u66F4\u65B0\u5F00\u673A\u81EA\u542F\u5931\u8D25\uFF1A{{error}}",
   "envInit.brandTitle": "PiCaptain",
   "envInit.heading": "\u6B63\u5728\u51C6\u5907 PiCaptain\u2026",
   "envInit.subheading": "\u9996\u6B21\u8FD0\u884C\u53EF\u80FD\u4F1A\u4E0B\u8F7D\u5DE5\u5177\u3001\u5B89\u88C5\u4F9D\u8D56\u5E76\u62C9\u53D6\u672C\u5730\u6A21\u578B\uFF0C\u8FD9\u662F\u4E00\u6B21\u6027\u6B65\u9AA4\u3002",
@@ -5337,6 +5344,8 @@ var zh = {
   "titleBar.maximize": "\u6700\u5927\u5316",
   "settings.open": "\u6253\u5F00\u8BBE\u7F6E",
   "settings.storageFolder": "\u5B58\u50A8\u6587\u4EF6\u5939",
+  "settings.launchAtLogin": "\u5F00\u673A\u81EA\u542F",
+  "settings.launchAtLogin.desc": "\u767B\u5F55\u7CFB\u7EDF\u540E\u81EA\u52A8\u542F\u52A8 PiCaptain",
   "settings.autoTag": "\u81EA\u52A8\u6807\u7B7E\u9608\u503C",
   "settings.autoTag.desc": "\u503C\u8D8A\u9AD8\u5339\u914D\u8D8A\u4E25\u683C",
   "settings.autoTag.loose": "\u5BBD\u677E",
@@ -5426,6 +5435,9 @@ var zh = {
   "wallpaper.interval.4320": "3 \u5929",
   "wallpaper.interval.10080": "7 \u5929",
   "wallpaper.imageCount": "\u62FC\u8D34\u5BC6\u5EA6",
+  "wallpaper.density.sparse": "\u7A00\u758F",
+  "wallpaper.density.medium": "\u4E2D\u7B49",
+  "wallpaper.density.dense": "\u5BC6\u96C6",
   "wallpaper.refreshNow": "\u7ACB\u5373\u66F4\u6362",
   "wallpaper.status.ready": "\u5DF2\u51C6\u5907\u597D\u751F\u6210\u58C1\u7EB8",
   "wallpaper.status.noDisplaySelected": "\u8BF7\u81F3\u5C11\u9009\u62E9\u4E00\u53F0\u663E\u793A\u5668",
@@ -5488,6 +5500,7 @@ var import_sharp2 = __toESM(require("sharp"), 1);
 var execFileAsync = (0, import_util.promisify)(import_child_process3.execFile);
 var SETTINGS_KEY = "wallpaperSettings";
 var ORIGINAL_WALLPAPERS_KEY = "wallpaperOriginals";
+var LAST_UPDATED_AT_KEY = "wallpaperLastUpdatedAt";
 var GENERATED_DIR_NAME = "wallpapers";
 var DISPLAY_DIR_PATTERN = /^display-[a-f0-9]{16}$/;
 var GENERATED_FILE_PREFIX = "picaptain-wallpaper-";
@@ -5495,7 +5508,12 @@ var GENERATED_FILE_PATTERN = /^picaptain-wallpaper-\d+\.jpg$/;
 var GENERATED_TEMP_PATTERN = /^picaptain-wallpaper-\d+\.tmp\.jpg$/;
 var DISPLAY_CHANGE_DEBOUNCE_MS = 800;
 var DEFAULT_IMAGE_SCALE = 0.5;
-var MAX_DISPLAY_IMAGE_RATIO = 2 / 3;
+var MAX_DISPLAY_IMAGE_RATIO = 1;
+var DENSITY_SCALE_BY_IMAGE_COUNT = {
+  4: 1,
+  16: 1.6,
+  32: 2.5
+};
 var WINDOWS_DESKTOP_API_SOURCE = [
   "using System;",
   "using System.Collections.Generic;",
@@ -5824,6 +5842,7 @@ var renderMosaicRoot = (root, display) => {
 var buildPackedTiles = async (imagePaths, display, targetImageCount) => {
   const preparedImages = [];
   const displayAspectRatio = display.width / display.height;
+  let densityImageCount = null;
   for (const imagePath of imagePaths) {
     const image = await loadImageLayout(imagePath);
     const preferredScale = Math.min(
@@ -5843,10 +5862,22 @@ var buildPackedTiles = async (imagePaths, display, targetImageCount) => {
       preferredHeight: image.height * preferredScale,
       maximumHeight: image.height * maximumScale
     });
-    if (preparedImages.length < targetImageCount) continue;
+    if (preparedImages.length < WALLPAPER_IMAGE_COUNT_OPTIONS[0]) continue;
+    if (densityImageCount !== null && preparedImages.length < densityImageCount) {
+      continue;
+    }
     const root = buildRecursiveMosaic(preparedImages, displayAspectRatio);
     const renderedHeight = root.aspectRatio >= displayAspectRatio ? display.height : display.width / root.aspectRatio;
     if (renderedHeight > root.maximumHeight) continue;
+    if (densityImageCount === null) {
+      densityImageCount = Math.max(
+        targetImageCount,
+        Math.ceil(
+          preparedImages.length * DENSITY_SCALE_BY_IMAGE_COUNT[targetImageCount]
+        )
+      );
+      if (preparedImages.length < densityImageCount) continue;
+    }
     return renderMosaicRoot(root, display);
   }
   throw new Error("Not enough images to fill the wallpaper");
@@ -5875,6 +5906,13 @@ var parseOriginalWallpapers = (value) => {
   return Object.fromEntries(entries);
 };
 var hasOriginalWallpaper = (originals, displayId) => Object.prototype.hasOwnProperty.call(originals, displayId);
+var parseLastUpdatedAt = (value) => {
+  if (value === void 0 || value === null) return null;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new Error("Invalid wallpaper last updated time");
+  }
+  return Math.floor(value);
+};
 var WallpaperService = class {
   deps;
   settings = { ...DEFAULT_WALLPAPER_SETTINGS };
@@ -5901,7 +5939,8 @@ var WallpaperService = class {
     this.originalWallpapers = parseOriginalWallpapers(
       persisted[ORIGINAL_WALLPAPERS_KEY]
     );
-    this.patchState({ settings: { ...this.settings } });
+    const lastUpdatedAt = parseLastUpdatedAt(persisted[LAST_UPDATED_AT_KEY]);
+    this.patchState({ settings: { ...this.settings }, lastUpdatedAt });
     try {
       await this.cleanupTemporaryFiles();
     } catch (error) {
@@ -5909,7 +5948,11 @@ var WallpaperService = class {
       this.patchState({ errorCode: "cleanup-failed" });
     }
     if (this.settings.enabled && this.state.supported) {
-      await this.refresh();
+      if (this.isUpdateDue()) {
+        await this.refresh();
+      } else {
+        this.scheduleNextUpdate();
+      }
     }
   }
   stop() {
@@ -5974,7 +6017,7 @@ var WallpaperService = class {
       previous.targetDisplayIds,
       settings.targetDisplayIds
     );
-    if (shouldRefresh) {
+    if (shouldRefresh || this.isUpdateDue()) {
       await this.refresh();
     } else {
       this.scheduleNextUpdate();
@@ -6075,6 +6118,7 @@ var WallpaperService = class {
     this.patchState({ updating: true, errorCode: null });
     let errorCode = null;
     let updatedDisplayCount = 0;
+    let successfulUpdatedAt = null;
     try {
       const displays = this.getTargetDisplays();
       if (displays.length === 0) {
@@ -6116,6 +6160,15 @@ var WallpaperService = class {
         }
       }
       if (updatedDisplayCount > 0) {
+        successfulUpdatedAt = Date.now();
+        try {
+          await this.deps.patchSettings({
+            [LAST_UPDATED_AT_KEY]: successfulUpdatedAt
+          });
+        } catch (error) {
+          console.error("[wallpaper] failed to persist update time", error);
+          errorCode ??= "request-failed";
+        }
         try {
           await this.cleanupDetachedDisplayDirectories();
         } catch (error) {
@@ -6129,10 +6182,12 @@ var WallpaperService = class {
     } finally {
       this.patchState({
         updating: false,
-        lastUpdatedAt: updatedDisplayCount > 0 ? Date.now() : this.state.lastUpdatedAt,
+        lastUpdatedAt: successfulUpdatedAt ?? this.state.lastUpdatedAt,
         errorCode
       });
-      if (this.settings.enabled) this.scheduleNextUpdate();
+      if (this.settings.enabled) {
+        this.scheduleNextUpdate(successfulUpdatedAt ?? Date.now());
+      }
     }
     return this.getState();
   }
@@ -6250,14 +6305,22 @@ var WallpaperService = class {
       ).map((name) => lockedFs.remove(import_path6.default.join(generatedRoot, name)))
     );
   }
-  scheduleNextUpdate() {
+  scheduleNextUpdate(referenceTime = this.state.lastUpdatedAt ?? Date.now()) {
     this.clearTimer();
     if (!this.settings.enabled || !this.state.supported) return;
-    const delayMs = this.settings.intervalMinutes * 60 * 1e3;
+    const nextUpdatedAt = this.getNextUpdateAt(referenceTime);
+    const delayMs = Math.max(0, nextUpdatedAt - Date.now());
     this.timer = setTimeout(() => {
       void this.refresh();
     }, delayMs);
-    this.patchState({ nextUpdatedAt: Date.now() + delayMs });
+    this.patchState({ nextUpdatedAt });
+  }
+  getNextUpdateAt(referenceTime = this.state.lastUpdatedAt ?? Date.now()) {
+    const intervalMs = this.settings.intervalMinutes * 60 * 1e3;
+    return referenceTime + intervalMs;
+  }
+  isUpdateDue() {
+    return this.state.lastUpdatedAt === null || this.getNextUpdateAt() <= Date.now();
   }
   clearTimer() {
     if (this.timer) {
@@ -6314,6 +6377,28 @@ var isUpdaterInitialized = false;
 var hasTriggeredStartupUpdateCheck = false;
 var isQuitPrepared = false;
 var quitPreparationPromise = null;
+function getLoginItemTarget() {
+  if (!process.defaultApp) return void 0;
+  return {
+    path: process.execPath,
+    args: [import_electron4.app.getAppPath()]
+  };
+}
+function isLaunchAtLoginEnabled() {
+  const settings = import_electron4.app.getLoginItemSettings(getLoginItemTarget());
+  return settings.openAtLogin && (process.platform !== "win32" || settings.enabled);
+}
+function setLaunchAtLogin(enabled) {
+  if (process.platform !== "win32" && process.platform !== "darwin") {
+    throw new Error("Launch at login is unsupported on this platform");
+  }
+  import_electron4.app.setLoginItemSettings({
+    openAtLogin: enabled,
+    enabled,
+    ...getLoginItemTarget()
+  });
+  return isLaunchAtLoginEnabled();
+}
 var wallpaperService = new WallpaperService({
   getDisplays: () => import_electron4.screen.getAllDisplays(),
   getPrimaryDisplay: () => import_electron4.screen.getPrimaryDisplay(),
@@ -8038,6 +8123,39 @@ import_electron4.ipcMain.handle(
     return registerToggleWindowShortcut(accelerator);
   }
 );
+import_electron4.ipcMain.handle("get-launch-at-login", () => {
+  try {
+    return { success: true, enabled: isLaunchAtLoginEnabled() };
+  } catch (error) {
+    import_electron_log2.default.error("Failed to read launch-at-login state", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      enabled: false
+    };
+  }
+});
+import_electron4.ipcMain.handle("set-launch-at-login", (_event, enabled) => {
+  let currentEnabled = false;
+  try {
+    currentEnabled = isLaunchAtLoginEnabled();
+    if (typeof enabled !== "boolean") {
+      throw new Error("Invalid launch-at-login value");
+    }
+    const appliedEnabled = setLaunchAtLogin(enabled);
+    if (appliedEnabled !== enabled) {
+      throw new Error("The operating system did not apply the requested state");
+    }
+    return { success: true, enabled: appliedEnabled };
+  } catch (error) {
+    import_electron_log2.default.error("Failed to update launch-at-login state", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      enabled: currentEnabled
+    };
+  }
+});
 import_electron4.ipcMain.on("settings-open-changed", (_event, open) => {
   isSettingsOpen = Boolean(open);
 });

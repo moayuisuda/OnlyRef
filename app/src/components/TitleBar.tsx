@@ -97,6 +97,7 @@ export const TitleBar: React.FC = () => {
     window.electron?.setSettingsOpen?.(settingsOpen);
     if (settingsOpen) {
       void versionActions.init();
+      void globalActions.loadLaunchAtLogin();
     }
   }, [settingsOpen]);
 
@@ -519,7 +520,7 @@ export const TitleBar: React.FC = () => {
       {settingsOpen && (
         <div
           ref={settingsPanelRef}
-          className="no-drag absolute right-3 top-[calc(100%+0.5rem)] z-40 w-[360px] rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(20,20,20,0.97),rgba(10,10,10,0.97))] p-3 shadow-[0_20px_50px_rgba(0,0,0,0.45)] backdrop-blur-xl"
+          className="no-drag absolute right-3 top-[calc(100%+0.5rem)] z-40 max-h-[calc(100vh-56px)] w-[360px] overflow-y-auto rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(20,20,20,0.97),rgba(10,10,10,0.97))] p-3 shadow-[0_20px_50px_rgba(0,0,0,0.45)] backdrop-blur-xl"
         >
           <div className="mb-2 flex items-center justify-between">
             <div className="text-sm font-semibold text-white">{t("titleBar.settings")}</div>
@@ -592,6 +593,28 @@ export const TitleBar: React.FC = () => {
                     {t("common.language.zh")}
                   </button>
                 </div>
+              </div>
+            </div>
+
+            <div className="border-b border-white/6 px-3 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-xs font-medium text-neutral-200">
+                    {t("settings.launchAtLogin")}
+                  </div>
+                  <div className="mt-1 text-[11px] text-neutral-500">
+                    {t("settings.launchAtLogin.desc")}
+                  </div>
+                </div>
+                <ToggleSwitch
+                  checked={snap.launchAtLogin}
+                  disabled={snap.launchAtLoginLoading}
+                  onToggle={() => {
+                    void globalActions.setLaunchAtLogin(
+                      !globalState.launchAtLogin,
+                    );
+                  }}
+                />
               </div>
             </div>
 
