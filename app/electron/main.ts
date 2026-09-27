@@ -815,6 +815,9 @@ function initializeAutoUpdater() {
   autoUpdater.logger = log;
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
+  // 当前更新源不保证分块请求得到一致内容，差分下载可能在校验失败后从头回退。
+  // 直接下载完整安装包，确保下载进度连续且只进行一次传输。
+  autoUpdater.disableDifferentialDownload = true;
   autoUpdater.disableWebInstaller = true;
   autoUpdater.forceDevUpdateConfig = !app.isPackaged;
   autoUpdater.setFeedURL({

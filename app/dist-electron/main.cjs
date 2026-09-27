@@ -6935,6 +6935,7 @@ function initializeAutoUpdater() {
   import_electron_updater.autoUpdater.logger = import_electron_log2.default;
   import_electron_updater.autoUpdater.autoDownload = false;
   import_electron_updater.autoUpdater.autoInstallOnAppQuit = true;
+  import_electron_updater.autoUpdater.disableDifferentialDownload = true;
   import_electron_updater.autoUpdater.disableWebInstaller = true;
   import_electron_updater.autoUpdater.forceDevUpdateConfig = !import_electron4.app.isPackaged;
   import_electron_updater.autoUpdater.setFeedURL({
