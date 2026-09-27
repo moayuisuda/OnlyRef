@@ -6175,12 +6175,7 @@ var getDisplayDirectoryName = (displayId) => {
   const digest = (0, import_crypto2.createHash)("sha256").update(displayId).digest("hex").slice(0, 16);
   return `display-${digest}`;
 };
-var sameDisplaySelection = (left, right) => {
-  if (left === null || right === null) return left === right;
-  if (left.length !== right.length) return false;
-  const rightSet = new Set(right);
-  return left.every((id) => rightSet.has(id));
-};
+var sameDisplayIds = (left, right) => left.size === right.size && [...left].every((id) => right.has(id));
 var parseOriginalWallpapers = (value) => {
   if (value === void 0) return {};
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -6209,6 +6204,7 @@ var WallpaperService = class {
   timer = null;
   displayChangeTimer = null;
   updateTask = null;
+  settingsUpdateTail = Promise.resolve();
   state = {
     supported: process.platform === "win32" || process.platform === "darwin",
     displays: [],
@@ -6317,7 +6313,20 @@ var WallpaperService = class {
     }, DISPLAY_CHANGE_DEBOUNCE_MS);
   }
   async updateSettings(settings) {
+    const task = this.settingsUpdateTail.then(
+      () => this.performSettingsUpdate(settings)
+    );
+    this.settingsUpdateTail = task.then(
+      () => void 0,
+      () => void 0
+    );
+    return task;
+  }
+  async performSettingsUpdate(settings) {
+    if (this.updateTask) await this.updateTask;
     const previous = this.settings;
+    const previousTargetIds = this.getTargetDisplayIds(previous);
+    const nextTargetIds = this.getTargetDisplayIds(settings);
     await this.deps.patchSettings({ [SETTINGS_KEY]: settings });
     this.settings = {
       ...settings,
@@ -6330,32 +6339,45 @@ var WallpaperService = class {
       if (restoreError) this.patchState({ errorCode: restoreError });
       return this.getState();
     }
-    const shouldRefresh = !previous.enabled || previous.imageCount !== settings.imageCount || !sameDisplaySelection(
-      previous.targetDisplayIds,
-      settings.targetDisplayIds
+    const selectionChanged = !sameDisplayIds(
+      previousTargetIds,
+      nextTargetIds
     );
-    if (shouldRefresh || this.isUpdateDue()) {
+    const shouldRefreshAll = !previous.enabled || previous.imageCount !== settings.imageCount || !selectionChanged && this.isUpdateDue();
+    const newlyTargetedDisplayIds = selectionChanged ? new Set([...nextTargetIds].filter((id) => !previousTargetIds.has(id))) : /* @__PURE__ */ new Set();
+    if (shouldRefreshAll) {
       await this.refresh();
+    } else if (newlyTargetedDisplayIds.size > 0) {
+      await this.refresh(newlyTargetedDisplayIds);
     } else {
       this.scheduleNextUpdate();
     }
     if (restoreError) this.patchState({ errorCode: restoreError });
     return this.getState();
   }
-  refresh() {
+  refresh(targetDisplayIds) {
     if (this.updateTask) return this.updateTask;
-    this.updateTask = this.performRefresh().finally(() => {
+    this.updateTask = this.performRefresh(targetDisplayIds).finally(() => {
       this.updateTask = null;
     });
     return this.updateTask;
   }
-  getTargetDisplays() {
-    const targets = this.settings.targetDisplayIds;
+  getTargetDisplayIds(settings = this.settings) {
+    const targets = settings.targetDisplayIds;
     if (targets === null) {
-      return this.state.displays.filter((display) => display.isPrimary);
+      return new Set(
+        this.state.displays.filter((display) => display.isPrimary).map((display) => display.id)
+      );
     }
-    const targetSet = new Set(targets);
-    return this.state.displays.filter((display) => targetSet.has(display.id));
+    const availableDisplayIds = new Set(
+      this.state.displays.map((display) => display.id)
+    );
+    return new Set(targets.filter((id) => availableDisplayIds.has(id)));
+  }
+  getTargetDisplays(targetDisplayIds = this.getTargetDisplayIds()) {
+    return this.state.displays.filter(
+      (display) => targetDisplayIds.has(display.id)
+    );
   }
   isDisplayTargeted(displayId) {
     const targets = this.settings.targetDisplayIds;
@@ -6368,6 +6390,21 @@ var WallpaperService = class {
     await this.deps.patchSettings({
       [ORIGINAL_WALLPAPERS_KEY]: { ...this.originalWallpapers }
     });
+  }
+  async captureWallpapers(displays) {
+    return Promise.all(
+      displays.map(async (display) => ({
+        display,
+        wallpaper: await getSystemWallpaper(display)
+      }))
+    );
+  }
+  async restoreChangedWallpapers(snapshots) {
+    for (const snapshot of snapshots) {
+      const current = await getSystemWallpaper(snapshot.display);
+      if (current === snapshot.wallpaper) continue;
+      await applySystemWallpaper(snapshot.display, snapshot.wallpaper);
+    }
   }
   async ensureOriginalWallpaper(display) {
     if (hasOriginalWallpaper(this.originalWallpapers, display.id)) return;
@@ -6388,6 +6425,15 @@ var WallpaperService = class {
   async restoreUnmanagedDisplays() {
     let errorCode = null;
     let originalsChanged = false;
+    let protectedWallpapers;
+    try {
+      protectedWallpapers = await this.captureWallpapers(
+        this.settings.enabled ? this.getTargetDisplays() : []
+      );
+    } catch (error) {
+      console.error("[wallpaper] failed to snapshot managed displays", error);
+      return "apply-failed";
+    }
     for (const display of this.state.displays) {
       if (!hasOriginalWallpaper(this.originalWallpapers, display.id)) continue;
       if (this.settings.enabled && this.isDisplayTargeted(display.id)) continue;
@@ -6416,6 +6462,12 @@ var WallpaperService = class {
         errorCode ??= "cleanup-failed";
       }
     }
+    try {
+      await this.restoreChangedWallpapers(protectedWallpapers);
+    } catch (error) {
+      console.error("[wallpaper] failed to preserve managed displays", error);
+      errorCode ??= "apply-failed";
+    }
     if (originalsChanged) {
       try {
         await this.persistOriginalWallpapers();
@@ -6426,7 +6478,7 @@ var WallpaperService = class {
     }
     return errorCode;
   }
-  async performRefresh() {
+  async performRefresh(targetDisplayIds) {
     if (!this.state.supported) {
       this.patchState({ errorCode: "unsupported-platform" });
       return this.getState();
@@ -6437,42 +6489,66 @@ var WallpaperService = class {
     let updatedDisplayCount = 0;
     let successfulUpdatedAt = null;
     try {
-      const displays = this.getTargetDisplays();
+      const displays = this.getTargetDisplays(targetDisplayIds);
       if (displays.length === 0) {
         errorCode = "display-unavailable";
       } else {
-        for (const display of displays) {
-          const imagePaths = this.deps.getRandomImagePaths();
-          if (imagePaths.length < 2) {
-            errorCode = "not-enough-images";
-            break;
-          }
-          let outputPath = "";
+        let protectedWallpapers = [];
+        try {
+          const targetIds = new Set(displays.map((display) => display.id));
+          protectedWallpapers = await this.captureWallpapers(
+            this.state.displays.filter((display) => !targetIds.has(display.id))
+          );
+        } catch (error) {
+          console.error("[wallpaper] failed to snapshot untargeted displays", error);
+          errorCode = "apply-failed";
+        }
+        if (errorCode === null) {
           try {
-            outputPath = await this.generateWallpaper(imagePaths, display);
-          } catch (error) {
-            console.error(
-              `[wallpaper] generation failed for ${display.id}`,
-              error
-            );
-            errorCode ??= "generation-failed";
-            continue;
-          }
-          try {
-            await this.ensureOriginalWallpaper(display);
-            await applySystemWallpaper(display, outputPath);
-          } catch (error) {
-            console.error(`[wallpaper] apply failed for ${display.id}`, error);
-            await lockedFs.remove(outputPath).catch(() => void 0);
-            errorCode = "apply-failed";
-            continue;
-          }
-          updatedDisplayCount += 1;
-          try {
-            await this.cleanupGeneratedWallpapers(outputPath);
-          } catch (error) {
-            console.error(`[wallpaper] cleanup failed for ${display.id}`, error);
-            errorCode ??= "cleanup-failed";
+            for (const display of displays) {
+              const imagePaths = this.deps.getRandomImagePaths();
+              if (imagePaths.length < 2) {
+                errorCode = "not-enough-images";
+                break;
+              }
+              let outputPath = "";
+              try {
+                outputPath = await this.generateWallpaper(imagePaths, display);
+              } catch (error) {
+                console.error(
+                  `[wallpaper] generation failed for ${display.id}`,
+                  error
+                );
+                errorCode ??= "generation-failed";
+                continue;
+              }
+              try {
+                await this.ensureOriginalWallpaper(display);
+                await applySystemWallpaper(display, outputPath);
+              } catch (error) {
+                console.error(`[wallpaper] apply failed for ${display.id}`, error);
+                await lockedFs.remove(outputPath).catch(() => void 0);
+                errorCode = "apply-failed";
+                continue;
+              }
+              updatedDisplayCount += 1;
+              try {
+                await this.cleanupGeneratedWallpapers(outputPath);
+              } catch (error) {
+                console.error(`[wallpaper] cleanup failed for ${display.id}`, error);
+                errorCode ??= "cleanup-failed";
+              }
+            }
+          } finally {
+            try {
+              await this.restoreChangedWallpapers(protectedWallpapers);
+            } catch (error) {
+              console.error(
+                "[wallpaper] failed to preserve untargeted displays",
+                error
+              );
+              errorCode ??= "apply-failed";
+            }
           }
         }
       }
