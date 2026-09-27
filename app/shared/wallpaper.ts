@@ -63,40 +63,79 @@ const isOneOf = <T extends readonly number[]>(
 ): value is T[number] =>
   typeof value === "number" && options.includes(value as T[number]);
 
-export const parseWallpaperSettings = (value: unknown): WallpaperSettings => {
-  if (value === undefined) {
-    return { ...DEFAULT_WALLPAPER_SETTINGS };
+const getNearestImageCount = (value: unknown): WallpaperImageCount => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_WALLPAPER_SETTINGS.imageCount;
   }
-  if (!value || typeof value !== "object") {
-    throw new Error("Invalid wallpaper settings");
+  return WALLPAPER_IMAGE_COUNT_OPTIONS.reduce((nearest, candidate) =>
+    Math.abs(candidate - value) <= Math.abs(nearest - value)
+      ? candidate
+      : nearest,
+  );
+};
+
+export const normalizePersistedWallpaperSettings = (
+  value: unknown,
+): { settings: WallpaperSettings; repaired: boolean } => {
+  if (value === undefined) {
+    return { settings: { ...DEFAULT_WALLPAPER_SETTINGS }, repaired: false };
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { settings: { ...DEFAULT_WALLPAPER_SETTINGS }, repaired: true };
   }
 
-  const settings = value as Record<string, unknown>;
-  if (
-    typeof settings.enabled !== "boolean" ||
-    !isOneOf(settings.intervalMinutes, WALLPAPER_INTERVAL_OPTIONS) ||
-    !isOneOf(settings.imageCount, WALLPAPER_IMAGE_COUNT_OPTIONS) ||
-    !(
-      settings.targetDisplayIds === null ||
-      (Array.isArray(settings.targetDisplayIds) &&
-        settings.targetDisplayIds.every(
+  const raw = value as Record<string, unknown>;
+  const hasValidEnabled = typeof raw.enabled === "boolean";
+  const enabled = hasValidEnabled
+    ? (raw.enabled as boolean)
+    : DEFAULT_WALLPAPER_SETTINGS.enabled;
+  const hasValidInterval = isOneOf(
+    raw.intervalMinutes,
+    WALLPAPER_INTERVAL_OPTIONS,
+  );
+  const hasValidImageCount = isOneOf(
+    raw.imageCount,
+    WALLPAPER_IMAGE_COUNT_OPTIONS,
+  );
+  const hasValidTargets =
+    (raw.targetDisplayIds === null ||
+      (Array.isArray(raw.targetDisplayIds) &&
+        raw.targetDisplayIds.every(
           (id) => typeof id === "string" && id.length > 0,
-        ))
-    ) ||
-    (settings.enabled === true &&
-      Array.isArray(settings.targetDisplayIds) &&
-      settings.targetDisplayIds.length === 0)
-  ) {
-    throw new Error("Invalid wallpaper settings");
-  }
+        ))) &&
+    !(
+      enabled &&
+      Array.isArray(raw.targetDisplayIds) &&
+      raw.targetDisplayIds.length === 0
+    );
 
   return {
-    enabled: settings.enabled,
-    intervalMinutes: settings.intervalMinutes,
-    imageCount: settings.imageCount,
-    targetDisplayIds:
-      settings.targetDisplayIds === null
-        ? null
-        : [...new Set(settings.targetDisplayIds as string[])],
+    settings: {
+      enabled,
+      intervalMinutes: hasValidInterval
+        ? (raw.intervalMinutes as WallpaperIntervalMinutes)
+        : DEFAULT_WALLPAPER_SETTINGS.intervalMinutes,
+      imageCount: hasValidImageCount
+        ? (raw.imageCount as WallpaperImageCount)
+        : getNearestImageCount(raw.imageCount),
+      targetDisplayIds: hasValidTargets
+        ? raw.targetDisplayIds === null
+          ? null
+          : [...new Set(raw.targetDisplayIds as string[])]
+        : null,
+    },
+    repaired:
+      !hasValidEnabled ||
+      !hasValidInterval ||
+      !hasValidImageCount ||
+      !hasValidTargets,
   };
+};
+
+export const parseWallpaperSettings = (value: unknown): WallpaperSettings => {
+  const normalized = normalizePersistedWallpaperSettings(value);
+  if (normalized.repaired) {
+    throw new Error("Invalid wallpaper settings");
+  }
+  return normalized.settings;
 };

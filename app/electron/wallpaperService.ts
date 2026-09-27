@@ -15,7 +15,7 @@ import type {
 } from "../shared/wallpaper";
 import {
   DEFAULT_WALLPAPER_SETTINGS,
-  parseWallpaperSettings,
+  normalizePersistedWallpaperSettings,
   WALLPAPER_IMAGE_COUNT_OPTIONS,
 } from "../shared/wallpaper";
 
@@ -631,12 +631,44 @@ export class WallpaperService {
   async start(): Promise<void> {
     await this.refreshDisplays();
     const persisted = await this.deps.readSettings();
-    this.settings = parseWallpaperSettings(persisted[SETTINGS_KEY]);
-    this.originalWallpapers = parseOriginalWallpapers(
-      persisted[ORIGINAL_WALLPAPERS_KEY],
+    const repairPatch: Record<string, unknown> = {};
+    let lastUpdatedAt: number | null = null;
+
+    const normalizedSettings = normalizePersistedWallpaperSettings(
+      persisted[SETTINGS_KEY],
     );
-    const lastUpdatedAt = parseLastUpdatedAt(persisted[LAST_UPDATED_AT_KEY]);
+    this.settings = normalizedSettings.settings;
+    if (normalizedSettings.repaired) {
+      console.warn("[wallpaper] repaired persisted wallpaper settings");
+      repairPatch[SETTINGS_KEY] = this.settings;
+    }
+
+    try {
+      this.originalWallpapers = parseOriginalWallpapers(
+        persisted[ORIGINAL_WALLPAPERS_KEY],
+      );
+    } catch (error) {
+      console.error("[wallpaper] repaired invalid original wallpapers", error);
+      this.originalWallpapers = {};
+      repairPatch[ORIGINAL_WALLPAPERS_KEY] = this.originalWallpapers;
+    }
+
+    try {
+      lastUpdatedAt = parseLastUpdatedAt(persisted[LAST_UPDATED_AT_KEY]);
+    } catch (error) {
+      console.error("[wallpaper] repaired invalid update time", error);
+      repairPatch[LAST_UPDATED_AT_KEY] = null;
+    }
+
     this.patchState({ settings: { ...this.settings }, lastUpdatedAt });
+    if (Object.keys(repairPatch).length > 0) {
+      try {
+        await this.deps.patchSettings(repairPatch);
+      } catch (error) {
+        console.error("[wallpaper] failed to persist repaired settings", error);
+        this.patchState({ errorCode: "request-failed" });
+      }
+    }
     try {
       await this.cleanupTemporaryFiles();
     } catch (error) {

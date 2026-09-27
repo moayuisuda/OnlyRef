@@ -112,10 +112,10 @@ function getLoginItemTarget(): { path: string; args: string[] } | undefined {
 
 function isLaunchAtLoginEnabled(): boolean {
   const settings = app.getLoginItemSettings(getLoginItemTarget());
-  return (
-    settings.openAtLogin &&
-    (process.platform !== "win32" || settings.enabled)
-  );
+  if (process.platform === "win32") {
+    return settings.openAtLogin && settings.executableWillLaunchAtLogin;
+  }
+  return settings.openAtLogin;
 }
 
 function setLaunchAtLogin(enabled: boolean): boolean {

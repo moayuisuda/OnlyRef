@@ -2568,25 +2568,51 @@ var DEFAULT_WALLPAPER_SETTINGS = {
   targetDisplayIds: null
 };
 var isOneOf = (value, options) => typeof value === "number" && options.includes(value);
-var parseWallpaperSettings = (value) => {
+var getNearestImageCount = (value) => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_WALLPAPER_SETTINGS.imageCount;
+  }
+  return WALLPAPER_IMAGE_COUNT_OPTIONS.reduce(
+    (nearest, candidate) => Math.abs(candidate - value) <= Math.abs(nearest - value) ? candidate : nearest
+  );
+};
+var normalizePersistedWallpaperSettings = (value) => {
   if (value === void 0) {
-    return { ...DEFAULT_WALLPAPER_SETTINGS };
+    return { settings: { ...DEFAULT_WALLPAPER_SETTINGS }, repaired: false };
   }
-  if (!value || typeof value !== "object") {
-    throw new Error("Invalid wallpaper settings");
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { settings: { ...DEFAULT_WALLPAPER_SETTINGS }, repaired: true };
   }
-  const settings = value;
-  if (typeof settings.enabled !== "boolean" || !isOneOf(settings.intervalMinutes, WALLPAPER_INTERVAL_OPTIONS) || !isOneOf(settings.imageCount, WALLPAPER_IMAGE_COUNT_OPTIONS) || !(settings.targetDisplayIds === null || Array.isArray(settings.targetDisplayIds) && settings.targetDisplayIds.every(
+  const raw = value;
+  const hasValidEnabled = typeof raw.enabled === "boolean";
+  const enabled = hasValidEnabled ? raw.enabled : DEFAULT_WALLPAPER_SETTINGS.enabled;
+  const hasValidInterval = isOneOf(
+    raw.intervalMinutes,
+    WALLPAPER_INTERVAL_OPTIONS
+  );
+  const hasValidImageCount = isOneOf(
+    raw.imageCount,
+    WALLPAPER_IMAGE_COUNT_OPTIONS
+  );
+  const hasValidTargets = (raw.targetDisplayIds === null || Array.isArray(raw.targetDisplayIds) && raw.targetDisplayIds.every(
     (id) => typeof id === "string" && id.length > 0
-  )) || settings.enabled === true && Array.isArray(settings.targetDisplayIds) && settings.targetDisplayIds.length === 0) {
+  )) && !(enabled && Array.isArray(raw.targetDisplayIds) && raw.targetDisplayIds.length === 0);
+  return {
+    settings: {
+      enabled,
+      intervalMinutes: hasValidInterval ? raw.intervalMinutes : DEFAULT_WALLPAPER_SETTINGS.intervalMinutes,
+      imageCount: hasValidImageCount ? raw.imageCount : getNearestImageCount(raw.imageCount),
+      targetDisplayIds: hasValidTargets ? raw.targetDisplayIds === null ? null : [...new Set(raw.targetDisplayIds)] : null
+    },
+    repaired: !hasValidEnabled || !hasValidInterval || !hasValidImageCount || !hasValidTargets
+  };
+};
+var parseWallpaperSettings = (value) => {
+  const normalized = normalizePersistedWallpaperSettings(value);
+  if (normalized.repaired) {
     throw new Error("Invalid wallpaper settings");
   }
-  return {
-    enabled: settings.enabled,
-    intervalMinutes: settings.intervalMinutes,
-    imageCount: settings.imageCount,
-    targetDisplayIds: settings.targetDisplayIds === null ? null : [...new Set(settings.targetDisplayIds)]
-  };
+  return normalized.settings;
 };
 
 // backend/routes/wallpaper.ts
@@ -5935,12 +5961,40 @@ var WallpaperService = class {
   async start() {
     await this.refreshDisplays();
     const persisted = await this.deps.readSettings();
-    this.settings = parseWallpaperSettings(persisted[SETTINGS_KEY]);
-    this.originalWallpapers = parseOriginalWallpapers(
-      persisted[ORIGINAL_WALLPAPERS_KEY]
+    const repairPatch = {};
+    let lastUpdatedAt = null;
+    const normalizedSettings = normalizePersistedWallpaperSettings(
+      persisted[SETTINGS_KEY]
     );
-    const lastUpdatedAt = parseLastUpdatedAt(persisted[LAST_UPDATED_AT_KEY]);
+    this.settings = normalizedSettings.settings;
+    if (normalizedSettings.repaired) {
+      console.warn("[wallpaper] repaired persisted wallpaper settings");
+      repairPatch[SETTINGS_KEY] = this.settings;
+    }
+    try {
+      this.originalWallpapers = parseOriginalWallpapers(
+        persisted[ORIGINAL_WALLPAPERS_KEY]
+      );
+    } catch (error) {
+      console.error("[wallpaper] repaired invalid original wallpapers", error);
+      this.originalWallpapers = {};
+      repairPatch[ORIGINAL_WALLPAPERS_KEY] = this.originalWallpapers;
+    }
+    try {
+      lastUpdatedAt = parseLastUpdatedAt(persisted[LAST_UPDATED_AT_KEY]);
+    } catch (error) {
+      console.error("[wallpaper] repaired invalid update time", error);
+      repairPatch[LAST_UPDATED_AT_KEY] = null;
+    }
     this.patchState({ settings: { ...this.settings }, lastUpdatedAt });
+    if (Object.keys(repairPatch).length > 0) {
+      try {
+        await this.deps.patchSettings(repairPatch);
+      } catch (error) {
+        console.error("[wallpaper] failed to persist repaired settings", error);
+        this.patchState({ errorCode: "request-failed" });
+      }
+    }
     try {
       await this.cleanupTemporaryFiles();
     } catch (error) {
@@ -6386,7 +6440,10 @@ function getLoginItemTarget() {
 }
 function isLaunchAtLoginEnabled() {
   const settings = import_electron4.app.getLoginItemSettings(getLoginItemTarget());
-  return settings.openAtLogin && (process.platform !== "win32" || settings.enabled);
+  if (process.platform === "win32") {
+    return settings.openAtLogin && settings.executableWillLaunchAtLogin;
+  }
+  return settings.openAtLogin;
 }
 function setLaunchAtLogin(enabled) {
   if (process.platform !== "win32" && process.platform !== "darwin") {
