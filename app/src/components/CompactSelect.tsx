@@ -156,6 +156,9 @@ export const CompactSelect = <T extends string | number>({
             aria-label={ariaLabel}
             className="fixed z-[100] max-h-52 overflow-y-auto rounded-xl border border-white/10 bg-neutral-950 p-1 shadow-[0_14px_36px_rgba(0,0,0,0.55)]"
             style={menuPosition}
+            // 菜单通过 Portal 挂在 body，阻止外层弹窗将菜单交互误判为外部点击。
+            onMouseDown={(event) => event.stopPropagation()}
+            onTouchStart={(event) => event.stopPropagation()}
           >
             {options.map((option) => {
               const selected = option.value === value;
