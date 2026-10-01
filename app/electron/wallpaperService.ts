@@ -29,6 +29,8 @@ const GENERATED_FILE_PREFIX = "picaptain-wallpaper-";
 const GENERATED_FILE_PATTERN = /^picaptain-wallpaper-\d+\.jpg$/;
 const GENERATED_TEMP_PATTERN = /^picaptain-wallpaper-\d+\.tmp\.jpg$/;
 const DISPLAY_CHANGE_DEBOUNCE_MS = 800;
+const DISPLAY_ENUMERATION_RETRY_DELAYS_MS = [0, 300, 900] as const;
+const DISPLAY_RECOVERY_DELAYS_MS = [2_000, 5_000, 15_000] as const;
 const DEFAULT_IMAGE_SCALE = 0.5;
 const MAX_DISPLAY_IMAGE_RATIO = 1;
 const DENSITY_SCALE_BY_IMAGE_COUNT: Record<WallpaperImageCount, number> = {
@@ -168,17 +170,20 @@ const getWindowsApiScript = (body: string): string =>
     body,
   ].join("\n");
 
-const listWindowsDisplays = async (): Promise<WallpaperDisplay[]> => {
+const wait = (delayMs: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, delayMs));
+
+const queryWindowsDisplays = async (): Promise<WallpaperDisplay[]> => {
   const script = getWindowsApiScript(
     "[PiCaptain.DesktopWallpaperApi]::GetDisplays() | ConvertTo-Json -Compress",
   );
   const { stdout } = await execFileAsync(
     "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-Command", script],
+    ["-NoProfile", "-NonInteractive", "-STA", "-Command", script],
     { windowsHide: true, maxBuffer: 1024 * 1024 },
   );
   const raw = stdout.trim();
-  if (!raw) return [];
+  if (!raw) throw new Error("Windows did not return any wallpaper displays");
 
   const parsed = JSON.parse(raw) as WindowsDisplayRecord | WindowsDisplayRecord[];
   const records = Array.isArray(parsed) ? parsed : [parsed];
@@ -190,6 +195,19 @@ const listWindowsDisplays = async (): Promise<WallpaperDisplay[]> => {
     height: display.Height,
     isPrimary: display.Left === 0 && display.Top === 0,
   }));
+};
+
+const listWindowsDisplays = async (): Promise<WallpaperDisplay[]> => {
+  let lastError: unknown;
+  for (const delayMs of DISPLAY_ENUMERATION_RETRY_DELAYS_MS) {
+    if (delayMs > 0) await wait(delayMs);
+    try {
+      return await queryWindowsDisplays();
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
 };
 
 const listMacDisplays = (
@@ -226,7 +244,7 @@ const applyWindowsWallpaper = async (
   );
   await execFileAsync(
     "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-Command", script],
+    ["-NoProfile", "-NonInteractive", "-STA", "-Command", script],
     { windowsHide: true },
   );
 };
@@ -237,7 +255,7 @@ const getWindowsWallpaper = async (displayId: string): Promise<string | null> =>
   );
   const { stdout } = await execFileAsync(
     "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-Command", script],
+    ["-NoProfile", "-NonInteractive", "-STA", "-Command", script],
     { windowsHide: true },
   );
   const raw = stdout.trim();
@@ -614,6 +632,8 @@ export class WallpaperService {
   private originalWallpapers: OriginalWallpapers = {};
   private timer: NodeJS.Timeout | null = null;
   private displayChangeTimer: NodeJS.Timeout | null = null;
+  private displayRecoveryTimer: NodeJS.Timeout | null = null;
+  private displayRecoveryAttempt = 0;
   private updateTask: Promise<WallpaperState> | null = null;
   private settingsUpdateTail: Promise<void> = Promise.resolve();
   private state: WallpaperState = {
@@ -689,6 +709,7 @@ export class WallpaperService {
 
   stop(): void {
     this.clearTimer();
+    this.clearDisplayRecovery();
     if (this.displayChangeTimer) {
       clearTimeout(this.displayChangeTimer);
       this.displayChangeTimer = null;
@@ -709,14 +730,19 @@ export class WallpaperService {
     };
   }
 
-  async refreshDisplays(): Promise<void> {
-    if (!this.state.supported) return;
+  async refreshDisplays(): Promise<boolean> {
+    if (!this.state.supported) return false;
     try {
       const displays = await listSystemDisplays(this.deps);
+      this.clearDisplayRecovery();
       this.patchState({ displays, errorCode: null });
+      return true;
     } catch (error) {
       console.error("[wallpaper] failed to enumerate displays", error);
-      this.patchState({ displays: [], errorCode: "display-unavailable" });
+      // COM 枚举偶发失败不代表显示器消失，保留最后一次有效结果等待恢复。
+      this.patchState({ errorCode: "display-unavailable" });
+      this.scheduleDisplayRecovery();
+      return false;
     }
   }
 
@@ -725,7 +751,9 @@ export class WallpaperService {
     this.displayChangeTimer = setTimeout(() => {
       this.displayChangeTimer = null;
       void (async () => {
-        await this.refreshDisplays();
+        this.clearDisplayRecovery();
+        const displaysAvailable = await this.refreshDisplays();
+        if (!displaysAvailable) return;
         if (this.updateTask) await this.updateTask;
         const restoreError = await this.restoreUnmanagedDisplays();
         if (!this.settings.enabled) {
@@ -736,6 +764,35 @@ export class WallpaperService {
         if (restoreError) this.patchState({ errorCode: restoreError });
       })();
     }, DISPLAY_CHANGE_DEBOUNCE_MS);
+  }
+
+  private scheduleDisplayRecovery(): void {
+    if (
+      this.displayRecoveryTimer ||
+      this.displayRecoveryAttempt >= DISPLAY_RECOVERY_DELAYS_MS.length
+    ) {
+      return;
+    }
+
+    const delayMs = DISPLAY_RECOVERY_DELAYS_MS[this.displayRecoveryAttempt];
+    this.displayRecoveryAttempt += 1;
+    this.displayRecoveryTimer = setTimeout(() => {
+      this.displayRecoveryTimer = null;
+      void (async () => {
+        const recovered = await this.refreshDisplays();
+        if (recovered && this.settings.enabled && this.isUpdateDue()) {
+          await this.refresh();
+        }
+      })();
+    }, delayMs);
+  }
+
+  private clearDisplayRecovery(): void {
+    if (this.displayRecoveryTimer) {
+      clearTimeout(this.displayRecoveryTimer);
+      this.displayRecoveryTimer = null;
+    }
+    this.displayRecoveryAttempt = 0;
   }
 
   async updateSettings(settings: WallpaperSettings): Promise<WallpaperState> {

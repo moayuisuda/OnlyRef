@@ -19,7 +19,7 @@ export const ToggleSwitch: React.FC<ToggleSwitchProps> = ({
       onClick={onToggle}
       disabled={disabled}
       className={clsx(
-        'w-8 h-4 rounded-full relative transition-colors duration-200 bg-neutral-700 disabled:opacity-60',
+        'relative h-4 w-8 shrink-0 rounded-full bg-neutral-700 transition-colors duration-200 disabled:opacity-60',
       )}
       style={{
         backgroundColor: checked ? THEME.primary : undefined,
