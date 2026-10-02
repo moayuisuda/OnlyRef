@@ -499,8 +499,8 @@ const renderMosaicRoot = (
   appendMosaicTiles(
     root,
     {
-      // 从左上角铺满屏幕，只在右侧或底部边界截断溢出内容。
-      left: 0,
+      // 从右上角铺满屏幕，只在左侧或底部边界截断溢出内容。
+      left: display.width - rootWidth,
       top: 0,
       width: rootWidth,
       height: rootHeight,
