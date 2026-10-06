@@ -3,7 +3,7 @@ import { THEME } from "../theme";
 import {
   AUTO_TAG_THRESHOLD_DEFAULT,
   normalizeAutoTagThreshold,
-} from "../../shared/clipAutoTag";
+} from "../../shared/vectorAutoTag";
 import {
   getSettingsSnapshot,
   readSetting,

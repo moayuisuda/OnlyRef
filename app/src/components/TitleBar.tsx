@@ -16,7 +16,7 @@ import {
   AUTO_TAG_THRESHOLD_MAX,
   AUTO_TAG_THRESHOLD_MIN,
   AUTO_TAG_THRESHOLD_STEP,
-} from "../../shared/clipAutoTag";
+} from "../../shared/vectorAutoTag";
 import {
   globalActions,
   globalState,
@@ -397,8 +397,21 @@ export const TitleBar: React.FC = () => {
     versionSnap.updateStatus === "downloading";
 
   return (
-    <div className="draggable relative z-30 border-b border-white/6">
-      <div className="relative flex h-9 items-center gap-3 bg-neutral-950/92 px-3 backdrop-blur-xl">
+    <div className="relative z-30 border-b border-white/6">
+      <div
+        className={clsx(
+          "relative flex h-9 items-center gap-3 bg-neutral-950/92 px-3 backdrop-blur-xl",
+          settingsOpen ? "no-drag" : "draggable",
+        )}
+        onMouseDown={(event) => {
+          if (
+            settingsOpen &&
+            !(event.target as Element).closest("[data-titlebar-controls]")
+          ) {
+            setSettingsOpen(false);
+          }
+        }}
+      >
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <div className="flex items-center gap-2">
             <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[radial-gradient(circle_at_35%_30%,rgba(57,197,187,0.24),rgba(57,197,187,0.08)_62%,rgba(57,197,187,0)_100%)] text-[var(--color-primary)] shadow-[0_0_18px_rgba(57,197,187,0.18)]">
@@ -422,7 +435,7 @@ export const TitleBar: React.FC = () => {
           </div>
         </div>
 
-        <div className="no-drag flex items-center gap-1">
+        <div data-titlebar-controls className="no-drag flex items-center gap-1">
           <button
             type="button"
             className={clsx(

@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from "uuid";
 import type { ImageDb, ImageMeta, StorageIncompatibleError } from "../db";
 import type { SendToRenderer } from "../server";
 import type { I18nKey, I18nParams } from "../../shared/i18n/types";
-import { normalizeAutoTagThreshold } from "../../shared/clipAutoTag";
+import { normalizeAutoTagThreshold } from "../../shared/vectorAutoTag";
 import { MAX_CLIPBOARD_SEARCH_IMAGE_BYTES } from "../../shared/vectorSearch";
 import fs from "fs-extra";
 import { lockedFs, withFileLock, withFileLocks } from "../fileLock";

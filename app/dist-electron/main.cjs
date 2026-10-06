@@ -758,10 +758,10 @@ var import_electron = require("electron");
 var import_url = require("url");
 var import_uuid = require("uuid");
 
-// shared/clipAutoTag.ts
-var AUTO_TAG_THRESHOLD_DEFAULT = 0.24;
-var AUTO_TAG_THRESHOLD_MIN = 0.1;
-var AUTO_TAG_THRESHOLD_MAX = 0.5;
+// shared/vectorAutoTag.ts
+var AUTO_TAG_THRESHOLD_DEFAULT = 0.09;
+var AUTO_TAG_THRESHOLD_MIN = 0.05;
+var AUTO_TAG_THRESHOLD_MAX = 0.3;
 var AUTO_TAG_THRESHOLD_STEP = 0.01;
 var roundToStep = (value) => {
   const rounded = Math.round(value / AUTO_TAG_THRESHOLD_STEP) * AUTO_TAG_THRESHOLD_STEP;

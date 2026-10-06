@@ -9,6 +9,9 @@ import type { I18nKey } from "../../../shared/i18n/types";
 
 const POPOVER_WIDTH = 248;
 const POPOVER_HEIGHT = 210;
+const ACTION_ITEM_CLASS =
+  "flex min-h-8 cursor-pointer items-center gap-2 px-3 py-1.5 text-xs transition-colors";
+const ACTION_DIVIDER_CLASS = "border-t border-neutral-800";
 
 const TONE_GRADIENTS: Record<string, string> = {
   "high-short": "linear-gradient(135deg, #ffffff 0%, #dddddd 100%)",
@@ -154,44 +157,6 @@ export const GalleryContextMenu: React.FC<GalleryContextMenuProps> = ({
       ref={containerRef}
       onClick={(e) => e.stopPropagation()}
     >
-      <div className="px-4 py-2">
-        <div className="text-xs text-neutral-400 mb-1">{t("gallery.contextMenu.nameLabel")}</div>
-        <input
-          className="w-full bg-black/50 border border-neutral-700 rounded px-2 py-1.5 text-white text-xs outline-none focus:border-[var(--brand-color)] focus:ring-1 focus:ring-[var(--brand-color-transparent)] transition-colors"
-          style={
-            {
-              "--brand-color": THEME.primary,
-              "--brand-color-transparent": hexToRgba(THEME.primary, 0.5),
-            } as React.CSSProperties
-          }
-          value={menuName}
-          onChange={(e) => {
-            const next = e.target.value;
-            setMenuName(next);
-            debouncedUpdateName(next);
-          }}
-          onBlur={() => {
-            debouncedUpdateName.cancel();
-            const trimmed = menuName.trim();
-            if (!trimmed) {
-              setMenuName(deriveNameFromFilename(image.filename));
-              return;
-            }
-            if (trimmed !== deriveNameFromFilename(image.filename)) {
-              onUpdateName(trimmed);
-            }
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              (e.currentTarget as HTMLInputElement).blur();
-            }
-          }}
-          placeholder={t("gallery.contextMenu.imageNamePlaceholder")}
-        />
-      </div>
-
-      <div className="border-t border-neutral-800 my-1"></div>
-
       {image.pageUrl && (
         <>
           <div className="flex justify-between">
@@ -229,7 +194,6 @@ export const GalleryContextMenu: React.FC<GalleryContextMenuProps> = ({
       )}
 
       <div className="px-4 py-2">
-        <div className="text-xs text-neutral-400 mb-1">{t("gallery.contextMenu.tagsLabel")}</div>
         <div className="relative">
           <div
             className={`flex flex-wrap items-center gap-1.5 px-2 py-1.5 bg-black/50 border rounded transition-colors cursor-text border-neutral-700`}
@@ -252,6 +216,7 @@ export const GalleryContextMenu: React.FC<GalleryContextMenuProps> = ({
             ))}
             <input
               ref={menuInputRef}
+              aria-label={t("gallery.contextMenu.tagsLabel")}
               className="flex-1 bg-transparent text-white text-xs outline-none min-w-[60px] placeholder-neutral-600"
               placeholder={
                 ensureTags(image.tags).length === 0
@@ -348,54 +313,92 @@ export const GalleryContextMenu: React.FC<GalleryContextMenuProps> = ({
         </div>
       </div>
 
-      <div className="border-t border-neutral-800 my-1"></div>
+      <div className={ACTION_DIVIDER_CLASS}></div>
 
       <div
-        className="flex items-center gap-2 px-4 py-2 text-white hover:bg-neutral-800 cursor-pointer transition-colors"
+        className={`${ACTION_ITEM_CLASS} text-white hover:bg-neutral-800`}
         onClick={onCopyImage}
       >
-        <Copy size={14} />
+        <Copy size={13} />
         <span>{t("gallery.contextMenu.copyImage")}</span>
       </div>
 
-      <div className="border-t border-neutral-800 my-1"></div>
+      <div className={ACTION_DIVIDER_CLASS}></div>
 
       <div
-        className="flex items-center gap-2 px-4 py-2 text-white hover:bg-neutral-800 cursor-pointer transition-colors"
+        className={`${ACTION_ITEM_CLASS} text-white hover:bg-neutral-800`}
         onClick={onOpenFile}
       >
-        <FolderOpen size={14} />
+        <FolderOpen size={13} />
         <span>{t("gallery.contextMenu.showInFolder")}</span>
       </div>
 
-      <div className="border-t border-neutral-800 my-1"></div>
+      <div className={ACTION_DIVIDER_CLASS}></div>
 
       <div
-        className="flex items-center gap-2 px-4 py-2 text-white hover:bg-neutral-800 cursor-pointer transition-colors"
+        className={`${ACTION_ITEM_CLASS} text-white hover:bg-neutral-800`}
         onClick={onSearchByImage}
       >
-        <ImageMenuIcon size={14} />
+        <ImageMenuIcon size={13} />
         <span>{t("gallery.contextMenu.searchByImage")}</span>
       </div>
 
-      <div className="border-t border-neutral-800 my-1"></div>
+      <div className={ACTION_DIVIDER_CLASS}></div>
 
       {enableVectorSearch && !image.hasVector && (
         <div
-          className="flex items-center gap-2 px-4 py-2 text-white hover:bg-neutral-800 cursor-pointer transition-colors"
+          className={`${ACTION_ITEM_CLASS} text-white hover:bg-neutral-800`}
           onClick={onReindex}
         >
-          <RefreshCw size={14} />
+          <RefreshCw size={13} />
           <span>{t("gallery.contextMenu.indexVector")}</span>
         </div>
       )}
 
       <div
-        className="flex items-center gap-2 px-4 py-2 text-red-400 hover:bg-red-900/10 cursor-pointer transition-colors"
+        className={`${ACTION_ITEM_CLASS} text-red-400 hover:bg-red-900/10`}
         onClick={onDelete}
       >
-        <Trash2 size={14} />
+        <Trash2 size={13} />
         <span>{t("gallery.contextMenu.deleteImage")}</span>
+      </div>
+
+      <div className="border-t border-neutral-800 my-1"></div>
+
+      <div className="px-4 py-2">
+        <input
+          aria-label={t("gallery.contextMenu.nameLabel")}
+          className="w-full bg-black/50 border border-neutral-700 rounded px-2 py-1.5 text-white text-xs outline-none focus:border-[var(--brand-color)] focus:ring-1 focus:ring-[var(--brand-color-transparent)] transition-colors"
+          style={
+            {
+              "--brand-color": THEME.primary,
+              "--brand-color-transparent": hexToRgba(THEME.primary, 0.5),
+            } as React.CSSProperties
+          }
+          value={menuName}
+          onChange={(e) => {
+            const next = e.target.value;
+            setMenuName(next);
+            debouncedUpdateName(next);
+          }}
+          onBlur={() => {
+            debouncedUpdateName.cancel();
+            const trimmed = menuName.trim();
+            if (!trimmed) {
+              setMenuName(deriveNameFromFilename(image.filename));
+              return;
+            }
+            if (trimmed !== deriveNameFromFilename(image.filename)) {
+              onUpdateName(trimmed);
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              (e.currentTarget as HTMLInputElement).blur();
+            }
+          }}
+          placeholder={t("gallery.contextMenu.imageNamePlaceholder")}
+        />
       </div>
     </div>
   );
