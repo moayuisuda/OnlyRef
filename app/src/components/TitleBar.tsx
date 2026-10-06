@@ -25,7 +25,7 @@ import {
 } from "../store/globalStore";
 import { actions as galleryActions, state as galleryState } from "../store/galleryStore";
 import { versionActions, versionState } from "../store/versionStore";
-import { indexImages, runAutoTagAll } from "../service";
+import { clearImageIndex, indexImages, runAutoTagAll } from "../service";
 import { useClickOutside } from "../hooks/useClickOutside";
 import { ShortcutInput } from "./ShortcutInput";
 import { BrandWheelIcon } from "./BrandWheelIcon";
@@ -75,6 +75,7 @@ export const TitleBar: React.FC = () => {
   const [storageDir, setStorageDir] = useState("");
   const [loadingStorageDir, setLoadingStorageDir] = useState(false);
   const [isIndexing, setIsIndexing] = useState(false);
+  const [isClearingIndex, setIsClearingIndex] = useState(false);
   const [isAutoTaggingAll, setIsAutoTaggingAll] = useState(false);
   const indexingResetTimerRef = useRef<number | null>(null);
 
@@ -217,6 +218,34 @@ export const TitleBar: React.FC = () => {
     }
   };
 
+  const handleClearImageIndex = async () => {
+    setIsClearingIndex(true);
+    try {
+      const data = await clearImageIndex<{
+        success?: boolean;
+        cleared?: number;
+      }>();
+      if (!data?.success) {
+        globalActions.pushToast({ key: "toast.clearIndexFailed" }, "error");
+        return;
+      }
+
+      galleryActions.reload();
+      globalActions.pushToast(
+        {
+          key: "toast.indexCleared",
+          params: { count: data.cleared ?? 0 },
+        },
+        "success",
+      );
+    } catch (error) {
+      console.error(error);
+      globalActions.pushToast({ key: "toast.clearIndexFailed" }, "error");
+    } finally {
+      setIsClearingIndex(false);
+    }
+  };
+
   const handleAutoTagAll = async () => {
     if (indexingResetTimerRef.current !== null) {
       window.clearTimeout(indexingResetTimerRef.current);
@@ -294,7 +323,7 @@ export const TitleBar: React.FC = () => {
       ? t(indexingSnap.statusKey, indexingSnap.statusParams)
       : null;
   const isLibraryJobRunning =
-    isIndexing || isAutoTaggingAll || indexingSnap.isIndexing;
+    isIndexing || isClearingIndex || isAutoTaggingAll || indexingSnap.isIndexing;
 
   const imageCount = gallerySnap.images.length;
   const imageCountLabel = t(
@@ -744,20 +773,26 @@ export const TitleBar: React.FC = () => {
                       {statusMeta.title}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
-                    onClick={handleIndexMissingImages}
-                    disabled={isLibraryJobRunning}
-                  >
-                    <span
-                      className={clsx(
-                        "inline-block h-1.5 w-1.5 rounded-full bg-current",
-                        isLibraryJobRunning && "animate-pulse",
-                      )}
-                    />
-                    {isLibraryJobRunning ? t("settings.running") : t("settings.run")}
-                  </button>
+                  <div className="shrink-0 flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="inline-flex items-center rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
+                      onClick={handleIndexMissingImages}
+                      disabled={isLibraryJobRunning}
+                    >
+                      {isIndexing ? t("settings.indexingRunning") : t("settings.index")}
+                    </button>
+                    <button
+                      type="button"
+                      className="inline-flex items-center rounded-lg border border-red-400/20 bg-red-400/[0.05] px-2.5 py-1.5 text-xs text-red-300 transition-colors hover:bg-red-400/[0.1] disabled:cursor-not-allowed disabled:opacity-60"
+                      onClick={() => {
+                        void handleClearImageIndex();
+                      }}
+                      disabled={isLibraryJobRunning}
+                    >
+                      {isClearingIndex ? t("settings.clearing") : t("settings.clear")}
+                    </button>
+                  </div>
                 </div>
 
                 {indexingSnap.isIndexing && (

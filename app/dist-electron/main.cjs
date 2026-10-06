@@ -437,6 +437,11 @@ var createImageDb = (db) => {
     tx();
     return normalizedItems.map((item) => item.rowid);
   };
+  const clearImageVectors = () => {
+    const row = db.prepare(`SELECT COUNT(*) AS count FROM images_vec`).get();
+    db.prepare(`DELETE FROM images_vec`).run();
+    return row.count;
+  };
   const getImageVector = (rowid) => {
     const normalizedRowid = Number(rowid);
     if (!Number.isFinite(normalizedRowid) || !Number.isInteger(normalizedRowid)) {
@@ -687,6 +692,7 @@ var createImageDb = (db) => {
     setImageTags,
     setImageVector,
     setImageVectors,
+    clearImageVectors,
     getImageVector,
     getImageRowById,
     getImageRowidById,
@@ -2358,6 +2364,16 @@ var createImagesRouter = (deps) => {
         return;
       }
       res.status(400).json({ error: "Invalid request" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    }
+  });
+  router.delete("/api/index", (req, res) => {
+    try {
+      if (guardStorage(res)) return;
+      const cleared = deps.getImageDb().clearImageVectors();
+      res.json({ success: true, cleared });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       res.status(500).json({ error: message });
@@ -5202,6 +5218,8 @@ var en = {
   "toast.deleteCanvasFailed": "Failed to delete canvas",
   "toast.vectorIndexed": "Vector indexed",
   "toast.vectorIndexFailed": "Failed to index vector",
+  "toast.indexCleared": "Cleared {{count}} vector entries",
+  "toast.clearIndexFailed": "Failed to clear the semantic search index",
   "toast.autoTagAllCompleted": "Auto-tag completed: {{tagged}} matched, {{total}} scanned",
   "toast.autoTagAllFailed": "Failed to run auto-tag for all images",
   "toast.vectorWarmupPolicyUpdateFailed": "Failed to update the engine warm-up setting",
@@ -5388,6 +5406,10 @@ var en = {
   "settings.queryTranslation.desc": "LLM-assisted query rewrite",
   "settings.indexing": "Semantic Search Index",
   "settings.toggleWindowShortcut": "Toggle window shortcut",
+  "settings.index": "Index",
+  "settings.indexingRunning": "Indexing",
+  "settings.clear": "Clear",
+  "settings.clearing": "Clearing",
   "settings.run": "Run",
   "settings.running": "Running",
   "settings.imageCount.one": "{{count}} image",
@@ -5508,6 +5530,8 @@ var zh = {
   "toast.deleteCanvasFailed": "\u5220\u9664\u753B\u5E03\u5931\u8D25",
   "toast.vectorIndexed": "\u5411\u91CF\u5DF2\u5165\u5E93",
   "toast.vectorIndexFailed": "\u5411\u91CF\u5165\u5E93\u5931\u8D25",
+  "toast.indexCleared": "\u5DF2\u6E05\u7A7A {{count}} \u6761\u5411\u91CF\u7D22\u5F15",
+  "toast.clearIndexFailed": "\u6E05\u7A7A\u8BED\u4E49\u641C\u7D22\u7D22\u5F15\u5931\u8D25",
   "toast.openFileFailed": "\u6253\u5F00\u6587\u4EF6\u5931\u8D25",
   "toast.shortcutInvalid": "\u5FEB\u6377\u952E\u65E0\u6548",
   "toast.shortcutUpdateFailed": "\u66F4\u65B0\u5FEB\u6377\u952E\u5931\u8D25\uFF1A{{error}}",
@@ -5661,6 +5685,10 @@ var zh = {
   "settings.queryTranslation.desc": "LLM \u8F85\u52A9\u7684\u67E5\u8BE2\u6539\u5199",
   "settings.indexing": "\u8BED\u4E49\u641C\u7D22\u7D22\u5F15",
   "settings.toggleWindowShortcut": "\u5207\u6362\u7A97\u53E3\u5FEB\u6377\u952E",
+  "settings.index": "\u7D22\u5F15",
+  "settings.indexingRunning": "\u7D22\u5F15\u4E2D",
+  "settings.clear": "\u6E05\u7A7A",
+  "settings.clearing": "\u6E05\u7A7A\u4E2D",
   "settings.run": "\u8FD0\u884C",
   "settings.running": "\u8FD0\u884C\u4E2D",
   "settings.imageCount.one": "{{count}} \u5F20\u56FE\u7247",

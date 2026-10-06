@@ -99,6 +99,7 @@ export type ImageDb = {
   setImageTags: (id: string, tags: string[]) => void;
   setImageVector: (rowid: number, vector: number[]) => void;
   setImageVectors: (items: { rowid: number; vector: number[] }[]) => number[];
+  clearImageVectors: () => number;
   getImageVector: (rowid: number) => number[] | null;
   getImageRowById: (id: string) => ImageRow | null;
   getImageRowidById: (id: string) => number | null;
@@ -549,6 +550,14 @@ const createImageDb = (db: Database.Database): ImageDb => {
     return normalizedItems.map((item) => item.rowid);
   };
 
+  const clearImageVectors = (): number => {
+    const row = db.prepare(`SELECT COUNT(*) AS count FROM images_vec`).get() as {
+      count: number;
+    };
+    db.prepare(`DELETE FROM images_vec`).run();
+    return row.count;
+  };
+
   const getImageVector = (rowid: number): number[] | null => {
     const normalizedRowid = Number(rowid);
     if (!Number.isFinite(normalizedRowid) || !Number.isInteger(normalizedRowid)) {
@@ -862,6 +871,7 @@ const createImageDb = (db: Database.Database): ImageDb => {
     setImageTags,
     setImageVector,
     setImageVectors,
+    clearImageVectors,
     getImageVector,
     getImageRowById,
     getImageRowidById,

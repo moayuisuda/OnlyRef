@@ -2032,6 +2032,17 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
     }
   });
 
+  router.delete("/api/index", (req, res) => {
+    try {
+      if (guardStorage(res)) return;
+      const cleared = deps.getImageDb().clearImageVectors();
+      res.json({ success: true, cleared });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    }
+  });
+
   router.post("/api/open-in-folder", async (req, res) => {
     try {
       const imageDb = deps.getImageDb();

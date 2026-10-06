@@ -426,6 +426,9 @@ export async function indexImages<T = unknown>(payload: {
   return (await res.json()) as T;
 }
 
+export const clearImageIndex = <T = unknown>(): Promise<T> =>
+  localApi<T>("/api/index", undefined, { method: "DELETE" });
+
 export async function runAutoTagAll<T = unknown>(): Promise<T> {
   return indexImages<T>({
     mode: "auto-tag-all",
