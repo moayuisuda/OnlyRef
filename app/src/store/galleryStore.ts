@@ -569,20 +569,18 @@ export const actions = {
             } else {
               vectorCursor = null;
             }
-            if (vectorData.items.length > 0) {
-              const items = vectorData.items.map((i) => ({
-                ...i,
-                isVectorResult: true,
-              }));
-              if (vectorSearchByImage) {
-                if (isReload) {
-                  actions.setImages(items);
-                } else {
-                  actions.appendImages(items);
-                }
+            const items = vectorData.items.map((i) => ({
+              ...i,
+              isVectorResult: true,
+            }));
+            if (vectorSearchByImage) {
+              if (isReload) {
+                actions.setImages(items);
               } else {
-                actions.mergeImages(items);
+                actions.appendImages(items);
               }
+            } else {
+              actions.mergeImages(items);
             }
             if (isActive()) {
               state.hasMore = vectorSearchByImage

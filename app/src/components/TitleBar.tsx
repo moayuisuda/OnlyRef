@@ -397,8 +397,8 @@ export const TitleBar: React.FC = () => {
     versionSnap.updateStatus === "downloading";
 
   return (
-    <div className="draggable relative z-30 border-b border-white/6 bg-neutral-950/92 backdrop-blur-xl">
-      <div className="relative flex h-9 items-center gap-3 px-3">
+    <div className="draggable relative z-30 border-b border-white/6">
+      <div className="relative flex h-9 items-center gap-3 bg-neutral-950/92 px-3 backdrop-blur-xl">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <div className="flex items-center gap-2">
             <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[radial-gradient(circle_at_35%_30%,rgba(57,197,187,0.24),rgba(57,197,187,0.08)_62%,rgba(57,197,187,0)_100%)] text-[var(--color-primary)] shadow-[0_0_18px_rgba(57,197,187,0.18)]">
@@ -486,7 +486,7 @@ export const TitleBar: React.FC = () => {
       {settingsOpen && (
         <div
           ref={settingsPanelRef}
-          className="no-drag absolute right-3 top-[calc(100%+0.5rem)] z-40 max-h-[calc(100vh-56px)] w-[360px] overflow-y-auto rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(20,20,20,0.70),rgba(10,10,10,0.70))] p-3 shadow-[0_20px_50px_rgba(0,0,0,0.45)] backdrop-blur-xl"
+          className="no-drag absolute right-3 top-[calc(100%+0.5rem)] z-40 max-h-[calc(100vh-56px)] w-[360px] overflow-y-auto rounded-2xl border border-white/10 bg-neutral-950 p-3 shadow-[0_20px_50px_rgba(0,0,0,0.45)]"
         >
           <div className="mb-2 flex items-center justify-between">
             <div className="text-sm font-semibold text-white">{t("titleBar.settings")}</div>
@@ -505,7 +505,7 @@ export const TitleBar: React.FC = () => {
                       {loadingStorageDir ? t("common.loading") : storageDir || t("common.unavailable")}
                     </div>
                   </div>
-                  <div className="flex shrink-0 flex-col gap-2">
+                  <div className="flex shrink-0 items-center gap-2">
                     <button
                       type="button"
                       className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08]"

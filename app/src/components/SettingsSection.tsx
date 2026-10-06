@@ -16,7 +16,7 @@ export const SettingsSection = ({
           {title}
         </h3>
       )}
-      <div className="divide-y divide-white/6 overflow-hidden rounded-xl border border-white/8 bg-neutral-950/90">
+      <div className="divide-y divide-white/6 overflow-hidden rounded-xl border border-white/8 bg-neutral-800">
         {children}
       </div>
     </section>

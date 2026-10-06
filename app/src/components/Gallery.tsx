@@ -176,7 +176,15 @@ export const Gallery: React.FC = () => {
     y: number;
     draft: string;
   } | null>(null);
-  const hasInitializedLimitReloadRef = useRef(false);
+  const searchReloadKey = JSON.stringify([
+    snap.searchQuery,
+    snap.searchImage,
+    snap.searchTags,
+    snap.searchColor,
+    snap.searchTone,
+    appSnap.enableVectorSearch,
+  ]);
+  const reloadPendingRef = useRef(true);
 
   // Dynamic Columns
   const galleryRef = useRef<HTMLDivElement>(null);
@@ -237,48 +245,16 @@ export const Gallery: React.FC = () => {
     return () => observer.disconnect();
   }, []);
 
-  const loadImages = useCallback((isReload: boolean, currentLimit: number) => {
-    void actions.loadImages(isReload, currentLimit);
-  }, []);
-
-  const debouncedReload = useMemo(
-    () =>
-      debounce({ delay: 400 }, (nextLimit: number) => {
-        actions.resetSearchResults();
-        void loadImages(true, nextLimit);
-      }),
-    [loadImages],
-  );
-
-  const debouncedLimitReload = useMemo(
-    () =>
-      debounce({ delay: 400 }, (nextLimit: number) => {
-        void loadImages(true, nextLimit);
-      }),
-    [loadImages],
-  );
-
-  // 搜索条件变化时，清空旧结果并重新请求。
+  // 所有影响搜索结果的参数共用一个防抖计时器。
   useEffect(() => {
-    debouncedReload(galleryState.limit);
-  }, [
-    snap.searchQuery,
-    snap.searchImage,
-    snap.searchTags,
-    snap.searchColor,
-    snap.searchTone,
-    appSnap.enableVectorSearch,
-    debouncedReload,
-  ]);
+    reloadPendingRef.current = true;
+    const timer = window.setTimeout(() => {
+      reloadPendingRef.current = false;
+      void actions.loadImages(true, snap.limit);
+    }, 400);
 
-  // 仅窗口尺寸导致的 limit 变化，不先清空结果，避免拖拽/缩放窗口时闪屏。
-  useEffect(() => {
-    if (!hasInitializedLimitReloadRef.current) {
-      hasInitializedLimitReloadRef.current = true;
-      return;
-    }
-    debouncedLimitReload(snap.limit);
-  }, [snap.limit, debouncedLimitReload]);
+    return () => window.clearTimeout(timer);
+  }, [searchReloadKey, snap.limit]);
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
@@ -286,19 +262,18 @@ export const Gallery: React.FC = () => {
       scrollHeight - scrollTop - clientHeight < 500 &&
       snap.hasMore &&
       !snap.loading &&
-      !snap.vectorLoading
+      !snap.vectorLoading &&
+      !reloadPendingRef.current
     ) {
-      void loadImages(false, snap.limit);
+      void actions.loadImages(false, snap.limit);
     }
   };
 
   useEffect(() => {
     return () => {
       actions.cancelLoad();
-      debouncedReload.cancel();
-      debouncedLimitReload.cancel();
     };
-  }, [debouncedLimitReload, debouncedReload]);
+  }, []);
 
   const allTags = useMemo(() => {
     const unsorted = [...snap.tags];

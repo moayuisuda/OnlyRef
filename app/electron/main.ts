@@ -67,6 +67,10 @@ import {
 import { t as translate } from "../shared/i18n/t";
 import { normalizeLocale } from "../shared/i18n/locale";
 import type { I18nKey, I18nParams, Locale } from "../shared/i18n/types";
+import {
+  VECTOR_MODEL_DIR_NAME,
+  VECTOR_MODEL_REQUIRED_FILES,
+} from "../shared/vectorModel";
 import { debounce } from "radash";
 import { WallpaperService } from "./wallpaperService";
 
@@ -1273,23 +1277,16 @@ function registerToggleWindowShortcut(accelerator: string) {
 }
 
 function getModelDir(): string {
-  return path.join(getStorageDir(), "model");
+  return path.join(getStorageDir(), "models", VECTOR_MODEL_DIR_NAME);
 }
 
 async function hasRequiredModelFiles(modelDir: string): Promise<boolean> {
-  const hasConfig = await lockedFs.pathExists(
-    path.join(modelDir, "config.json"),
+  const checks = await Promise.all(
+    VECTOR_MODEL_REQUIRED_FILES.map((filename) =>
+      lockedFs.pathExists(path.join(modelDir, filename)),
+    ),
   );
-  const hasWeights = await lockedFs.pathExists(
-    path.join(modelDir, "model.safetensors"),
-  );
-  const hasProcessor = await lockedFs.pathExists(
-    path.join(modelDir, "preprocessor_config.json"),
-  );
-  const hasTokenizer = await lockedFs.pathExists(
-    path.join(modelDir, "tokenizer.json"),
-  );
-  return hasConfig && hasWeights && hasProcessor && hasTokenizer;
+  return checks.every(Boolean);
 }
 
 function getUvCandidates(): string[] {

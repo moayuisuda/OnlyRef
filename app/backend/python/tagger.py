@@ -13,14 +13,19 @@ warnings.filterwarnings("ignore", category=UserWarning, module="transformers")
 
 import torch
 from PIL import Image, ImageStat
-from transformers import CLIPModel, CLIPProcessor
+from transformers import (
+    GemmaTokenizerFast,
+    SiglipImageProcessor,
+    SiglipModel,
+    SiglipProcessor,
+)
 
 
-_MODEL: Optional[CLIPModel] = None
-_PROCESSOR: Optional[CLIPProcessor] = None
+_MODEL: Optional[SiglipModel] = None
+_PROCESSOR: Optional[SiglipProcessor] = None
 _DEVICE: Optional[torch.device] = None
 
-_MODEL_ID = "openai/clip-vit-large-patch14"
+_MODEL_ID = "google/siglip2-base-patch16-224"
 
 
 def _load_image(path: str) -> Image.Image:
@@ -33,17 +38,31 @@ def _get_model_dir() -> str:
     if configured:
         return configured
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.normpath(os.path.join(script_dir, "..", "..", "electron", "model"))
+    return os.path.normpath(
+        os.path.join(
+            script_dir,
+            "..",
+            "..",
+            "electron",
+            "models",
+            _MODEL_ID.rsplit("/", 1)[-1],
+        )
+    )
 
 
 def _has_required_model_files(model_dir: str) -> bool:
     if not os.path.isdir(model_dir):
         return False
-    has_config = os.path.isfile(os.path.join(model_dir, "config.json"))
-    has_weights_safe = os.path.isfile(os.path.join(model_dir, "model.safetensors"))
-    has_processor = os.path.isfile(os.path.join(model_dir, "preprocessor_config.json"))
-    has_tokenizer_json = os.path.isfile(os.path.join(model_dir, "tokenizer.json"))
-    return has_config and has_weights_safe and has_processor and has_tokenizer_json
+    required_files = (
+        "config.json",
+        "model.safetensors",
+        "preprocessor_config.json",
+        "special_tokens_map.json",
+        "tokenizer_config.json",
+        "tokenizer.json",
+        "tokenizer.model",
+    )
+    return all(os.path.isfile(os.path.join(model_dir, filename)) for filename in required_files)
 
 
 def _emit(event: dict) -> None:
@@ -75,7 +94,10 @@ def _download_model_with_progress(model_dir: str) -> None:
     required_files = [
         "config.json",
         "preprocessor_config.json",
+        "special_tokens_map.json",
+        "tokenizer_config.json",
         "tokenizer.json",
+        "tokenizer.model",
     ]
     optional_files: List[str] = []
 
@@ -347,24 +369,28 @@ def _download_model_with_progress(model_dir: str) -> None:
     _emit({"type": "done", "ok": True, "modelDir": model_dir})
 
 
-def _ensure_model_downloaded(model_dir: str) -> None:
-    os.makedirs(model_dir, exist_ok=True)
-    if _has_required_model_files(model_dir):
-        return
-    model = CLIPModel.from_pretrained(_MODEL_ID)
-    processor = CLIPProcessor.from_pretrained(_MODEL_ID, use_fast=True)
-    model.save_pretrained(model_dir)
-    processor.save_pretrained(model_dir)
+def _load_processor(model_path: str) -> SiglipProcessor:
+    # Transformers 5.0 无法根据该仓库的 SigLIP 配置自动解析 Gemma tokenizer，
+    # 显式组合官方图像处理器与 tokenizer，确保本地目录和 Hub 加载行为一致。
+    image_processor = SiglipImageProcessor.from_pretrained(model_path)
+    tokenizer = GemmaTokenizerFast.from_pretrained(model_path)
+    return SiglipProcessor(image_processor=image_processor, tokenizer=tokenizer)
 
 
-def _get_clip() -> Tuple[CLIPModel, CLIPProcessor, torch.device]:
+def _prepare_text(text: str) -> str:
+    # SigLIP 2 训练时统一使用小写文本，推理阶段必须保持相同预处理。
+    return text.strip().lower()
+
+
+def _get_model() -> Tuple[SiglipModel, SiglipProcessor, torch.device]:
     global _MODEL, _PROCESSOR, _DEVICE
     if _MODEL is None or _PROCESSOR is None or _DEVICE is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model_dir = _get_model_dir()
-        _ensure_model_downloaded(model_dir)
-        model = CLIPModel.from_pretrained(model_dir)
-        processor = CLIPProcessor.from_pretrained(model_dir, use_fast=True)
+        if not _has_required_model_files(model_dir):
+            raise RuntimeError(f"Model files are incomplete: {model_dir}")
+        model = SiglipModel.from_pretrained(model_dir)
+        processor = _load_processor(model_dir)
         model.to(device)
         model.eval()
         _MODEL = model
@@ -393,7 +419,7 @@ def _to_normalized_vector_tensor(features: object) -> torch.Tensor:
 
 
 def encode_image(path: str) -> List[float]:
-    model, processor, device = _get_clip()
+    model, processor, device = _get_model()
     image = _load_image(path)
     inputs = processor(images=image, return_tensors="pt")
     inputs = {k: v.to(device) for k, v in inputs.items()}
@@ -404,7 +430,7 @@ def encode_image(path: str) -> List[float]:
 
 
 def encode_images(paths: List[str]) -> List[dict]:
-    model, processor, device = _get_clip()
+    model, processor, device = _get_model()
     results: List[dict] = [{"vector": None} for _ in paths]
     valid_items: List[Tuple[int, Image.Image]] = []
 
@@ -433,8 +459,14 @@ def encode_images(paths: List[str]) -> List[dict]:
 
 
 def encode_text(text: str) -> List[float]:
-    model, processor, device = _get_clip()
-    inputs = processor(text=[text], return_tensors="pt", padding=True)
+    model, processor, device = _get_model()
+    inputs = processor(
+        text=[_prepare_text(text)],
+        return_tensors="pt",
+        padding="max_length",
+        max_length=64,
+        truncation=True,
+    )
     inputs = {k: v.to(device) for k, v in inputs.items()}
     with torch.no_grad():
         text_features = model.get_text_features(**inputs)
@@ -443,7 +475,7 @@ def encode_text(text: str) -> List[float]:
 
 
 def encode_texts(texts: List[str]) -> List[dict]:
-    model, processor, device = _get_clip()
+    model, processor, device = _get_model()
     results: List[dict] = [{"vector": None} for _ in texts]
     valid_items: List[Tuple[int, str]] = []
 
@@ -451,11 +483,11 @@ def encode_texts(texts: List[str]) -> List[dict]:
         if not isinstance(text, str):
             results[index] = {"vector": None, "error": "invalid-text"}
             continue
-        trimmed = text.strip()
-        if not trimmed:
+        prepared = _prepare_text(text)
+        if not prepared:
             results[index] = {"vector": None, "error": "empty-text"}
             continue
-        valid_items.append((index, trimmed))
+        valid_items.append((index, prepared))
 
     if not valid_items:
         return results
@@ -463,7 +495,9 @@ def encode_texts(texts: List[str]) -> List[dict]:
     inputs = processor(
         text=[text for _, text in valid_items],
         return_tensors="pt",
-        padding=True,
+        padding="max_length",
+        max_length=64,
+        truncation=True,
     )
     inputs = {k: v.to(device) for k, v in inputs.items()}
     with torch.no_grad():
@@ -494,7 +528,7 @@ def main() -> None:
     sys.stderr.flush()
 
     # Lazy load model only when needed
-    # _get_clip() 
+    # _get_model()
     # sys.stderr.write("[INFO] Model loaded\n")
     # sys.stderr.flush()
 

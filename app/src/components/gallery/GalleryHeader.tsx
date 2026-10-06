@@ -1,9 +1,8 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Input from "rc-input";
 import { Image as ImageIcon, Plus, Search, X } from "lucide-react";
 import { useSnapshot } from "valtio";
 import { SortableContext, rectSortingStrategy } from "@dnd-kit/sortable";
-import { debounce } from "radash";
 import { Tag } from "../Tag";
 import { SortableTag } from "./SortableTag";
 import { ColorInput } from "./ColorInput";
@@ -97,12 +96,11 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
   loading,
   allTags,
 }) => {
-  const snap = useSnapshot(state);
+  const snap = useSnapshot(state, { sync: true });
   const appSnap = useSnapshot(globalState);
   const { t } = useT();
 
   const [showLoading, setShowLoading] = useState(false);
-  const [searchDraft, setSearchDraft] = useState(snap.searchQuery);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const searchImagePrepareIdRef = useRef(0);
   const searchImageIdentity = snap.searchImage
@@ -111,18 +109,6 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
       : `prepared:${snap.searchImage.sourceId}`
     : "";
 
-  const debouncedSetSearchQuery = useMemo(
-    () =>
-      debounce({ delay: 240 }, (nextQuery: string) => {
-        actions.setSearchQuery(nextQuery);
-      }),
-    [],
-  );
-
-  useEffect(() => {
-    setSearchDraft(snap.searchQuery);
-  }, [snap.searchQuery]);
-
   useEffect(() => {
     searchImagePrepareIdRef.current += 1;
   }, [searchImageIdentity]);
@@ -130,9 +116,8 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
   useEffect(() => {
     return () => {
       searchImagePrepareIdRef.current += 1;
-      debouncedSetSearchQuery.cancel();
     };
-  }, [debouncedSetSearchQuery]);
+  }, []);
 
   const prepareSearchImage = async (
     requestId: number,
@@ -150,8 +135,6 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
         return;
       }
 
-      debouncedSetSearchQuery.cancel();
-      setSearchDraft("");
       actions.setSearchImageSource({
         type: "prepared",
         sourceId: prepared.sourceId,
@@ -467,24 +450,18 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
                     ? "cursor-not-allowed text-neutral-500"
                     : "text-white"
                 }`}
-                value={searchDraft}
+                value={snap.searchQuery}
                 disabled={!!snap.searchImage}
                 onPaste={handleSearchPaste}
                 onChange={(e) => {
                   searchImagePrepareIdRef.current += 1;
                   const nextQuery = e.target.value;
-                  setSearchDraft(nextQuery);
-                  debouncedSetSearchQuery(nextQuery);
+                  actions.setSearchQuery(nextQuery);
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    debouncedSetSearchQuery.cancel();
-                    actions.setSearchQuery(searchDraft);
-                    return;
-                  }
                   if (
                     e.key === "Backspace" &&
-                    searchDraft === "" &&
+                    snap.searchQuery === "" &&
                     snap.searchTags.length > 0
                   ) {
                     const next = snap.searchTags.slice(0, -1);
@@ -577,8 +554,6 @@ export const GalleryHeader: React.FC<GalleryHeaderProps> = ({
               <button
                 className="w-4 inline-flex items-center justify-center rounded hover:bg-neutral-700/70 text-neutral-400 hover:text-white transition-colors shrink-0"
                 onClick={() => {
-                  debouncedSetSearchQuery.cancel();
-                  setSearchDraft("");
                   actions.clearSearch();
                 }}
                 title={t("common.clear")}

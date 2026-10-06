@@ -4123,6 +4123,18 @@ var VECTOR_ON_DEMAND_WARMUP_SETTING_KEY = "vectorOnDemandWarmup";
 var VECTOR_ON_DEMAND_WARMUP_DEFAULT = false;
 var VECTOR_SERVICE_IDLE_TIMEOUT_MS = 5 * 60 * 1e3;
 
+// shared/vectorModel.ts
+var VECTOR_MODEL_DIR_NAME = "siglip2-base-patch16-224";
+var VECTOR_MODEL_REQUIRED_FILES = [
+  "config.json",
+  "model.safetensors",
+  "preprocessor_config.json",
+  "special_tokens_map.json",
+  "tokenizer_config.json",
+  "tokenizer.json",
+  "tokenizer.model"
+];
+
 // backend/server.ts
 var DEFAULT_SERVER_PORT = 30003;
 var MAX_SERVER_PORT = 65535;
@@ -4415,7 +4427,11 @@ var BasePythonService = class {
   spawnProcess(command, args, cwd, envOverrides = {}, attachListeners = true) {
     const env = {
       ...process.env,
-      PROREF_MODEL_DIR: import_path5.default.join(getStorageDir(), "model"),
+      PROREF_MODEL_DIR: import_path5.default.join(
+        getStorageDir(),
+        "models",
+        VECTOR_MODEL_DIR_NAME
+      ),
       PYTHONIOENCODING: "utf-8",
       PYTHONUTF8: "1",
       TRANSFORMERS_VERBOSITY: "error",
@@ -7712,22 +7728,15 @@ function registerToggleWindowShortcut(accelerator) {
   );
 }
 function getModelDir() {
-  return import_path7.default.join(getStorageDir(), "model");
+  return import_path7.default.join(getStorageDir(), "models", VECTOR_MODEL_DIR_NAME);
 }
 async function hasRequiredModelFiles(modelDir) {
-  const hasConfig = await lockedFs.pathExists(
-    import_path7.default.join(modelDir, "config.json")
+  const checks = await Promise.all(
+    VECTOR_MODEL_REQUIRED_FILES.map(
+      (filename) => lockedFs.pathExists(import_path7.default.join(modelDir, filename))
+    )
   );
-  const hasWeights = await lockedFs.pathExists(
-    import_path7.default.join(modelDir, "model.safetensors")
-  );
-  const hasProcessor = await lockedFs.pathExists(
-    import_path7.default.join(modelDir, "preprocessor_config.json")
-  );
-  const hasTokenizer = await lockedFs.pathExists(
-    import_path7.default.join(modelDir, "tokenizer.json")
-  );
-  return hasConfig && hasWeights && hasProcessor && hasTokenizer;
+  return checks.every(Boolean);
 }
 function getUvCandidates() {
   var _a;

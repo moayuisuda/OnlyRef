@@ -35,6 +35,7 @@ import {
   VECTOR_ON_DEMAND_WARMUP_SETTING_KEY,
   VECTOR_SERVICE_IDLE_TIMEOUT_MS,
 } from "../shared/vectorService";
+import { VECTOR_MODEL_DIR_NAME } from "../shared/vectorModel";
 
 export type RendererChannel =
   | "image-updated"
@@ -436,7 +437,11 @@ class BasePythonService {
   ): ChildProcess {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
-      PROREF_MODEL_DIR: path.join(getStorageDir(), "model"),
+      PROREF_MODEL_DIR: path.join(
+        getStorageDir(),
+        "models",
+        VECTOR_MODEL_DIR_NAME,
+      ),
       PYTHONIOENCODING: "utf-8",
       PYTHONUTF8: "1",
       TRANSFORMERS_VERBOSITY: "error",
