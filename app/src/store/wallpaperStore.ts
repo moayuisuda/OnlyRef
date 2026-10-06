@@ -13,7 +13,6 @@ import {
 type WallpaperStore = WallpaperState & {
   loaded: boolean;
   saving: boolean;
-  panelOpen: boolean;
 };
 
 export const wallpaperState = proxy<WallpaperStore>({
@@ -26,7 +25,6 @@ export const wallpaperState = proxy<WallpaperStore>({
   errorCode: null,
   loaded: false,
   saving: false,
-  panelOpen: false,
 });
 
 const applyState = (next: WallpaperState): void => {
@@ -55,10 +53,6 @@ const applyState = (next: WallpaperState): void => {
 };
 
 export const wallpaperActions = {
-  setPanelOpen(open: boolean): void {
-    wallpaperState.panelOpen = open;
-  },
-
   async load(): Promise<void> {
     if (wallpaperState.loaded) return;
     try {

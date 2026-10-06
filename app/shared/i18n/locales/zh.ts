@@ -1,6 +1,8 @@
 import type { I18nDict } from '../types.ts';
 
 export const zh: I18nDict = {
+  'settings.section.general': '通用',
+  'settings.section.ai': 'AI 与索引',
   'common.ok': '确定',
   'common.confirm': '确认',
   'common.cancel': '取消',

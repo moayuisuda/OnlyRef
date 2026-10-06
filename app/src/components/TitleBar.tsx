@@ -4,7 +4,6 @@ import {
   FolderOpen,
   Minus,
   Pin,
-  Images,
   Settings,
   Sparkles,
   Square,
@@ -30,12 +29,11 @@ import { indexImages, runAutoTagAll } from "../service";
 import { useClickOutside } from "../hooks/useClickOutside";
 import { ShortcutInput } from "./ShortcutInput";
 import { BrandWheelIcon } from "./BrandWheelIcon";
+import { BrandName } from "./BrandName";
 import { ToggleSwitch } from "./ToggleSwitch";
 import { WallpaperPanel } from "./WallpaperPanel";
-import {
-  wallpaperActions,
-  wallpaperState,
-} from "../store/wallpaperStore";
+import { SettingsSection } from "./SettingsSection";
+import { SettingsBlockTitle } from "./SettingsBlockTitle";
 import type { I18nKey, I18nParams } from "../../shared/i18n/types";
 import { isI18nKey } from "../../shared/i18n/guards";
 
@@ -70,7 +68,6 @@ export const TitleBar: React.FC = () => {
   const gallerySnap = useSnapshot(galleryState);
   const indexingSnap = useSnapshot(indexingState);
   const versionSnap = useSnapshot(versionState);
-  const wallpaperSnap = useSnapshot(wallpaperState);
   const { t, locale, setLocale } = useT();
   const isAlwaysOnTop = snap.windowAlwaysOnTop;
 
@@ -83,14 +80,9 @@ export const TitleBar: React.FC = () => {
 
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const settingsPanelRef = useRef<HTMLDivElement>(null);
-  const wallpaperButtonRef = useRef<HTMLButtonElement>(null);
-  const wallpaperPanelRef = useRef<HTMLDivElement>(null);
 
   useClickOutside<HTMLElement>([settingsButtonRef, settingsPanelRef], () => {
     setSettingsOpen(false);
-  });
-  useClickOutside<HTMLElement>([wallpaperButtonRef, wallpaperPanelRef], () => {
-    wallpaperActions.setPanelOpen(false);
   });
 
   useEffect(() => {
@@ -413,7 +405,7 @@ export const TitleBar: React.FC = () => {
               <BrandWheelIcon size={15} title="PiCaptain" />
             </div>
             <div className="text-sm font-semibold tracking-[0.02em] text-white">
-              <span className="text-[var(--color-primary)]">Pi</span>Captain
+              <BrandName />
             </div>
           </div>
 
@@ -446,22 +438,6 @@ export const TitleBar: React.FC = () => {
             <Pin size={14} className={clsx(isAlwaysOnTop && "text-[var(--color-primary)]")} />
           </button>
           <button
-            ref={wallpaperButtonRef}
-            type="button"
-            className={clsx(
-              iconButtonClass,
-              wallpaperSnap.panelOpen &&
-                "bg-white/[0.08] text-[var(--color-primary)]",
-            )}
-            title={t("wallpaper.open")}
-            onClick={() => {
-              setSettingsOpen(false);
-              wallpaperActions.setPanelOpen(!wallpaperState.panelOpen);
-            }}
-          >
-            <Images size={14} />
-          </button>
-          <button
             ref={settingsButtonRef}
             type="button"
             className={clsx(
@@ -471,7 +447,6 @@ export const TitleBar: React.FC = () => {
             )}
             title={t("settings.open")}
             onClick={() => {
-              wallpaperActions.setPanelOpen(false);
               setSettingsOpen((open) => !open);
             }}
           >
@@ -508,341 +483,331 @@ export const TitleBar: React.FC = () => {
         </div>
       </div>
 
-      {wallpaperSnap.panelOpen && (
-        <div
-          ref={wallpaperPanelRef}
-          className="no-drag absolute right-3 top-[calc(100%+0.5rem)] z-40 max-h-[calc(100vh-56px)] overflow-y-auto rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(20,20,20,0.98),rgba(10,10,10,0.98))] shadow-[0_20px_50px_rgba(0,0,0,0.45)] backdrop-blur-xl"
-        >
-          <WallpaperPanel />
-        </div>
-      )}
-
       {settingsOpen && (
         <div
           ref={settingsPanelRef}
-          className="no-drag absolute right-3 top-[calc(100%+0.5rem)] z-40 max-h-[calc(100vh-56px)] w-[360px] overflow-y-auto rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(20,20,20,0.97),rgba(10,10,10,0.97))] p-3 shadow-[0_20px_50px_rgba(0,0,0,0.45)] backdrop-blur-xl"
+          className="no-drag absolute right-3 top-[calc(100%+0.5rem)] z-40 max-h-[calc(100vh-56px)] w-[360px] overflow-y-auto rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(20,20,20,0.70),rgba(10,10,10,0.70))] p-3 shadow-[0_20px_50px_rgba(0,0,0,0.45)] backdrop-blur-xl"
         >
           <div className="mb-2 flex items-center justify-between">
             <div className="text-sm font-semibold text-white">{t("titleBar.settings")}</div>
             <div className="text-[11px] text-neutral-500">{imageCountLabel}</div>
           </div>
 
-          <div className="overflow-hidden rounded-xl border border-white/8 bg-black/20">
-            <div className="border-b border-white/6 px-3 py-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-xs font-medium text-neutral-200">
-                    {t("settings.storageFolder")}
+          <div className="space-y-4">
+            <SettingsSection>
+              <div className="px-3 py-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <SettingsBlockTitle icon={FolderOpen}>
+                      {t("settings.storageFolder")}
+                    </SettingsBlockTitle>
+                    <div className="mt-1 break-all text-[11px] leading-5 text-neutral-500">
+                      {loadingStorageDir ? t("common.loading") : storageDir || t("common.unavailable")}
+                    </div>
                   </div>
-                  <div className="mt-1 break-all text-[11px] leading-5 text-neutral-500">
-                    {loadingStorageDir ? t("common.loading") : storageDir || t("common.unavailable")}
+                  <div className="flex shrink-0 flex-col gap-2">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08]"
+                      onClick={handleOpenStorageDir}
+                    >
+                      <FolderOpen size={12} />
+                      {t("common.open")}
+                    </button>
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08]"
+                      onClick={handleChooseStorageDir}
+                    >
+                      <FolderOpen size={12} />
+                      {t("titleBar.change")}
+                    </button>
                   </div>
-                </div>
-                <div className="flex shrink-0 flex-col gap-2">
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08]"
-                    onClick={handleOpenStorageDir}
-                  >
-                    <FolderOpen size={12} />
-                    {t("common.open")}
-                  </button>
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08]"
-                    onClick={handleChooseStorageDir}
-                  >
-                    <FolderOpen size={12} />
-                    {t("titleBar.change")}
-                  </button>
                 </div>
               </div>
-            </div>
-
-            <div className="border-b border-white/6 px-3 py-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-xs font-medium text-neutral-200">{t("common.language")}</div>
-                  <div className="mt-1 text-[11px] text-neutral-500">
-                    {locale === "en" ? t("common.language.en") : t("common.language.zh")}
+            </SettingsSection>
+            <SettingsSection>
+              <WallpaperPanel />
+            </SettingsSection>
+            <SettingsSection title={t("settings.section.general")}>
+              <div className="px-3 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-medium text-neutral-200">{t("common.language")}</div>
+                    <div className="mt-1 text-[11px] text-neutral-500">
+                      {locale === "en" ? t("common.language.en") : t("common.language.zh")}
+                    </div>
                   </div>
-                </div>
-                <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] p-1">
-                  <button
-                    type="button"
-                    className={clsx(
-                      "rounded-md px-2 py-1 text-xs transition-colors",
-                      locale === "en"
-                        ? "bg-[var(--color-primary)] text-black"
-                        : "text-neutral-300 hover:bg-white/[0.08]",
-                    )}
-                    onClick={() => setLocale("en")}
-                  >
-                    {t("common.language.en")}
-                  </button>
-                  <button
-                    type="button"
-                    className={clsx(
-                      "rounded-md px-2 py-1 text-xs transition-colors",
-                      locale === "zh"
-                        ? "bg-[var(--color-primary)] text-black"
-                        : "text-neutral-300 hover:bg-white/[0.08]",
-                    )}
-                    onClick={() => setLocale("zh")}
-                  >
-                    {t("common.language.zh")}
-                  </button>
+                  <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] p-1">
+                    <button
+                      type="button"
+                      className={clsx(
+                        "rounded-md px-2 py-1 text-xs transition-colors",
+                        locale === "en"
+                          ? "bg-[var(--color-primary)] text-black"
+                          : "text-neutral-300 hover:bg-white/[0.08]",
+                      )}
+                      onClick={() => setLocale("en")}
+                    >
+                      {t("common.language.en")}
+                    </button>
+                    <button
+                      type="button"
+                      className={clsx(
+                        "rounded-md px-2 py-1 text-xs transition-colors",
+                        locale === "zh"
+                          ? "bg-[var(--color-primary)] text-black"
+                          : "text-neutral-300 hover:bg-white/[0.08]",
+                      )}
+                      onClick={() => setLocale("zh")}
+                    >
+                      {t("common.language.zh")}
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-
-            <div className="border-b border-white/6 px-3 py-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-xs font-medium text-neutral-200">
-                    {t("settings.launchAtLogin")}
+              <div className="px-3 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs font-medium text-neutral-200">
+                      {t("settings.launchAtLogin")}
+                    </div>
+                    <div className="mt-1 text-[11px] text-neutral-500">
+                      {t("settings.launchAtLogin.desc")}
+                    </div>
                   </div>
-                  <div className="mt-1 text-[11px] text-neutral-500">
-                    {t("settings.launchAtLogin.desc")}
-                  </div>
+                  <ToggleSwitch
+                    checked={snap.launchAtLogin}
+                    disabled={snap.launchAtLoginLoading}
+                    onToggle={() => {
+                      void globalActions.setLaunchAtLogin(
+                        !globalState.launchAtLogin,
+                      );
+                    }}
+                  />
                 </div>
-                <ToggleSwitch
-                  checked={snap.launchAtLogin}
-                  disabled={snap.launchAtLoginLoading}
-                  onToggle={() => {
-                    void globalActions.setLaunchAtLogin(
-                      !globalState.launchAtLogin,
-                    );
+              </div>
+              <div className="px-3 py-3">
+                <div className="mb-2 text-xs font-medium text-neutral-200">
+                  {t("settings.toggleWindowShortcut")}
+                </div>
+                <ShortcutInput
+                  value={snap.toggleWindowShortcut}
+                  onChange={(value) => {
+                    void handleToggleWindowShortcut(value);
                   }}
-                />
-              </div>
-            </div>
-
-            <div className="border-b border-white/6 px-3 py-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-xs font-medium text-neutral-200">
-                    {t("settings.vectorOnDemandWarmup")}
-                  </div>
-                  <div className="mt-1 text-[11px] leading-4 text-neutral-500">
-                    {t("settings.vectorOnDemandWarmup.desc")}
-                  </div>
-                </div>
-                <ToggleSwitch
-                  checked={snap.vectorOnDemandWarmup}
-                  disabled={snap.vectorOnDemandWarmupLoading}
-                  onToggle={() => {
-                    void globalActions.setVectorOnDemandWarmup(
-                      !globalState.vectorOnDemandWarmup,
-                    );
-                  }}
-                />
-              </div>
-            </div>
-
-            {/* 暂时隐藏 LLM 翻译设置，后续若恢复可直接取消这段注释。 */}
-            {/* <div className="border-b border-white/6 px-3 py-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-xs font-medium text-neutral-200">
-                    {t("settings.queryTranslation")}
-                  </div>
-                  <div className="mt-1 text-[11px] text-neutral-500">
-                    {t("settings.queryTranslation.desc")}
-                  </div>
-                </div>
-                <ToggleSwitch
-                  checked={snap.llmSettings.enabled}
-                  onToggle={() =>
-                    globalActions.setLlmSettings({
-                      enabled: !snap.llmSettings.enabled,
-                    })
+                  onInvalid={() =>
+                    globalActions.pushToast({ key: "toast.shortcutInvalid" }, "error")
                   }
                 />
               </div>
-
-              {snap.llmSettings.enabled && (
-                <div className="mt-3 space-y-2">
-                  <SettingInput
-                    value={snap.llmSettings.baseUrl}
-                    placeholder={t("settings.llm.baseUrl")}
-                    onChange={(value) => globalActions.setLlmSettings({ baseUrl: value })}
-                  />
-                  <SettingInput
-                    value={snap.llmSettings.key}
-                    placeholder={t("settings.llm.key")}
-                    type="password"
-                    onChange={(value) => globalActions.setLlmSettings({ key: value })}
-                  />
-                  <SettingInput
-                    value={snap.llmSettings.model}
-                    placeholder={t("settings.llm.model")}
-                    onChange={(value) => globalActions.setLlmSettings({ model: value })}
-                  />
-                </div>
-              )}
-            </div> */}
-
-            <div className="border-b border-white/6 px-3 py-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5 text-xs font-medium text-neutral-200">
-                    <Download
-                      size={12}
-                      className={clsx(hasVersionUpdate && "text-[var(--color-primary)]")}
-                    />
-                    {t("titleBar.version")}
-                  </div>
-                  <div className="mt-1 truncate text-[11px] text-neutral-500">
-                    {t("titleBar.version.row", {
-                      current: versionSnap.currentVersion
-                        ? `v${versionSnap.currentVersion}`
-                        : t("common.notSet"),
-                      latest: versionSnap.latestVersion
-                        ? `v${versionSnap.latestVersion}`
-                        : t("common.notSet"),
-                    })}
-                  </div>
-                  <div
-                    className={clsx(
-                      "mt-1 text-[11px] leading-5",
-                      versionSnap.updateStatus === "error"
-                        ? "text-amber-300"
-                        : "text-neutral-500",
-                    )}
-                  >
-                    {versionStatusText}
-                  </div>
-                  {versionSnap.updateStatus === "downloading" && (
-                    <div className="mt-2">
-                      <ProgressBar value={versionSnap.downloadProgress} />
+            </SettingsSection>
+            <SettingsSection title={t("settings.section.ai")}>
+              <div className="px-3 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs font-medium text-neutral-200">
+                      {t("settings.vectorOnDemandWarmup")}
                     </div>
-                  )}
-                </div>
-                {versionActionLabel && (
-                  <button
-                    type="button"
-                    className="shrink-0 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
-                    disabled={versionActionDisabled}
-                    onClick={() => {
-                      void handleVersionAction();
-                    }}
-                  >
-                    {versionActionLabel}
-                  </button>
-                )}
-              </div>
-            </div>
-
-            <div className="border-b border-white/6 px-3 py-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="truncate text-xs font-medium text-neutral-200">
-                    {t("settings.autoTag")}
+                    <div className="mt-1 text-[11px] leading-4 text-neutral-500">
+                      {t("settings.vectorOnDemandWarmup.desc")}
+                    </div>
                   </div>
-                </div>
-                <div className="shrink-0 flex items-center gap-2">
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
-                    onClick={() => {
-                      void handleAutoTagAll();
-                    }}
-                    disabled={isLibraryJobRunning || !snap.autoTagEnabled}
-                  >
-                    <Sparkles size={12} />
-                    {isAutoTaggingAll
-                      ? t("settings.autoTag.runningAll")
-                      : t("settings.run")}
-                  </button>
                   <ToggleSwitch
-                    checked={snap.autoTagEnabled}
-                    disabled={isLibraryJobRunning}
+                    checked={snap.vectorOnDemandWarmup}
+                    disabled={snap.vectorOnDemandWarmupLoading}
+                    onToggle={() => {
+                      void globalActions.setVectorOnDemandWarmup(
+                        !globalState.vectorOnDemandWarmup,
+                      );
+                    }}
+                  />
+                </div>
+              </div>
+              {/* 暂时隐藏 LLM 翻译设置，后续若恢复可直接取消这段注释。 */}
+              {/* <div className="border-b border-white/6 px-3 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-medium text-neutral-200">
+                      {t("settings.queryTranslation")}
+                    </div>
+                    <div className="mt-1 text-[11px] text-neutral-500">
+                      {t("settings.queryTranslation.desc")}
+                    </div>
+                  </div>
+                  <ToggleSwitch
+                    checked={snap.llmSettings.enabled}
                     onToggle={() =>
-                      globalActions.setAutoTagEnabled(!snap.autoTagEnabled)
+                      globalActions.setLlmSettings({
+                        enabled: !snap.llmSettings.enabled,
+                      })
                     }
                   />
                 </div>
-              </div>
 
-              <div className="mt-3">
-                <div className="text-[11px] leading-5 text-neutral-500">
-                  {t("settings.autoTag.desc")}
-                </div>
-                <input
-                  type="range"
-                  min={AUTO_TAG_THRESHOLD_MIN}
-                  max={AUTO_TAG_THRESHOLD_MAX}
-                  step={AUTO_TAG_THRESHOLD_STEP}
-                  value={snap.autoTagThreshold}
-                  disabled={!snap.autoTagEnabled}
-                  className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-white/10 accent-[var(--color-primary)] disabled:cursor-not-allowed disabled:opacity-40"
-                  onChange={(event) => {
-                    globalActions.setAutoTagThreshold(
-                      Number(event.target.value),
-                    );
-                  }}
-                />
-                <div className="mt-2 flex items-center justify-between text-[11px] text-neutral-500">
-                  <span>{t("settings.autoTag.loose")}</span>
-                  <span>{t("settings.autoTag.strict")}</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="border-b border-white/6 px-3 py-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="truncate text-xs font-medium text-neutral-200">
-                    {t("settings.indexing")}
-                  </div>
-                  <div className="mt-1 truncate text-[11px] text-neutral-500">
-                    {statusMeta.title}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
-                  onClick={handleIndexMissingImages}
-                  disabled={isLibraryJobRunning}
-                >
-                  <span
-                    className={clsx(
-                      "inline-block h-1.5 w-1.5 rounded-full bg-current",
-                      isLibraryJobRunning && "animate-pulse",
-                    )}
-                  />
-                  {isLibraryJobRunning ? t("settings.running") : t("settings.run")}
-                </button>
-              </div>
-
-              {indexingSnap.isIndexing && (
-                <div className="mt-3 flex items-center gap-2">
-                  <div className="min-w-0 flex-1">
-                    <ProgressBar
-                      value={statusMeta.percent}
-                      active={indexingSnap.isIndexing}
+                {snap.llmSettings.enabled && (
+                  <div className="mt-3 space-y-2">
+                    <SettingInput
+                      value={snap.llmSettings.baseUrl}
+                      placeholder={t("settings.llm.baseUrl")}
+                      onChange={(value) => globalActions.setLlmSettings({ baseUrl: value })}
+                    />
+                    <SettingInput
+                      value={snap.llmSettings.key}
+                      placeholder={t("settings.llm.key")}
+                      type="password"
+                      onChange={(value) => globalActions.setLlmSettings({ key: value })}
+                    />
+                    <SettingInput
+                      value={snap.llmSettings.model}
+                      placeholder={t("settings.llm.model")}
+                      onChange={(value) => globalActions.setLlmSettings({ model: value })}
                     />
                   </div>
-                  <div className="text-[11px] text-neutral-500">{statusMeta.percent}%</div>
+                )}
+              </div> */}
+              <div className="px-3 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate text-xs font-medium text-neutral-200">
+                      {t("settings.autoTag")}
+                    </div>
+                  </div>
+                  <div className="shrink-0 flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
+                      onClick={() => {
+                        void handleAutoTagAll();
+                      }}
+                      disabled={isLibraryJobRunning || !snap.autoTagEnabled}
+                    >
+                      <Sparkles size={12} />
+                      {isAutoTaggingAll
+                        ? t("settings.autoTag.runningAll")
+                        : t("settings.run")}
+                    </button>
+                    <ToggleSwitch
+                      checked={snap.autoTagEnabled}
+                      disabled={isLibraryJobRunning}
+                      onToggle={() =>
+                        globalActions.setAutoTagEnabled(!snap.autoTagEnabled)
+                      }
+                    />
+                  </div>
                 </div>
-              )}
-            </div>
 
-            <div className="px-3 py-3">
-              <div className="mb-2 text-xs font-medium text-neutral-200">
-                {t("settings.toggleWindowShortcut")}
+                <div className="mt-3">
+                  <div className="text-[11px] leading-5 text-neutral-500">
+                    {t("settings.autoTag.desc")}
+                  </div>
+                  <input
+                    type="range"
+                    min={AUTO_TAG_THRESHOLD_MIN}
+                    max={AUTO_TAG_THRESHOLD_MAX}
+                    step={AUTO_TAG_THRESHOLD_STEP}
+                    value={snap.autoTagThreshold}
+                    disabled={!snap.autoTagEnabled}
+                    className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-white/10 accent-[var(--color-primary)] disabled:cursor-not-allowed disabled:opacity-40"
+                    onChange={(event) => {
+                      globalActions.setAutoTagThreshold(
+                        Number(event.target.value),
+                      );
+                    }}
+                  />
+                  <div className="mt-2 flex items-center justify-between text-[11px] text-neutral-500">
+                    <span>{t("settings.autoTag.loose")}</span>
+                    <span>{t("settings.autoTag.strict")}</span>
+                  </div>
+                </div>
               </div>
-              <ShortcutInput
-                value={snap.toggleWindowShortcut}
-                onChange={(value) => {
-                  void handleToggleWindowShortcut(value);
-                }}
-                onInvalid={() =>
-                  globalActions.pushToast({ key: "toast.shortcutInvalid" }, "error")
-                }
-              />
-            </div>
+              <div className="px-3 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate text-xs font-medium text-neutral-200">
+                      {t("settings.indexing")}
+                    </div>
+                    <div className="mt-1 truncate text-[11px] text-neutral-500">
+                      {statusMeta.title}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
+                    onClick={handleIndexMissingImages}
+                    disabled={isLibraryJobRunning}
+                  >
+                    <span
+                      className={clsx(
+                        "inline-block h-1.5 w-1.5 rounded-full bg-current",
+                        isLibraryJobRunning && "animate-pulse",
+                      )}
+                    />
+                    {isLibraryJobRunning ? t("settings.running") : t("settings.run")}
+                  </button>
+                </div>
+
+                {indexingSnap.isIndexing && (
+                  <div className="mt-3 flex items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <ProgressBar
+                        value={statusMeta.percent}
+                        active={indexingSnap.isIndexing}
+                      />
+                    </div>
+                    <div className="text-[11px] text-neutral-500">{statusMeta.percent}%</div>
+                  </div>
+                )}
+              </div>
+            </SettingsSection>
+            <SettingsSection>
+              <div className="px-3 py-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <SettingsBlockTitle icon={Download}>
+                      {t("titleBar.version")}
+                    </SettingsBlockTitle>
+                    <div className="mt-1 truncate text-[11px] text-neutral-500">
+                      {t("titleBar.version.row", {
+                        current: versionSnap.currentVersion
+                          ? `v${versionSnap.currentVersion}`
+                          : t("common.notSet"),
+                        latest: versionSnap.latestVersion
+                          ? `v${versionSnap.latestVersion}`
+                          : t("common.notSet"),
+                      })}
+                    </div>
+                    <div
+                      className={clsx(
+                        "mt-1 text-[11px] leading-5",
+                        versionSnap.updateStatus === "error"
+                          ? "text-amber-300"
+                          : "text-neutral-500",
+                      )}
+                    >
+                      {versionStatusText}
+                    </div>
+                    {versionSnap.updateStatus === "downloading" && (
+                      <div className="mt-2">
+                        <ProgressBar value={versionSnap.downloadProgress} />
+                      </div>
+                    )}
+                  </div>
+                  {versionActionLabel && (
+                    <button
+                      type="button"
+                      className="shrink-0 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
+                      disabled={versionActionDisabled}
+                      onClick={() => {
+                        void handleVersionAction();
+                      }}
+                    >
+                      {versionActionLabel}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </SettingsSection>
           </div>
         </div>
       )}

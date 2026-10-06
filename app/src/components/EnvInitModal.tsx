@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useSnapshot } from 'valtio';
 import { envInitState } from '../store/globalStore';
 import { useT } from '../i18n/useT';
+import { BrandName } from './BrandName';
 
 export const EnvInitModal: React.FC = () => {
   const snap = useSnapshot(envInitState);
@@ -26,7 +27,7 @@ export const EnvInitModal: React.FC = () => {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="w-[480px] bg-[#0b0d10] border border-white/10 rounded-xl p-6 shadow-2xl">
-        <h1 className="font-semibold text-4xl mb-4 text-primary">{t('envInit.brandTitle')}</h1>
+        <h1 className="font-semibold text-4xl mb-4 text-white"><BrandName /></h1>
         <h2 className="text-white font-semibold text-lg mb-2">
           {isSelectingStorage ? t('envInit.selectStorageTitle') : t('envInit.heading')}
         </h2>

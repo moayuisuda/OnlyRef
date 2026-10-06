@@ -370,14 +370,14 @@ function normalizeWindowBounds(
   const width = Math.max(
     NORMAL_WINDOW_MIN_WIDTH,
     Math.min(
-      typeof bounds?.width === "number" ? bounds.width : Math.floor(workArea.width * 0.6),
+      typeof bounds?.width === "number" ? bounds.width : 400,
       workArea.width,
     ),
   );
   const height = Math.max(
     NORMAL_WINDOW_MIN_HEIGHT,
     Math.min(
-      typeof bounds?.height === "number" ? bounds.height : Math.floor(workArea.height * 0.8),
+      typeof bounds?.height === "number" ? bounds.height : 300,
       workArea.height,
     ),
   );
@@ -1795,7 +1795,6 @@ async function ensureModelReady(
         PYTHONUTF8: "1",
         TRANSFORMERS_VERBOSITY: "error",
         HF_HUB_DISABLE_PROGRESS_BARS: "1",
-        HF_ENDPOINT: "https://hf-mirror.com",
         // Fix CUDA out of memory by avoiding fragmentation
         PYTORCH_ALLOC_CONF: "expandable_segments:True",
       },
@@ -1874,15 +1873,24 @@ async function ensureModelReady(
       }
 
       if (
-        evt.type === "file" &&
+        (evt.type === "file" || evt.type === "file-start") &&
         typeof evt.current === "number" &&
         typeof evt.total === "number"
       ) {
-        const p = Math.max(0, Math.min(1, evt.current / evt.total));
+        const completed = evt.type === "file-start" ? evt.current - 1 : evt.current;
+        const p = Math.max(0, Math.min(1, completed / evt.total));
         const mapped = p; // 0-1
         progress = mapped;
         percentText = `${Math.round(mapped * 100)}%`;
         lastProgress = p;
+        sendProgress(
+          "model.downloadingFraction",
+          percentText,
+          progress,
+          evt.filename,
+          { current: completed, total: evt.total },
+        );
+        return;
       }
 
       if (evt.type === "done" && evt.ok) {
@@ -1893,21 +1901,6 @@ async function ensureModelReady(
       if (evt.type === "error" && typeof evt.message === "string") {
         progress = Math.max(progress, 0);
         lastError = evt.message;
-      }
-
-      if (
-        evt.type === "file" &&
-        typeof evt.current === "number" &&
-        typeof evt.total === "number"
-      ) {
-        sendProgress(
-          "model.downloadingFraction",
-          percentText,
-          progress,
-          evt.filename,
-          { current: evt.current, total: evt.total },
-        );
-        return;
       }
 
       if (evt.type === "done" && evt.ok) {

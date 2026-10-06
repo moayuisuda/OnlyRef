@@ -5,7 +5,7 @@ import sys
 import os
 from typing import List, Tuple, Optional
 import warnings
-os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+# 使用 Hub 官方默认源；部署环境可通过 HF_ENDPOINT 显式指定其他源。
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
 os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "30")
 
@@ -49,6 +49,17 @@ def _has_required_model_files(model_dir: str) -> bool:
 def _emit(event: dict) -> None:
     sys.stdout.write(json.dumps(event) + "\n")
     sys.stdout.flush()
+
+
+def _download_error(filename: str, error: Exception) -> str:
+    # Hub 会将网络和元数据错误包装成缓存缺失，保留异常链才能定位真正原因。
+    details = []
+    cause = error
+    while cause is not None:
+        details.append(f"{type(cause).__name__}: {cause}")
+        cause = cause.__cause__
+    endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
+    return f"{_MODEL_ID}/{filename} (source: {endpoint}): " + " -> ".join(details)
 
 
 def _download_model_with_progress(model_dir: str) -> None:
@@ -96,7 +107,7 @@ def _download_model_with_progress(model_dir: str) -> None:
         while True:
             _emit(
                 {
-                    "type": "file",
+                    "type": "file-start",
                     "filename": filename,
                     "current": current,
                     "total": total,
@@ -109,20 +120,21 @@ def _download_model_with_progress(model_dir: str) -> None:
                     repo_id=_MODEL_ID,
                     filename=filename,
                     local_dir=model_dir,
-                    force_download=False, # Use cache if available
-                    resume_download=True  # Resume if possible
+                    force_download=False,
                 )
+                _emit({
+                    "type": "file",
+                    "filename": filename,
+                    "current": current,
+                    "total": total,
+                })
                 return True
             except Exception as e:
-                # If download failed, try to clean up potential lock files or temp files if accessible
-                # huggingface_hub manages its own locks, but we can catch errors
-                pass
-
                 if optional and _is_not_found(e):
                     _emit({"type": "optional-missing", "filename": filename, "message": str(e)})
                     return False
                 if attempt >= max_attempts:
-                    raise
+                    raise RuntimeError(_download_error(filename, e)) from e
                 wait_s = min(60, 2**attempt)
                 _emit(
                     {
@@ -130,7 +142,7 @@ def _download_model_with_progress(model_dir: str) -> None:
                         "filename": filename,
                         "attempt": attempt,
                         "nextWaitSeconds": wait_s,
-                        "message": str(e),
+                        "message": _download_error(filename, e),
                     }
                 )
                 time.sleep(wait_s)
@@ -306,8 +318,7 @@ def _download_model_with_progress(model_dir: str) -> None:
                     _emit({"type": "weight-missing", "filename": filename, "message": str(e)})
                     return False
                 if attempt >= max_attempts:
-                    _emit({"type": "weight-failed", "filename": filename, "message": str(e)})
-                    return False
+                    raise RuntimeError(_download_error(filename, e)) from e
                 wait_s = min(60, 2**attempt)
                 _emit(
                     {
@@ -333,7 +344,7 @@ def _download_model_with_progress(model_dir: str) -> None:
     if not weight_ok:
         raise RuntimeError("failed to download model weights")
 
-    _emit({"type": "done", "modelDir": model_dir})
+    _emit({"type": "done", "ok": True, "modelDir": model_dir})
 
 
 def _ensure_model_downloaded(model_dir: str) -> None:

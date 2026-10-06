@@ -445,8 +445,6 @@ class BasePythonService {
       UV_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
       // Also set PIP_INDEX_URL as fallback/standard
       PIP_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
-      // Use HF mirror for model downloads
-      HF_ENDPOINT: "https://hf-mirror.com",
       // Fix CUDA out of memory by avoiding fragmentation
       PYTORCH_ALLOC_CONF: "expandable_segments:True",
       ...envOverrides,

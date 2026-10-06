@@ -3404,7 +3404,6 @@ var getRuntimeEnv = () => {
     HF_HUB_DISABLE_PROGRESS_BARS: "1",
     UV_INDEX_URL: PYPI_INDEX_URL,
     PIP_INDEX_URL: PYPI_INDEX_URL,
-    HF_ENDPOINT: "https://hf-mirror.com",
     UV_CACHE_DIR: getManagedUvCacheDir()
   };
 };
@@ -4425,8 +4424,6 @@ var BasePythonService = class {
       UV_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
       // Also set PIP_INDEX_URL as fallback/standard
       PIP_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/",
-      // Use HF mirror for model downloads
-      HF_ENDPOINT: "https://hf-mirror.com",
       // Fix CUDA out of memory by avoiding fragmentation
       PYTORCH_ALLOC_CONF: "expandable_segments:True",
       ...envOverrides
@@ -5101,6 +5098,8 @@ async function stopServer() {
 
 // shared/i18n/locales/en.ts
 var en = {
+  "settings.section.general": "General",
+  "settings.section.ai": "AI & indexing",
   "common.ok": "OK",
   "common.confirm": "Confirm",
   "common.cancel": "Cancel",
@@ -5424,6 +5423,8 @@ var en = {
 
 // shared/i18n/locales/zh.ts
 var zh = {
+  "settings.section.general": "\u901A\u7528",
+  "settings.section.ai": "AI \u4E0E\u7D22\u5F15",
   "common.ok": "\u786E\u5B9A",
   "common.confirm": "\u786E\u8BA4",
   "common.cancel": "\u53D6\u6D88",
@@ -5796,6 +5797,8 @@ var GENERATED_FILE_PREFIX = "picaptain-wallpaper-";
 var GENERATED_FILE_PATTERN = /^picaptain-wallpaper-\d+\.jpg$/;
 var GENERATED_TEMP_PATTERN = /^picaptain-wallpaper-\d+\.tmp\.jpg$/;
 var DISPLAY_CHANGE_DEBOUNCE_MS = 800;
+var DISPLAY_ENUMERATION_RETRY_DELAYS_MS = [0, 300, 900];
+var DISPLAY_RECOVERY_DELAYS_MS = [2e3, 5e3, 15e3];
 var DEFAULT_IMAGE_SCALE = 0.5;
 var MAX_DISPLAY_IMAGE_RATIO = 1;
 var DENSITY_SCALE_BY_IMAGE_COUNT = {
@@ -5868,17 +5871,18 @@ var getWindowsApiScript = (body) => [
   "'@",
   body
 ].join("\n");
-var listWindowsDisplays = async () => {
+var wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs));
+var queryWindowsDisplays = async () => {
   const script = getWindowsApiScript(
     "[PiCaptain.DesktopWallpaperApi]::GetDisplays() | ConvertTo-Json -Compress"
   );
   const { stdout } = await execFileAsync(
     "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-Command", script],
+    ["-NoProfile", "-NonInteractive", "-STA", "-Command", script],
     { windowsHide: true, maxBuffer: 1024 * 1024 }
   );
   const raw = stdout.trim();
-  if (!raw) return [];
+  if (!raw) throw new Error("Windows did not return any wallpaper displays");
   const parsed = JSON.parse(raw);
   const records = Array.isArray(parsed) ? parsed : [parsed];
   return records.map((display, index) => ({
@@ -5889,6 +5893,18 @@ var listWindowsDisplays = async () => {
     height: display.Height,
     isPrimary: display.Left === 0 && display.Top === 0
   }));
+};
+var listWindowsDisplays = async () => {
+  let lastError;
+  for (const delayMs of DISPLAY_ENUMERATION_RETRY_DELAYS_MS) {
+    if (delayMs > 0) await wait(delayMs);
+    try {
+      return await queryWindowsDisplays();
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
 };
 var listMacDisplays = (displays, primaryDisplay) => displays.map((display, index) => ({
   id: String(display.id),
@@ -5912,7 +5928,7 @@ var applyWindowsWallpaper = async (displayId, imagePath) => {
   );
   await execFileAsync(
     "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-Command", script],
+    ["-NoProfile", "-NonInteractive", "-STA", "-Command", script],
     { windowsHide: true }
   );
 };
@@ -5922,7 +5938,7 @@ var getWindowsWallpaper = async (displayId) => {
   );
   const { stdout } = await execFileAsync(
     "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-Command", script],
+    ["-NoProfile", "-NonInteractive", "-STA", "-Command", script],
     { windowsHide: true }
   );
   const raw = stdout.trim();
@@ -6117,8 +6133,9 @@ var renderMosaicRoot = (root, display) => {
   appendMosaicTiles(
     root,
     {
-      left: Math.floor((display.width - rootWidth) / 2),
-      top: Math.floor((display.height - rootHeight) / 2),
+      // 从右上角铺满屏幕，只在左侧或底部边界截断溢出内容。
+      left: display.width - rootWidth,
+      top: 0,
       width: rootWidth,
       height: rootHeight
     },
@@ -6203,6 +6220,8 @@ var WallpaperService = class {
   originalWallpapers = {};
   timer = null;
   displayChangeTimer = null;
+  displayRecoveryTimer = null;
+  displayRecoveryAttempt = 0;
   updateTask = null;
   settingsUpdateTail = Promise.resolve();
   state = {
@@ -6270,6 +6289,7 @@ var WallpaperService = class {
   }
   stop() {
     this.clearTimer();
+    this.clearDisplayRecovery();
     if (this.displayChangeTimer) {
       clearTimeout(this.displayChangeTimer);
       this.displayChangeTimer = null;
@@ -6286,13 +6306,17 @@ var WallpaperService = class {
     };
   }
   async refreshDisplays() {
-    if (!this.state.supported) return;
+    if (!this.state.supported) return false;
     try {
       const displays = await listSystemDisplays(this.deps);
+      this.clearDisplayRecovery();
       this.patchState({ displays, errorCode: null });
+      return true;
     } catch (error) {
       console.error("[wallpaper] failed to enumerate displays", error);
-      this.patchState({ displays: [], errorCode: "display-unavailable" });
+      this.patchState({ errorCode: "display-unavailable" });
+      this.scheduleDisplayRecovery();
+      return false;
     }
   }
   handleDisplaysChanged() {
@@ -6300,7 +6324,9 @@ var WallpaperService = class {
     this.displayChangeTimer = setTimeout(() => {
       this.displayChangeTimer = null;
       void (async () => {
-        await this.refreshDisplays();
+        this.clearDisplayRecovery();
+        const displaysAvailable = await this.refreshDisplays();
+        if (!displaysAvailable) return;
         if (this.updateTask) await this.updateTask;
         const restoreError = await this.restoreUnmanagedDisplays();
         if (!this.settings.enabled) {
@@ -6311,6 +6337,29 @@ var WallpaperService = class {
         if (restoreError) this.patchState({ errorCode: restoreError });
       })();
     }, DISPLAY_CHANGE_DEBOUNCE_MS);
+  }
+  scheduleDisplayRecovery() {
+    if (this.displayRecoveryTimer || this.displayRecoveryAttempt >= DISPLAY_RECOVERY_DELAYS_MS.length) {
+      return;
+    }
+    const delayMs = DISPLAY_RECOVERY_DELAYS_MS[this.displayRecoveryAttempt];
+    this.displayRecoveryAttempt += 1;
+    this.displayRecoveryTimer = setTimeout(() => {
+      this.displayRecoveryTimer = null;
+      void (async () => {
+        const recovered = await this.refreshDisplays();
+        if (recovered && this.settings.enabled && this.isUpdateDue()) {
+          await this.refresh();
+        }
+      })();
+    }, delayMs);
+  }
+  clearDisplayRecovery() {
+    if (this.displayRecoveryTimer) {
+      clearTimeout(this.displayRecoveryTimer);
+      this.displayRecoveryTimer = null;
+    }
+    this.displayRecoveryAttempt = 0;
   }
   async updateSettings(settings) {
     const task = this.settingsUpdateTail.then(
@@ -6963,14 +7012,14 @@ function normalizeWindowBounds(bounds) {
   const width = Math.max(
     NORMAL_WINDOW_MIN_WIDTH,
     Math.min(
-      typeof (bounds == null ? void 0 : bounds.width) === "number" ? bounds.width : Math.floor(workArea.width * 0.6),
+      typeof (bounds == null ? void 0 : bounds.width) === "number" ? bounds.width : 400,
       workArea.width
     )
   );
   const height = Math.max(
     NORMAL_WINDOW_MIN_HEIGHT,
     Math.min(
-      typeof (bounds == null ? void 0 : bounds.height) === "number" ? bounds.height : Math.floor(workArea.height * 0.8),
+      typeof (bounds == null ? void 0 : bounds.height) === "number" ? bounds.height : 300,
       workArea.height
     )
   );
@@ -8052,7 +8101,6 @@ async function ensureModelReady(parent, options = {}) {
         PYTHONUTF8: "1",
         TRANSFORMERS_VERBOSITY: "error",
         HF_HUB_DISABLE_PROGRESS_BARS: "1",
-        HF_ENDPOINT: "https://hf-mirror.com",
         // Fix CUDA out of memory by avoiding fragmentation
         PYTORCH_ALLOC_CONF: "expandable_segments:True"
       }
@@ -8104,12 +8152,21 @@ async function ensureModelReady(parent, options = {}) {
         );
         return;
       }
-      if (evt.type === "file" && typeof evt.current === "number" && typeof evt.total === "number") {
-        const p = Math.max(0, Math.min(1, evt.current / evt.total));
+      if ((evt.type === "file" || evt.type === "file-start") && typeof evt.current === "number" && typeof evt.total === "number") {
+        const completed = evt.type === "file-start" ? evt.current - 1 : evt.current;
+        const p = Math.max(0, Math.min(1, completed / evt.total));
         const mapped = p;
         progress = mapped;
         percentText = `${Math.round(mapped * 100)}%`;
         lastProgress = p;
+        sendProgress(
+          "model.downloadingFraction",
+          percentText,
+          progress,
+          evt.filename,
+          { current: completed, total: evt.total }
+        );
+        return;
       }
       if (evt.type === "done" && evt.ok) {
         progress = 1;
@@ -8118,16 +8175,6 @@ async function ensureModelReady(parent, options = {}) {
       if (evt.type === "error" && typeof evt.message === "string") {
         progress = Math.max(progress, 0);
         lastError = evt.message;
-      }
-      if (evt.type === "file" && typeof evt.current === "number" && typeof evt.total === "number") {
-        sendProgress(
-          "model.downloadingFraction",
-          percentText,
-          progress,
-          evt.filename,
-          { current: evt.current, total: evt.total }
-        );
-        return;
       }
       if (evt.type === "done" && evt.ok) {
         sendProgress("model.ready", percentText, progress, evt.filename);

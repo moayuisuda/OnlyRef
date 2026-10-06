@@ -22,6 +22,7 @@ import {
 } from "../store/wallpaperStore";
 import { ToggleSwitch } from "./ToggleSwitch";
 import { CompactSelect } from "./CompactSelect";
+import { SettingsBlockTitle } from "./SettingsBlockTitle";
 import type { I18nKey } from "../../shared/i18n/types";
 
 const INTERVAL_KEY_BY_MINUTES: Record<WallpaperIntervalMinutes, I18nKey> = {
@@ -166,13 +167,12 @@ export const WallpaperPanel = () => {
   };
 
   return (
-    <div className="w-[360px] p-4">
+    <div className="min-w-0 px-3 py-3">
       <div className="flex items-start justify-between gap-5">
         <div className="min-w-0">
-          <div className="flex items-center gap-2 text-sm font-semibold text-neutral-100">
-            <Image size={15} className="text-[var(--color-primary)]" />
+          <SettingsBlockTitle icon={Image}>
             {t("wallpaper.title")}
-          </div>
+          </SettingsBlockTitle>
           <p className="mt-1.5 text-[11px] leading-5 text-neutral-500">
             {t("wallpaper.description")}
           </p>

@@ -140,7 +140,6 @@ const getRuntimeEnv = (): NodeJS.ProcessEnv => {
     HF_HUB_DISABLE_PROGRESS_BARS: "1",
     UV_INDEX_URL: PYPI_INDEX_URL,
     PIP_INDEX_URL: PYPI_INDEX_URL,
-    HF_ENDPOINT: "https://hf-mirror.com",
     UV_CACHE_DIR: getManagedUvCacheDir(),
   };
 };

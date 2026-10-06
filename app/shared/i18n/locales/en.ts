@@ -1,4 +1,6 @@
 export const en = {
+  'settings.section.general': 'General',
+  'settings.section.ai': 'AI & indexing',
   'common.ok': 'OK',
   'common.confirm': 'Confirm',
   'common.cancel': 'Cancel',
