@@ -7012,14 +7012,14 @@ function normalizeWindowBounds(bounds) {
   const width = Math.max(
     NORMAL_WINDOW_MIN_WIDTH,
     Math.min(
-      typeof (bounds == null ? void 0 : bounds.width) === "number" ? bounds.width : 400,
+      typeof (bounds == null ? void 0 : bounds.width) === "number" ? bounds.width : 540,
       workArea.width
     )
   );
   const height = Math.max(
     NORMAL_WINDOW_MIN_HEIGHT,
     Math.min(
-      typeof (bounds == null ? void 0 : bounds.height) === "number" ? bounds.height : 300,
+      typeof (bounds == null ? void 0 : bounds.height) === "number" ? bounds.height : 560,
       workArea.height
     )
   );

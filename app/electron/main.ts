@@ -370,14 +370,14 @@ function normalizeWindowBounds(
   const width = Math.max(
     NORMAL_WINDOW_MIN_WIDTH,
     Math.min(
-      typeof bounds?.width === "number" ? bounds.width : 400,
+      typeof bounds?.width === "number" ? bounds.width : 540,
       workArea.width,
     ),
   );
   const height = Math.max(
     NORMAL_WINDOW_MIN_HEIGHT,
     Math.min(
-      typeof bounds?.height === "number" ? bounds.height : 300,
+      typeof bounds?.height === "number" ? bounds.height : 560,
       workArea.height,
     ),
   );
