@@ -1,3 +1,4 @@
+import { productName } from '../../../package.json';
 import type { I18nDict } from '../types.ts';
 
 export const zh: I18nDict = {
@@ -82,8 +83,8 @@ export const zh: I18nDict = {
   'toast.windowAlwaysOnTopUpdateFailed': '\u66f4\u65b0\u7f6e\u9876\u72b6\u6001\u5931\u8d25\uff1a{{error}}',
   'toast.launchAtLoginUpdateFailed': '更新开机自启失败：{{error}}',
 
-  'envInit.brandTitle': 'PiCaptain',
-  'envInit.heading': '正在准备 PiCaptain…',
+  'envInit.brandTitle': productName,
+  'envInit.heading': `正在准备 ${productName}…`,
   'envInit.subheading': '首次运行可能会下载工具、安装依赖并拉取本地模型，这是一次性步骤。',
   'envInit.preparing': '准备中…',
   'envInit.checkingUv': '正在检查 uv…',
@@ -107,7 +108,7 @@ export const zh: I18nDict = {
   'indexing.progress': '索引中 {{current}}/{{total}}…',
   'indexing.completed': '完成',
 
-  'errors.title': 'PiCaptain 出现错误',
+  'errors.title': `${productName} 出现错误`,
   'errors.unexpected': '发生了一个意外错误。',
   'errors.applicationLogTitle': '应用日志（最近 50KB）',
   'errors.loadingLogs': '正在加载日志…',
@@ -197,7 +198,7 @@ export const zh: I18nDict = {
   'dialog.modelDownloadFailedTitle': '模型下载失败',
   'dialog.modelDownloadFailedMessage': '无法下载模型文件。',
   'dialog.modelDownloadFailedDetail': '退出码：{{code}}\n进度：{{progress}}%\n模型目录：{{dir}}',
-  'dialog.chooseStorageFolderTitle': '选择 PiCaptain 存储文件夹',
+  'dialog.chooseStorageFolderTitle': `选择 ${productName} 存储文件夹`,
 
   'toast.globalError': '错误：{{message}}',
   'toast.unhandledRejection': '未处理的 Promise 拒绝：{{reason}}',
@@ -228,7 +229,7 @@ export const zh: I18nDict = {
   'settings.open': '\u6253\u5f00\u8bbe\u7f6e',
   'settings.storageFolder': '\u5b58\u50a8\u6587\u4ef6\u5939',
   'settings.launchAtLogin': '开机自启',
-  'settings.launchAtLogin.desc': '登录系统后自动启动 PiCaptain',
+  'settings.launchAtLogin.desc': `登录系统后自动启动 ${productName}`,
   'settings.vectorOnDemandWarmup': '按需预热引擎',
   'settings.vectorOnDemandWarmup.desc':
     '开启后引擎空闲时自动释放，需要时重新预热；关闭可减少搜索等待。',
@@ -288,7 +289,7 @@ export const zh: I18nDict = {
   'envInit.selectStorage': '\u8bf7\u5148\u9009\u62e9\u6570\u636e\u76ee\u5f55\uff0c\u7136\u540e\u7ee7\u7eed\u521d\u59cb\u5316\u3002',
   'envInit.selectStorageTitle': '\u9009\u62e9\u6570\u636e\u76ee\u5f55',
   'envInit.selectStorageDetail':
-    '\u8bf7\u5148\u9009\u4e00\u4e2a\u72ec\u7acb\u7684\u6570\u636e\u76ee\u5f55\uff0cPiCaptain \u4f1a\u5728\u5176\u4e2d\u5b58\u653e\u6570\u636e\u5e93\u3001\u56fe\u7247\u548c\u6a21\u578b\u3002',
+    `\u8bf7\u5148\u9009\u4e00\u4e2a\u72ec\u7acb\u7684\u6570\u636e\u76ee\u5f55\uff0c${productName} \u4f1a\u5728\u5176\u4e2d\u5b58\u653e\u6570\u636e\u5e93\u3001\u56fe\u7247\u548c\u6a21\u578b\u3002`,
   'envInit.selectStorageAction': '\u9009\u62e9\u76ee\u5f55',
   'dialog.invalidStorageFolderTitle': '\u65e0\u6cd5\u4f7f\u7528\u8be5\u76ee\u5f55',
   'dialog.invalidStorageFolderMessage':
@@ -347,7 +348,7 @@ export const zh: I18nDict = {
   'wallpaper.status.displayUnavailable': '选中的显示器当前不可用',
   'wallpaper.status.requestFailed': '无法连接本地壁纸服务',
   'wallpaper.status.unsupported': '当前系统不支持壁纸更新',
-  'wallpaper.tray.open': '打开 PiCaptain',
+  'wallpaper.tray.open': `打开 ${productName}`,
   'wallpaper.tray.refresh': '立即更换壁纸',
-  'wallpaper.tray.quit': '退出 PiCaptain',
+  'wallpaper.tray.quit': `退出 ${productName}`,
 };

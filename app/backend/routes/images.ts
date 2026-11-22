@@ -534,7 +534,7 @@ export const createImagesRouter = (deps: ImagesRouteDeps) => {
 
       const localPath = path.join(
         os.tmpdir(),
-        `picaptain-search-${uuidv4()}${extension}`
+        `picpin-search-${uuidv4()}${extension}`
       );
       await lockedFs.writeFile(localPath, imageBuffer);
       return {

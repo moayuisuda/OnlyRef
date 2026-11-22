@@ -25,9 +25,9 @@ const ORIGINAL_WALLPAPERS_KEY = "wallpaperOriginals";
 const LAST_UPDATED_AT_KEY = "wallpaperLastUpdatedAt";
 const GENERATED_DIR_NAME = "wallpapers";
 const DISPLAY_DIR_PATTERN = /^display-[a-f0-9]{16}$/;
-const GENERATED_FILE_PREFIX = "picaptain-wallpaper-";
-const GENERATED_FILE_PATTERN = /^picaptain-wallpaper-\d+\.jpg$/;
-const GENERATED_TEMP_PATTERN = /^picaptain-wallpaper-\d+\.tmp\.jpg$/;
+const GENERATED_FILE_PREFIX = "picpin-wallpaper-";
+const GENERATED_FILE_PATTERN = /^picpin-wallpaper-\d+\.jpg$/;
+const GENERATED_TEMP_PATTERN = /^picpin-wallpaper-\d+\.tmp\.jpg$/;
 const DISPLAY_CHANGE_DEBOUNCE_MS = 800;
 const DISPLAY_ENUMERATION_RETRY_DELAYS_MS = [0, 300, 900] as const;
 const DISPLAY_RECOVERY_DELAYS_MS = [2_000, 5_000, 15_000] as const;
@@ -43,7 +43,7 @@ const WINDOWS_DESKTOP_API_SOURCE = [
   "using System;",
   "using System.Collections.Generic;",
   "using System.Runtime.InteropServices;",
-  "namespace PiCaptain {",
+  "namespace PicPin {",
   "  [StructLayout(LayoutKind.Sequential)]",
   "  public struct NativeRect { public int Left; public int Top; public int Right; public int Bottom; }",
   "  [ComImport, Guid(\"B92B56A9-8B55-4E14-9A89-0199BBB6F93B\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]",
@@ -175,7 +175,7 @@ const wait = (delayMs: number): Promise<void> =>
 
 const queryWindowsDisplays = async (): Promise<WallpaperDisplay[]> => {
   const script = getWindowsApiScript(
-    "[PiCaptain.DesktopWallpaperApi]::GetDisplays() | ConvertTo-Json -Compress",
+    "[PicPin.DesktopWallpaperApi]::GetDisplays() | ConvertTo-Json -Compress",
   );
   const { stdout } = await execFileAsync(
     "powershell.exe",
@@ -240,7 +240,7 @@ const applyWindowsWallpaper = async (
   const wallpaperArgument =
     imagePath === null ? "$null" : `'${escapePowerShellLiteral(imagePath)}'`;
   const script = getWindowsApiScript(
-    `[PiCaptain.DesktopWallpaperApi]::SetWallpaper('${escapePowerShellLiteral(displayId)}', ${wallpaperArgument})`,
+    `[PicPin.DesktopWallpaperApi]::SetWallpaper('${escapePowerShellLiteral(displayId)}', ${wallpaperArgument})`,
   );
   await execFileAsync(
     "powershell.exe",
@@ -251,7 +251,7 @@ const applyWindowsWallpaper = async (
 
 const getWindowsWallpaper = async (displayId: string): Promise<string | null> => {
   const script = getWindowsApiScript(
-    `[PiCaptain.DesktopWallpaperApi]::GetWallpaper('${escapePowerShellLiteral(displayId)}') | ConvertTo-Json -Compress`,
+    `[PicPin.DesktopWallpaperApi]::GetWallpaper('${escapePowerShellLiteral(displayId)}') | ConvertTo-Json -Compress`,
   );
   const { stdout } = await execFileAsync(
     "powershell.exe",

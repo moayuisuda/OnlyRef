@@ -34,7 +34,7 @@ def _load_image(path: str) -> Image.Image:
 
 
 def _get_model_dir() -> str:
-    configured = os.environ.get("PROREF_MODEL_DIR", "").strip()
+    configured = os.environ.get("PICPIN_MODEL_DIR", "").strip()
     if configured:
         return configured
     script_dir = os.path.dirname(os.path.abspath(__file__))

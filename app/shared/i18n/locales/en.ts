@@ -1,3 +1,4 @@
+import { productName } from '../../../package.json';
 export const en = {
   'settings.section.general': 'General',
   'settings.section.ai': 'AI & indexing',
@@ -105,15 +106,15 @@ export const en = {
   'toast.launchAtLoginUpdateFailed': 'Failed to update launch at login: {{error}}',
   'toast.updateDownloaded': 'Update downloaded. Restart to install v{{version}}',
 
-  'envInit.brandTitle': 'PiCaptain',
-  'envInit.heading': 'Preparing PiCaptain...',
+  'envInit.brandTitle': productName,
+  'envInit.heading': `Preparing ${productName}...`,
   'envInit.subheading':
     'First run may download tools, install dependencies, and fetch the local model. This is a one-time step.',
   'envInit.preparing': 'Preparing...',
   'envInit.selectStorage': 'Choose a data folder to continue initialization.',
   'envInit.selectStorageTitle': 'Choose data folder',
   'envInit.selectStorageDetail':
-    'Pick a dedicated data folder first. PiCaptain will store its database, images, and models there.',
+    `Pick a dedicated data folder first. ${productName} will store its database, images, and models there.`,
   'envInit.selectStorageAction': 'Choose folder',
   'envInit.checkingUv': 'Checking uv...',
   'envInit.downloadingUv': 'Downloading uv...',
@@ -155,7 +156,7 @@ export const en = {
   'autoTagAll.progress': 'Auto-tagging {{current}}/{{total}}...',
   'autoTagAll.completed': 'Auto-tag completed',
 
-  'errors.title': 'PiCaptain encountered an error',
+  'errors.title': `${productName} encountered an error`,
   'errors.unexpected': 'An unexpected error occurred.',
   'errors.applicationLogTitle': 'Application Log (Last 50KB)',
   'errors.loadingLogs': 'Loading logs...',
@@ -256,7 +257,7 @@ export const en = {
   'dialog.modelDownloadFailedMessage': 'Failed to download model files.',
   'dialog.modelDownloadFailedDetail':
     'Exit code: {{code}}\nProgress: {{progress}}%\nModel dir: {{dir}}',
-  'dialog.chooseStorageFolderTitle': 'Choose PiCaptain storage folder',
+  'dialog.chooseStorageFolderTitle': `Choose ${productName} storage folder`,
   'dialog.invalidStorageFolderTitle': 'Storage folder unavailable',
   'dialog.invalidStorageFolderMessage':
     'The storage folder cannot be inside the app installation directory.',
@@ -289,7 +290,7 @@ export const en = {
   'settings.open': 'Open settings',
   'settings.storageFolder': 'Storage folder',
   'settings.launchAtLogin': 'Launch at login',
-  'settings.launchAtLogin.desc': 'Start PiCaptain automatically after you sign in',
+  'settings.launchAtLogin.desc': `Start ${productName} automatically after you sign in`,
   'settings.vectorOnDemandWarmup': 'Warm up engine on demand',
   'settings.vectorOnDemandWarmup.desc':
     'Release the engine after it is idle and warm it up again when needed. Keep this off for faster searches.',
@@ -354,7 +355,7 @@ export const en = {
   'wallpaper.status.displayUnavailable': 'The selected display is unavailable',
   'wallpaper.status.requestFailed': 'Could not reach the local wallpaper service',
   'wallpaper.status.unsupported': 'This system does not support wallpaper updates',
-  'wallpaper.tray.open': 'Open PiCaptain',
+  'wallpaper.tray.open': `Open ${productName}`,
   'wallpaper.tray.refresh': 'Change wallpaper now',
-  'wallpaper.tray.quit': 'Quit PiCaptain',
+  'wallpaper.tray.quit': `Quit ${productName}`,
 } as const;

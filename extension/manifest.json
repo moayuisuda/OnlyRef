@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "OnlyRef Collector",
+  "name": "PicPin Collector",
   "version": "1.1",
-  "description": "Collect images to OnlyRef via Drag & Drop",
+  "description": "Collect images to PicPin via Drag & Drop",
   "permissions": [
     "activeTab",
     "scripting"

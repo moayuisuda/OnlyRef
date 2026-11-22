@@ -1,6 +1,6 @@
 {
-  "name": "pic-captain",
-  "productName": "PiCaptain",
+  "name": "picpin",
+  "productName": "PicPin",
   "private": true,
   "version": "1.0.28",
   "type": "module",

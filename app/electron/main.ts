@@ -22,12 +22,6 @@ import {
 import { spawn } from "child_process";
 import { lockedFs, withFileLock } from "../backend/fileLock";
 
-// Ensure app name is correct for log paths
-if (!app.isPackaged) {
-  // In development, electron might use 'Electron' or 'app' as name
-  app.setName("PiCaptain");
-}
-
 Object.assign(console, log.functions);
 log.transports.file.level = "info";
 // Set max log size to 5MB
@@ -51,6 +45,8 @@ import {
   startServer as startApiServer,
   DEFAULT_SERVER_PORT,
   getStorageDir,
+  hasPersistedStorageRoot,
+  restoreStoragePaths,
   getRandomWallpaperImagePaths,
   patchSettings as patchSharedSettings,
   readSettings as readSharedSettings,
@@ -59,7 +55,6 @@ import {
   warmupVectorServiceOnStartup,
   type RendererChannel,
 } from "../backend/server";
-import { configureSettingsStore } from "../backend/settingsStore";
 import {
   ensurePythonRuntime,
   getManagedPythonRuntimeDir,
@@ -88,12 +83,8 @@ const APP_ID = "com.picaptain.app";
 const UPDATE_FEED_URL =
   "https://xget-5sd.pages.dev/gh/moayuisuda/OnlyRef/releases/latest/download";
 const DEV_APP_UPDATE_CONFIG_FILE = "dev-app-update.yml";
-const DEV_UPDATER_CACHE_DIR_NAME = "picaptain-updater";
+const DEV_UPDATER_CACHE_DIR_NAME = "picpin-updater";
 const WINDOW_ICON_PATH = path.join(__dirname, "../resources/icon.png");
-const STORAGE_ROOT_CONFIG_PATH = path.join(
-  app.getPath("userData"),
-  "picaptain_config.json",
-);
 
 let toggleWindowShortcut = DEFAULT_TOGGLE_WINDOW_SHORTCUT;
 
@@ -158,7 +149,7 @@ function syncWallpaperTray(enabled: boolean): void {
 
   const locale = normalizeLocale(app.getLocale());
   wallpaperTray = new Tray(WINDOW_ICON_PATH);
-  wallpaperTray.setToolTip("PiCaptain");
+  wallpaperTray.setToolTip(app.getName());
   wallpaperTray.setContextMenu(
     Menu.buildFromTemplate([
       {
@@ -234,26 +225,6 @@ let galleryPreviewPayload: GalleryPreviewWindowPayload | null = null;
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
-}
-
-const ensureSettingsStoreConfigured = (): void => {
-  configureSettingsStore(path.join(getStorageDir(), "settings.json"));
-};
-
-async function hasPersistedStorageRoot(): Promise<boolean> {
-  if (!(await lockedFs.pathExists(STORAGE_ROOT_CONFIG_PATH))) {
-    return false;
-  }
-
-  try {
-    const raw = await lockedFs.readJson<{ storageDir?: unknown }>(
-      STORAGE_ROOT_CONFIG_PATH,
-    );
-    return typeof raw?.storageDir === "string" && raw.storageDir.trim().length > 0;
-  } catch (error) {
-    log.warn("Failed to read storage root config", error);
-    return false;
-  }
 }
 
 const normalizeComparablePath = (targetPath: string): string => {
@@ -345,7 +316,6 @@ async function loadShortcuts(): Promise<void> {
 
 async function readPersistedSettings(): Promise<PersistedSettings> {
   try {
-    ensureSettingsStoreConfigured();
     const settings = await readSharedSettings();
     if (settings && typeof settings === "object") {
       return settings as PersistedSettings;
@@ -360,7 +330,6 @@ async function writePersistedSettings(
   patch: Partial<PersistedSettings>,
 ): Promise<void> {
   try {
-    ensureSettingsStoreConfigured();
     await patchSharedSettings(patch);
   } catch (error) {
     log.error("Failed to write settings", error);
@@ -1295,7 +1264,7 @@ function getUvCandidates(): string[] {
   const bundled = getBundledUvPath();
   if (bundled) candidates.push(bundled);
 
-  const env = process.env.PROREF_UV_PATH?.trim();
+  const env = process.env.PICPIN_UV_PATH?.trim();
   if (env) candidates.push(env);
 
   // 保留用户目录下的已管理 uv 作为次级来源
@@ -1616,7 +1585,7 @@ async function ensureUvInstalled(
 
   const uvPath = getManagedUvPath();
   if (await lockedFs.pathExists(uvPath)) {
-    process.env.PROREF_UV_PATH = uvPath;
+    process.env.PICPIN_UV_PATH = uvPath;
     return uvPath;
   }
 
@@ -1654,7 +1623,7 @@ async function ensureUvInstalled(
   if (process.platform !== "win32") {
     await withFileLock(uvPath, () => fs.chmod(uvPath, 0o755));
   }
-  process.env.PROREF_UV_PATH = uvPath;
+  process.env.PICPIN_UV_PATH = uvPath;
   return uvPath;
 }
 
@@ -1667,7 +1636,7 @@ async function preparePythonRuntime(
   ) => void,
 ): Promise<void> {
   const modelDir = getModelDir();
-  process.env.PROREF_MODEL_DIR = modelDir; // Ensure env is set for sync if needed
+  process.env.PICPIN_MODEL_DIR = modelDir; // Ensure env is set for sync if needed
   reportEnvInit("envInit.preparing", 0);
 
   // 1. Ensure uv
@@ -1718,8 +1687,8 @@ async function ensureModelReady(
 ): Promise<void> {
   const { reportProgress } = options;
   const modelDir = getModelDir();
-  process.env.PROREF_MODEL_DIR = modelDir;
-  const debug = process.env.PROREF_DEBUG_MODEL === "1";
+  process.env.PICPIN_MODEL_DIR = modelDir;
+  const debug = process.env.PICPIN_DEBUG_MODEL === "1";
   if (debug) console.log("[model] dir:", modelDir);
 
   const modelMissing = !(await hasRequiredModelFiles(modelDir));
@@ -1787,7 +1756,7 @@ async function ensureModelReady(
       cwd: pythonDir,
       env: {
         ...process.env,
-        PROREF_MODEL_DIR: modelDir,
+        PICPIN_MODEL_DIR: modelDir,
         PYTHONIOENCODING: "utf-8",
         PYTHONUTF8: "1",
         TRANSFORMERS_VERBOSITY: "error",
@@ -2313,19 +2282,20 @@ ipcMain.handle(
 );
 
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return;
   log.info("App starting...");
   log.info("Log file location:", log.transports.file.getFile().path);
   log.info("App path:", app.getAppPath());
   log.info("User data:", app.getPath("userData"));
   await prepareAutoUpdater();
 
-  if (process.platform === "win32") {
-    app.setAppUserModelId(APP_ID);
-  }
-
-  const hasStorageRoot = await hasPersistedStorageRoot();
-  const taskLoadShortcuts = loadShortcuts();
   try {
+    if (process.platform === "win32") {
+      app.setAppUserModelId(APP_ID);
+    }
+    await restoreStoragePaths();
+    const hasStorageRoot = hasPersistedStorageRoot();
+    const taskLoadShortcuts = loadShortcuts();
     if (hasStorageRoot) {
       await Promise.all([taskLoadShortcuts, startServer()]);
     } else {
@@ -2351,6 +2321,7 @@ app.whenReady().then(async () => {
     const message = e instanceof Error ? e.message : String(e);
     console.error("[startup] initialization failed:", message);
     log.error("[startup] initialization failed:", message);
+    dialog.showErrorBox(app.getName(), message);
     app.quit();
     return;
   }

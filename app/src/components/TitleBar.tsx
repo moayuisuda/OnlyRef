@@ -444,7 +444,7 @@ export const TitleBar: React.FC = () => {
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <div className="flex items-center gap-2">
             <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[radial-gradient(circle_at_35%_30%,rgba(57,197,187,0.24),rgba(57,197,187,0.08)_62%,rgba(57,197,187,0)_100%)] text-[var(--color-primary)] shadow-[0_0_18px_rgba(57,197,187,0.18)]">
-              <BrandWheelIcon size={15} title="PiCaptain" />
+              <BrandWheelIcon size={15} title={t("envInit.brandTitle")} />
             </div>
             <div className="text-sm font-semibold tracking-[0.02em] text-white">
               <BrandName />

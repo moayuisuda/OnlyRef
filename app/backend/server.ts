@@ -17,6 +17,7 @@ import {
   type WallpaperRouteHandlers,
 } from "./routes/wallpaper";
 import { lockedFs, withFileLock } from "./fileLock";
+import { loadStorageRoot, saveStorageRoot } from "./storageRoot";
 import {
   configureSettingsStore,
   patchSettings,
@@ -52,33 +53,13 @@ export const DEFAULT_SERVER_PORT = 30003;
 const MAX_SERVER_PORT = 65535;
 const API_HOSTNAME = "localhost";
 
-const CONFIG_FILE = path.join(app.getPath("userData"), "picaptain_config.json");
-
-const DEFAULT_STORAGE_DIR = path.join(
-  app.getPath("userData"),
-  "picaptain_storage",
-);
+const PROFILE_DIR = app.getPath("userData");
+const DEFAULT_STORAGE_DIR = path.join(PROFILE_DIR, "storage");
 const HTTP_SERVER_SHUTDOWN_TIMEOUT_MS = 1000;
 const PROCESS_SHUTDOWN_TIMEOUT_MS = 2500;
 
-const loadStorageRoot = async (): Promise<string> => {
-  // 1. Try reading from config file in userData
-  try {
-    if (await lockedFs.pathExists(CONFIG_FILE)) {
-      const raw = await lockedFs
-        .readJson<{ storageDir?: string }>(CONFIG_FILE)
-        .catch(() => null);
-      if (raw && typeof raw.storageDir === "string" && raw.storageDir.trim()) {
-        return raw.storageDir;
-      }
-    }
-  } catch {
-    // ignore and fallback
-  }
-
-  // 2. Fallback to app userData storage
-  return DEFAULT_STORAGE_DIR;
-};
+let storageRootConfigured = false;
+export const hasPersistedStorageRoot = () => storageRootConfigured;
 
 let STORAGE_DIR = DEFAULT_STORAGE_DIR;
 let IMAGE_DIR = path.join(STORAGE_DIR, "images");
@@ -104,10 +85,12 @@ const ensureStorageDirs = async (root: string) => {
   ]);
 };
 
-const persistStorageRootConfig = async (root: string) => {
-  await withFileLock(CONFIG_FILE, async () => {
-    await fs.writeJson(CONFIG_FILE, { storageDir: root });
-  });
+export const restoreStoragePaths = async () => {
+  const root = await loadStorageRoot(PROFILE_DIR);
+  if (root !== null) {
+    updateStoragePaths(root);
+    storageRootConfigured = true;
+  }
 };
 
 export const getStorageDir = (): string => STORAGE_DIR;
@@ -126,10 +109,10 @@ export const setStorageRoot = async (root: string) => {
   const trimmed = root.trim();
   if (!trimmed) return;
 
+  await ensureStorageDirs(trimmed);
+  await saveStorageRoot(PROFILE_DIR, trimmed);
   updateStoragePaths(trimmed);
-
-  await ensureStorageDirs(STORAGE_DIR);
-  await persistStorageRootConfig(STORAGE_DIR);
+  storageRootConfigured = true;
   initDatabase();
 };
 
@@ -279,8 +262,6 @@ const closeHttpServer = async (httpServer: HttpServer): Promise<void> => {
 };
 
 const initializeStorage = async () => {
-  const root = await loadStorageRoot();
-  updateStoragePaths(root);
   await ensureStorageDirs(STORAGE_DIR);
   // storageDir 只能在用户显式选择后持久化，启动阶段不做隐式写回。
   initDatabase();
@@ -318,7 +299,7 @@ class BasePythonService {
 
     candidates.push(this.getBundledUvPath());
 
-    const env = process.env.PROREF_UV_PATH?.trim();
+    const env = process.env.PICPIN_UV_PATH?.trim();
     if (env) candidates.push(env);
 
     candidates.push(this.getManagedUvPath());
@@ -437,7 +418,7 @@ class BasePythonService {
   ): ChildProcess {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
-      PROREF_MODEL_DIR: path.join(
+      PICPIN_MODEL_DIR: path.join(
         getStorageDir(),
         "models",
         VECTOR_MODEL_DIR_NAME,
@@ -1028,7 +1009,7 @@ function downloadImage(url: string, dest: string): Promise<void> {
         signal: abortController.signal,
         headers: {
           "User-Agent":
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 LookBack/1.0",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 PicPin/1.0",
           Accept:
             "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
           "Accept-Language": "en-US,en;q=0.9",

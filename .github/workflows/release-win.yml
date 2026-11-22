@@ -30,12 +30,12 @@ jobs:
         run: npm ci
 
       - name: Build Windows artifacts
-        run: npm run build:win -- --publish never
+        run: npm run build -- --win --x64 --publish never
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: picaptain-win
+          name: picpin-win
           path: app/dist/**
 
   publish-release:
@@ -47,7 +47,7 @@ jobs:
       - name: Download Windows artifacts
         uses: actions/download-artifact@v4
         with:
-          name: picaptain-win
+          name: picpin-win
           path: release-assets/win
 
       - name: Normalize Windows asset names

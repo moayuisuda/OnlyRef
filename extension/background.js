@@ -1,4 +1,4 @@
-// Background script for OnlyRef Collector
+// Background script for PicPin Collector
 chrome.runtime.onInstalled.addListener(() => {
-  console.log("OnlyRef Collector installed");
+  console.log("PicPin Collector installed");
 });

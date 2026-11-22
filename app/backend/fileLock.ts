@@ -64,6 +64,12 @@ export const lockedFs = {
     withFileLock(target, () => fs.readJson(target) as Promise<T>),
   writeJson: (target: string, data: unknown) =>
     withFileLock(target, () => fs.writeJson(target, data)),
+  writeJsonAtomic: (target: string, data: unknown) =>
+    withFileLock(target, async () => {
+      const staging = `${target}.tmp`;
+      await fs.writeJson(staging, data);
+      await fs.rename(staging, target);
+    }),
   readFile: (target: string, options?: unknown) =>
     withFileLock(target, () => fs.readFile(target, options as never)),
   writeFile: (

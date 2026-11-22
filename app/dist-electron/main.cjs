@@ -80,6 +80,11 @@ var lockedFs = {
   ensureFile: (target) => withFileLock(target, () => import_fs_extra.default.ensureFile(target)),
   readJson: (target) => withFileLock(target, () => import_fs_extra.default.readJson(target)),
   writeJson: (target, data) => withFileLock(target, () => import_fs_extra.default.writeJson(target, data)),
+  writeJsonAtomic: (target, data) => withFileLock(target, async () => {
+    const staging = `${target}.tmp`;
+    await import_fs_extra.default.writeJson(staging, data);
+    await import_fs_extra.default.rename(staging, target);
+  }),
   readFile: (target, options) => withFileLock(target, () => import_fs_extra.default.readFile(target, options)),
   writeFile: (target, data, options) => withFileLock(
     target,
@@ -1127,7 +1132,7 @@ var createImagesRouter = (deps) => {
       }
       const localPath = import_path3.default.join(
         import_os.default.tmpdir(),
-        `picaptain-search-${(0, import_uuid.v4)()}${extension}`
+        `picpin-search-${(0, import_uuid.v4)()}${extension}`
       );
       await lockedFs.writeFile(localPath, imageBuffer);
       return {
@@ -2796,6 +2801,20 @@ var createWallpaperRouter = (handlers) => {
   return router;
 };
 
+// backend/storageRoot.ts
+var import_node_path = __toESM(require("path"), 1);
+var storageConfigPath = (profileDir) => import_node_path.default.join(profileDir, "storage.json");
+var saveStorageRoot = (profileDir, storageDir) => lockedFs.writeJsonAtomic(storageConfigPath(profileDir), { storageDir });
+async function loadStorageRoot(profileDir) {
+  const config = storageConfigPath(profileDir);
+  if (!await lockedFs.pathExists(config)) return null;
+  const raw = await lockedFs.readJson(config);
+  if (typeof (raw == null ? void 0 : raw.storageDir) !== "string" || !import_node_path.default.isAbsolute(raw.storageDir)) {
+    throw new Error(`Invalid storage directory in ${config}`);
+  }
+  return raw.storageDir;
+}
+
 // backend/settingsStore.ts
 var import_fs_extra3 = __toESM(require("fs-extra"), 1);
 var settingsFilePath = "";
@@ -4155,25 +4174,12 @@ var VECTOR_MODEL_REQUIRED_FILES = [
 var DEFAULT_SERVER_PORT = 30003;
 var MAX_SERVER_PORT = 65535;
 var API_HOSTNAME = "localhost";
-var CONFIG_FILE = import_path5.default.join(import_electron3.app.getPath("userData"), "picaptain_config.json");
-var DEFAULT_STORAGE_DIR = import_path5.default.join(
-  import_electron3.app.getPath("userData"),
-  "picaptain_storage"
-);
+var PROFILE_DIR = import_electron3.app.getPath("userData");
+var DEFAULT_STORAGE_DIR = import_path5.default.join(PROFILE_DIR, "storage");
 var HTTP_SERVER_SHUTDOWN_TIMEOUT_MS = 1e3;
 var PROCESS_SHUTDOWN_TIMEOUT_MS = 2500;
-var loadStorageRoot = async () => {
-  try {
-    if (await lockedFs.pathExists(CONFIG_FILE)) {
-      const raw = await lockedFs.readJson(CONFIG_FILE).catch(() => null);
-      if (raw && typeof raw.storageDir === "string" && raw.storageDir.trim()) {
-        return raw.storageDir;
-      }
-    }
-  } catch {
-  }
-  return DEFAULT_STORAGE_DIR;
-};
+var storageRootConfigured = false;
+var hasPersistedStorageRoot = () => storageRootConfigured;
 var STORAGE_DIR = DEFAULT_STORAGE_DIR;
 var IMAGE_DIR = import_path5.default.join(STORAGE_DIR, "images");
 var SETTINGS_FILE = import_path5.default.join(STORAGE_DIR, "settings.json");
@@ -4195,10 +4201,12 @@ var ensureStorageDirs = async (root) => {
     lockedFs.ensureDir(import_path5.default.join(root, "model"))
   ]);
 };
-var persistStorageRootConfig = async (root) => {
-  await withFileLock(CONFIG_FILE, async () => {
-    await import_fs_extra5.default.writeJson(CONFIG_FILE, { storageDir: root });
-  });
+var restoreStoragePaths = async () => {
+  const root = await loadStorageRoot(PROFILE_DIR);
+  if (root !== null) {
+    updateStoragePaths(root);
+    storageRootConfigured = true;
+  }
 };
 var getStorageDir = () => STORAGE_DIR;
 var getRandomWallpaperImagePaths = (count) => {
@@ -4210,9 +4218,10 @@ var getRandomWallpaperImagePaths = (count) => {
 var setStorageRoot = async (root) => {
   const trimmed = root.trim();
   if (!trimmed) return;
+  await ensureStorageDirs(trimmed);
+  await saveStorageRoot(PROFILE_DIR, trimmed);
   updateStoragePaths(trimmed);
-  await ensureStorageDirs(STORAGE_DIR);
-  await persistStorageRootConfig(STORAGE_DIR);
+  storageRootConfigured = true;
   initDatabase();
 };
 var imageDb = null;
@@ -4328,8 +4337,6 @@ var closeHttpServer = async (httpServer) => {
   await closeTask;
 };
 var initializeStorage = async () => {
-  const root = await loadStorageRoot();
-  updateStoragePaths(root);
   await ensureStorageDirs(STORAGE_DIR);
   initDatabase();
 };
@@ -4356,7 +4363,7 @@ var BasePythonService = class {
     var _a;
     const candidates = [];
     candidates.push(this.getBundledUvPath());
-    const env = (_a = process.env.PROREF_UV_PATH) == null ? void 0 : _a.trim();
+    const env = (_a = process.env.PICPIN_UV_PATH) == null ? void 0 : _a.trim();
     if (env) candidates.push(env);
     candidates.push(this.getManagedUvPath());
     const uniq = [];
@@ -4443,7 +4450,7 @@ var BasePythonService = class {
   spawnProcess(command, args, cwd, envOverrides = {}, attachListeners = true) {
     const env = {
       ...process.env,
-      PROREF_MODEL_DIR: import_path5.default.join(
+      PICPIN_MODEL_DIR: import_path5.default.join(
         getStorageDir(),
         "models",
         VECTOR_MODEL_DIR_NAME
@@ -4918,7 +4925,7 @@ function downloadImage(url, dest) {
         redirect: "follow",
         signal: abortController.signal,
         headers: {
-          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 LookBack/1.0",
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 PicPin/1.0",
           Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
           "Accept-Language": "en-US,en;q=0.9",
           ...referer ? { Referer: `${referer}/` } : {},
@@ -5128,6 +5135,9 @@ async function stopServer() {
   closeDatabase();
 }
 
+// package.json
+var productName = "PicPin";
+
 // shared/i18n/locales/en.ts
 var en = {
   "settings.section.general": "General",
@@ -5233,13 +5243,13 @@ var en = {
   "toast.windowAlwaysOnTopUpdateFailed": "Failed to update always-on-top: {{error}}",
   "toast.launchAtLoginUpdateFailed": "Failed to update launch at login: {{error}}",
   "toast.updateDownloaded": "Update downloaded. Restart to install v{{version}}",
-  "envInit.brandTitle": "PiCaptain",
-  "envInit.heading": "Preparing PiCaptain...",
+  "envInit.brandTitle": productName,
+  "envInit.heading": `Preparing ${productName}...`,
   "envInit.subheading": "First run may download tools, install dependencies, and fetch the local model. This is a one-time step.",
   "envInit.preparing": "Preparing...",
   "envInit.selectStorage": "Choose a data folder to continue initialization.",
   "envInit.selectStorageTitle": "Choose data folder",
-  "envInit.selectStorageDetail": "Pick a dedicated data folder first. PiCaptain will store its database, images, and models there.",
+  "envInit.selectStorageDetail": `Pick a dedicated data folder first. ${productName} will store its database, images, and models there.`,
   "envInit.selectStorageAction": "Choose folder",
   "envInit.checkingUv": "Checking uv...",
   "envInit.downloadingUv": "Downloading uv...",
@@ -5273,7 +5283,7 @@ var en = {
   "autoTagAll.starting": "Preparing auto-tag...",
   "autoTagAll.progress": "Auto-tagging {{current}}/{{total}}...",
   "autoTagAll.completed": "Auto-tag completed",
-  "errors.title": "PiCaptain encountered an error",
+  "errors.title": `${productName} encountered an error`,
   "errors.unexpected": "An unexpected error occurred.",
   "errors.applicationLogTitle": "Application Log (Last 50KB)",
   "errors.loadingLogs": "Loading logs...",
@@ -5365,7 +5375,7 @@ var en = {
   "dialog.modelDownloadFailedTitle": "Model download failed",
   "dialog.modelDownloadFailedMessage": "Failed to download model files.",
   "dialog.modelDownloadFailedDetail": "Exit code: {{code}}\nProgress: {{progress}}%\nModel dir: {{dir}}",
-  "dialog.chooseStorageFolderTitle": "Choose PiCaptain storage folder",
+  "dialog.chooseStorageFolderTitle": `Choose ${productName} storage folder`,
   "dialog.invalidStorageFolderTitle": "Storage folder unavailable",
   "dialog.invalidStorageFolderMessage": "The storage folder cannot be inside the app installation directory.",
   "dialog.invalidStorageFolderDetail": "Please choose another location outside:\n{{dir}}",
@@ -5393,7 +5403,7 @@ var en = {
   "settings.open": "Open settings",
   "settings.storageFolder": "Storage folder",
   "settings.launchAtLogin": "Launch at login",
-  "settings.launchAtLogin.desc": "Start PiCaptain automatically after you sign in",
+  "settings.launchAtLogin.desc": `Start ${productName} automatically after you sign in`,
   "settings.vectorOnDemandWarmup": "Warm up engine on demand",
   "settings.vectorOnDemandWarmup.desc": "Release the engine after it is idle and warm it up again when needed. Keep this off for faster searches.",
   "settings.autoTag": "Auto-tag threshold",
@@ -5454,9 +5464,9 @@ var en = {
   "wallpaper.status.displayUnavailable": "The selected display is unavailable",
   "wallpaper.status.requestFailed": "Could not reach the local wallpaper service",
   "wallpaper.status.unsupported": "This system does not support wallpaper updates",
-  "wallpaper.tray.open": "Open PiCaptain",
+  "wallpaper.tray.open": `Open ${productName}`,
   "wallpaper.tray.refresh": "Change wallpaper now",
-  "wallpaper.tray.quit": "Quit PiCaptain"
+  "wallpaper.tray.quit": `Quit ${productName}`
 };
 
 // shared/i18n/locales/zh.ts
@@ -5538,8 +5548,8 @@ var zh = {
   "toast.windowDisplayModeUpdateFailed": "\u5207\u6362\u6D6E\u7A97\u6A21\u5F0F\u5931\u8D25\uFF1A{{error}}",
   "toast.windowAlwaysOnTopUpdateFailed": "\u66F4\u65B0\u7F6E\u9876\u72B6\u6001\u5931\u8D25\uFF1A{{error}}",
   "toast.launchAtLoginUpdateFailed": "\u66F4\u65B0\u5F00\u673A\u81EA\u542F\u5931\u8D25\uFF1A{{error}}",
-  "envInit.brandTitle": "PiCaptain",
-  "envInit.heading": "\u6B63\u5728\u51C6\u5907 PiCaptain\u2026",
+  "envInit.brandTitle": productName,
+  "envInit.heading": `\u6B63\u5728\u51C6\u5907 ${productName}\u2026`,
   "envInit.subheading": "\u9996\u6B21\u8FD0\u884C\u53EF\u80FD\u4F1A\u4E0B\u8F7D\u5DE5\u5177\u3001\u5B89\u88C5\u4F9D\u8D56\u5E76\u62C9\u53D6\u672C\u5730\u6A21\u578B\uFF0C\u8FD9\u662F\u4E00\u6B21\u6027\u6B65\u9AA4\u3002",
   "envInit.preparing": "\u51C6\u5907\u4E2D\u2026",
   "envInit.checkingUv": "\u6B63\u5728\u68C0\u67E5 uv\u2026",
@@ -5560,7 +5570,7 @@ var zh = {
   "indexing.starting": "\u5F00\u59CB\u2026",
   "indexing.progress": "\u7D22\u5F15\u4E2D {{current}}/{{total}}\u2026",
   "indexing.completed": "\u5B8C\u6210",
-  "errors.title": "PiCaptain \u51FA\u73B0\u9519\u8BEF",
+  "errors.title": `${productName} \u51FA\u73B0\u9519\u8BEF`,
   "errors.unexpected": "\u53D1\u751F\u4E86\u4E00\u4E2A\u610F\u5916\u9519\u8BEF\u3002",
   "errors.applicationLogTitle": "\u5E94\u7528\u65E5\u5FD7\uFF08\u6700\u8FD1 50KB\uFF09",
   "errors.loadingLogs": "\u6B63\u5728\u52A0\u8F7D\u65E5\u5FD7\u2026",
@@ -5644,7 +5654,7 @@ var zh = {
   "dialog.modelDownloadFailedTitle": "\u6A21\u578B\u4E0B\u8F7D\u5931\u8D25",
   "dialog.modelDownloadFailedMessage": "\u65E0\u6CD5\u4E0B\u8F7D\u6A21\u578B\u6587\u4EF6\u3002",
   "dialog.modelDownloadFailedDetail": "\u9000\u51FA\u7801\uFF1A{{code}}\n\u8FDB\u5EA6\uFF1A{{progress}}%\n\u6A21\u578B\u76EE\u5F55\uFF1A{{dir}}",
-  "dialog.chooseStorageFolderTitle": "\u9009\u62E9 PiCaptain \u5B58\u50A8\u6587\u4EF6\u5939",
+  "dialog.chooseStorageFolderTitle": `\u9009\u62E9 ${productName} \u5B58\u50A8\u6587\u4EF6\u5939`,
   "toast.globalError": "\u9519\u8BEF\uFF1A{{message}}",
   "toast.unhandledRejection": "\u672A\u5904\u7406\u7684 Promise \u62D2\u7EDD\uFF1A{{reason}}",
   "toast.storageIncompatible": "\u5B58\u50A8\u76EE\u5F55\u4E0D\u517C\u5BB9\uFF0C\u8BF7\u91CD\u7F6E\u6570\u636E\u6587\u4EF6\u5939\u3002",
@@ -5672,7 +5682,7 @@ var zh = {
   "settings.open": "\u6253\u5F00\u8BBE\u7F6E",
   "settings.storageFolder": "\u5B58\u50A8\u6587\u4EF6\u5939",
   "settings.launchAtLogin": "\u5F00\u673A\u81EA\u542F",
-  "settings.launchAtLogin.desc": "\u767B\u5F55\u7CFB\u7EDF\u540E\u81EA\u52A8\u542F\u52A8 PiCaptain",
+  "settings.launchAtLogin.desc": `\u767B\u5F55\u7CFB\u7EDF\u540E\u81EA\u52A8\u542F\u52A8 ${productName}`,
   "settings.vectorOnDemandWarmup": "\u6309\u9700\u9884\u70ED\u5F15\u64CE",
   "settings.vectorOnDemandWarmup.desc": "\u5F00\u542F\u540E\u5F15\u64CE\u7A7A\u95F2\u65F6\u81EA\u52A8\u91CA\u653E\uFF0C\u9700\u8981\u65F6\u91CD\u65B0\u9884\u70ED\uFF1B\u5173\u95ED\u53EF\u51CF\u5C11\u641C\u7D22\u7B49\u5F85\u3002",
   "settings.autoTag": "\u81EA\u52A8\u6807\u7B7E\u9608\u503C",
@@ -5728,7 +5738,7 @@ var zh = {
   "gallery.preview.next": "\u4E0B\u4E00\u5F20",
   "envInit.selectStorage": "\u8BF7\u5148\u9009\u62E9\u6570\u636E\u76EE\u5F55\uFF0C\u7136\u540E\u7EE7\u7EED\u521D\u59CB\u5316\u3002",
   "envInit.selectStorageTitle": "\u9009\u62E9\u6570\u636E\u76EE\u5F55",
-  "envInit.selectStorageDetail": "\u8BF7\u5148\u9009\u4E00\u4E2A\u72EC\u7ACB\u7684\u6570\u636E\u76EE\u5F55\uFF0CPiCaptain \u4F1A\u5728\u5176\u4E2D\u5B58\u653E\u6570\u636E\u5E93\u3001\u56FE\u7247\u548C\u6A21\u578B\u3002",
+  "envInit.selectStorageDetail": `\u8BF7\u5148\u9009\u4E00\u4E2A\u72EC\u7ACB\u7684\u6570\u636E\u76EE\u5F55\uFF0C${productName} \u4F1A\u5728\u5176\u4E2D\u5B58\u653E\u6570\u636E\u5E93\u3001\u56FE\u7247\u548C\u6A21\u578B\u3002`,
   "envInit.selectStorageAction": "\u9009\u62E9\u76EE\u5F55",
   "dialog.invalidStorageFolderTitle": "\u65E0\u6CD5\u4F7F\u7528\u8BE5\u76EE\u5F55",
   "dialog.invalidStorageFolderMessage": "\u6570\u636E\u76EE\u5F55\u4E0D\u80FD\u4F4D\u4E8E\u5E94\u7528\u5B89\u88C5\u76EE\u5F55\u5185\u3002",
@@ -5785,9 +5795,9 @@ var zh = {
   "wallpaper.status.displayUnavailable": "\u9009\u4E2D\u7684\u663E\u793A\u5668\u5F53\u524D\u4E0D\u53EF\u7528",
   "wallpaper.status.requestFailed": "\u65E0\u6CD5\u8FDE\u63A5\u672C\u5730\u58C1\u7EB8\u670D\u52A1",
   "wallpaper.status.unsupported": "\u5F53\u524D\u7CFB\u7EDF\u4E0D\u652F\u6301\u58C1\u7EB8\u66F4\u65B0",
-  "wallpaper.tray.open": "\u6253\u5F00 PiCaptain",
+  "wallpaper.tray.open": `\u6253\u5F00 ${productName}`,
   "wallpaper.tray.refresh": "\u7ACB\u5373\u66F4\u6362\u58C1\u7EB8",
-  "wallpaper.tray.quit": "\u9000\u51FA PiCaptain"
+  "wallpaper.tray.quit": `\u9000\u51FA ${productName}`
 };
 
 // shared/i18n/t.ts
@@ -5837,9 +5847,9 @@ var ORIGINAL_WALLPAPERS_KEY = "wallpaperOriginals";
 var LAST_UPDATED_AT_KEY = "wallpaperLastUpdatedAt";
 var GENERATED_DIR_NAME = "wallpapers";
 var DISPLAY_DIR_PATTERN = /^display-[a-f0-9]{16}$/;
-var GENERATED_FILE_PREFIX = "picaptain-wallpaper-";
-var GENERATED_FILE_PATTERN = /^picaptain-wallpaper-\d+\.jpg$/;
-var GENERATED_TEMP_PATTERN = /^picaptain-wallpaper-\d+\.tmp\.jpg$/;
+var GENERATED_FILE_PREFIX = "picpin-wallpaper-";
+var GENERATED_FILE_PATTERN = /^picpin-wallpaper-\d+\.jpg$/;
+var GENERATED_TEMP_PATTERN = /^picpin-wallpaper-\d+\.tmp\.jpg$/;
 var DISPLAY_CHANGE_DEBOUNCE_MS = 800;
 var DISPLAY_ENUMERATION_RETRY_DELAYS_MS = [0, 300, 900];
 var DISPLAY_RECOVERY_DELAYS_MS = [2e3, 5e3, 15e3];
@@ -5854,7 +5864,7 @@ var WINDOWS_DESKTOP_API_SOURCE = [
   "using System;",
   "using System.Collections.Generic;",
   "using System.Runtime.InteropServices;",
-  "namespace PiCaptain {",
+  "namespace PicPin {",
   "  [StructLayout(LayoutKind.Sequential)]",
   "  public struct NativeRect { public int Left; public int Top; public int Right; public int Bottom; }",
   '  [ComImport, Guid("B92B56A9-8B55-4E14-9A89-0199BBB6F93B"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]',
@@ -5918,7 +5928,7 @@ var getWindowsApiScript = (body) => [
 var wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs));
 var queryWindowsDisplays = async () => {
   const script = getWindowsApiScript(
-    "[PiCaptain.DesktopWallpaperApi]::GetDisplays() | ConvertTo-Json -Compress"
+    "[PicPin.DesktopWallpaperApi]::GetDisplays() | ConvertTo-Json -Compress"
   );
   const { stdout } = await execFileAsync(
     "powershell.exe",
@@ -5968,7 +5978,7 @@ var listSystemDisplays = async (deps) => {
 var applyWindowsWallpaper = async (displayId, imagePath) => {
   const wallpaperArgument = imagePath === null ? "$null" : `'${escapePowerShellLiteral(imagePath)}'`;
   const script = getWindowsApiScript(
-    `[PiCaptain.DesktopWallpaperApi]::SetWallpaper('${escapePowerShellLiteral(displayId)}', ${wallpaperArgument})`
+    `[PicPin.DesktopWallpaperApi]::SetWallpaper('${escapePowerShellLiteral(displayId)}', ${wallpaperArgument})`
   );
   await execFileAsync(
     "powershell.exe",
@@ -5978,7 +5988,7 @@ var applyWindowsWallpaper = async (displayId, imagePath) => {
 };
 var getWindowsWallpaper = async (displayId) => {
   const script = getWindowsApiScript(
-    `[PiCaptain.DesktopWallpaperApi]::GetWallpaper('${escapePowerShellLiteral(displayId)}') | ConvertTo-Json -Compress`
+    `[PicPin.DesktopWallpaperApi]::GetWallpaper('${escapePowerShellLiteral(displayId)}') | ConvertTo-Json -Compress`
   );
   const { stdout } = await execFileAsync(
     "powershell.exe",
@@ -6823,9 +6833,6 @@ var WallpaperService = class {
 };
 
 // electron/main.ts
-if (!import_electron4.app.isPackaged) {
-  import_electron4.app.setName("PiCaptain");
-}
 Object.assign(console, import_electron_log2.default.functions);
 import_electron_log2.default.transports.file.level = "info";
 import_electron_log2.default.transports.file.maxSize = 5 * 1024 * 1024;
@@ -6848,12 +6855,8 @@ var DEFAULT_TOGGLE_WINDOW_SHORTCUT = process.platform === "darwin" ? "Command+L"
 var APP_ID = "com.picaptain.app";
 var UPDATE_FEED_URL = "https://xget-5sd.pages.dev/gh/moayuisuda/OnlyRef/releases/latest/download";
 var DEV_APP_UPDATE_CONFIG_FILE = "dev-app-update.yml";
-var DEV_UPDATER_CACHE_DIR_NAME = "picaptain-updater";
+var DEV_UPDATER_CACHE_DIR_NAME = "picpin-updater";
 var WINDOW_ICON_PATH = import_path7.default.join(__dirname, "../resources/icon.png");
-var STORAGE_ROOT_CONFIG_PATH = import_path7.default.join(
-  import_electron4.app.getPath("userData"),
-  "picaptain_config.json"
-);
 var toggleWindowShortcut = DEFAULT_TOGGLE_WINDOW_SHORTCUT;
 var isSettingsOpen = false;
 var hasPendingSecondInstanceRestore = false;
@@ -6909,7 +6912,7 @@ function syncWallpaperTray(enabled) {
   if (wallpaperTray || !import_electron4.app.isReady()) return;
   const locale = normalizeLocale(import_electron4.app.getLocale());
   wallpaperTray = new import_electron4.Tray(WINDOW_ICON_PATH);
-  wallpaperTray.setToolTip("PiCaptain");
+  wallpaperTray.setToolTip(import_electron4.app.getName());
   wallpaperTray.setContextMenu(
     import_electron4.Menu.buildFromTemplate([
       {
@@ -6945,23 +6948,6 @@ var galleryPreviewPayload = null;
 var hasSingleInstanceLock = import_electron4.app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   import_electron4.app.quit();
-}
-var ensureSettingsStoreConfigured = () => {
-  configureSettingsStore(import_path7.default.join(getStorageDir(), "settings.json"));
-};
-async function hasPersistedStorageRoot() {
-  if (!await lockedFs.pathExists(STORAGE_ROOT_CONFIG_PATH)) {
-    return false;
-  }
-  try {
-    const raw = await lockedFs.readJson(
-      STORAGE_ROOT_CONFIG_PATH
-    );
-    return typeof (raw == null ? void 0 : raw.storageDir) === "string" && raw.storageDir.trim().length > 0;
-  } catch (error) {
-    import_electron_log2.default.warn("Failed to read storage root config", error);
-    return false;
-  }
 }
 var normalizeComparablePath = (targetPath) => {
   const resolved = import_path7.default.resolve(targetPath).replace(/[\\/]+$/, "");
@@ -7034,7 +7020,6 @@ async function loadShortcuts() {
 }
 async function readPersistedSettings() {
   try {
-    ensureSettingsStoreConfigured();
     const settings = await readSettings();
     if (settings && typeof settings === "object") {
       return settings;
@@ -7045,7 +7030,6 @@ async function readPersistedSettings() {
 }
 async function writePersistedSettings(patch) {
   try {
-    ensureSettingsStoreConfigured();
     await patchSettings(patch);
   } catch (error) {
     import_electron_log2.default.error("Failed to write settings", error);
@@ -7771,7 +7755,7 @@ function getUvCandidates() {
   const candidates = [];
   const bundled = getBundledUvPath();
   if (bundled) candidates.push(bundled);
-  const env = (_a = process.env.PROREF_UV_PATH) == null ? void 0 : _a.trim();
+  const env = (_a = process.env.PICPIN_UV_PATH) == null ? void 0 : _a.trim();
   if (env) candidates.push(env);
   candidates.push(getManagedUvPath());
   const uniq = [];
@@ -8008,7 +7992,7 @@ async function ensureUvInstalled(onProgress) {
   if (existing) return existing;
   const uvPath = getManagedUvPath();
   if (await lockedFs.pathExists(uvPath)) {
-    process.env.PROREF_UV_PATH = uvPath;
+    process.env.PICPIN_UV_PATH = uvPath;
     return uvPath;
   }
   await lockedFs.ensureDir(import_path7.default.dirname(uvPath));
@@ -8043,12 +8027,12 @@ async function ensureUvInstalled(onProgress) {
   if (process.platform !== "win32") {
     await withFileLock(uvPath, () => import_fs_extra7.default.chmod(uvPath, 493));
   }
-  process.env.PROREF_UV_PATH = uvPath;
+  process.env.PICPIN_UV_PATH = uvPath;
   return uvPath;
 }
 async function preparePythonRuntime(parent, reportEnvInit) {
   const modelDir = getModelDir();
-  process.env.PROREF_MODEL_DIR = modelDir;
+  process.env.PICPIN_MODEL_DIR = modelDir;
   reportEnvInit("envInit.preparing", 0);
   console.log("Ensuring uv installation...");
   const uvPath = await ensureUvInstalled((statusKey, progress) => {
@@ -8081,8 +8065,8 @@ Dir: ${pythonDir}` : t(locale, "dialog.pythonSetupFailedDetail", {
 async function ensureModelReady(parent, options = {}) {
   const { reportProgress } = options;
   const modelDir = getModelDir();
-  process.env.PROREF_MODEL_DIR = modelDir;
-  const debug = process.env.PROREF_DEBUG_MODEL === "1";
+  process.env.PICPIN_MODEL_DIR = modelDir;
+  const debug = process.env.PICPIN_DEBUG_MODEL === "1";
   if (debug) console.log("[model] dir:", modelDir);
   const modelMissing = !await hasRequiredModelFiles(modelDir);
   if (!modelMissing) {
@@ -8133,7 +8117,7 @@ async function ensureModelReady(parent, options = {}) {
       cwd: pythonDir,
       env: {
         ...process.env,
-        PROREF_MODEL_DIR: modelDir,
+        PICPIN_MODEL_DIR: modelDir,
         PYTHONIOENCODING: "utf-8",
         PYTHONUTF8: "1",
         TRANSFORMERS_VERBOSITY: "error",
@@ -8541,17 +8525,19 @@ import_electron4.ipcMain.handle(
   }
 );
 import_electron4.app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return;
   import_electron_log2.default.info("App starting...");
   import_electron_log2.default.info("Log file location:", import_electron_log2.default.transports.file.getFile().path);
   import_electron_log2.default.info("App path:", import_electron4.app.getAppPath());
   import_electron_log2.default.info("User data:", import_electron4.app.getPath("userData"));
   await prepareAutoUpdater();
-  if (process.platform === "win32") {
-    import_electron4.app.setAppUserModelId(APP_ID);
-  }
-  const hasStorageRoot = await hasPersistedStorageRoot();
-  const taskLoadShortcuts = loadShortcuts();
   try {
+    if (process.platform === "win32") {
+      import_electron4.app.setAppUserModelId(APP_ID);
+    }
+    await restoreStoragePaths();
+    const hasStorageRoot = hasPersistedStorageRoot();
+    const taskLoadShortcuts = loadShortcuts();
     if (hasStorageRoot) {
       await Promise.all([taskLoadShortcuts, startServer2()]);
     } else {
@@ -8576,6 +8562,7 @@ import_electron4.app.whenReady().then(async () => {
     const message = e instanceof Error ? e.message : String(e);
     console.error("[startup] initialization failed:", message);
     import_electron_log2.default.error("[startup] initialization failed:", message);
+    import_electron4.dialog.showErrorBox(import_electron4.app.getName(), message);
     import_electron4.app.quit();
     return;
   }

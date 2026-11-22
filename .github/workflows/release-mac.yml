@@ -30,12 +30,12 @@ jobs:
         run: npm ci
 
       - name: Build macOS artifacts
-        run: npm run build:mac -- --publish never
+        run: npm run build -- --mac --arm64 --publish never
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: picaptain-mac
+          name: picpin-mac
           path: app/dist/**
 
   publish-release:
@@ -47,7 +47,7 @@ jobs:
       - name: Download macOS artifacts
         uses: actions/download-artifact@v4
         with:
-          name: picaptain-mac
+          name: picpin-mac
           path: release-assets/mac
 
       - name: Publish GitHub Release assets

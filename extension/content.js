@@ -1,4 +1,4 @@
-// OnlyRef Collector Content Script
+// PicPin Collector Content Script
 
 const API_PORT = 30003;
 const API_BASE = `http://localhost:${API_PORT}/api`;
@@ -354,7 +354,7 @@ function resolveDragSourceElement(target) {
 
 function createMenu(tags) {
   const menu = document.createElement("div");
-  menu.id = "pic-captain-menu";
+  menu.id = "picpin-menu";
   menu.style.cssText = `
     position: fixed;
     z-index: 2147483647;
@@ -570,7 +570,7 @@ async function showMenu(sourceElement, isLeft) {
 }
 
 function hideMenu() {
-  const el = document.getElementById("pic-captain-menu");
+  const el = document.getElementById("picpin-menu");
   if (el) el.remove();
 }
 
@@ -632,9 +632,9 @@ function showNotification(message, type) {
     animation: slideDown 0.2s ease-out;
   `;
 
-  if (!document.getElementById("pic-captain-styles")) {
+  if (!document.getElementById("picpin-styles")) {
     const style = document.createElement("style");
-    style.id = "pic-captain-styles";
+    style.id = "picpin-styles";
     style.textContent = `
       @keyframes slideDown {
         from { transform: translate(-50%, -10px); opacity: 0; }

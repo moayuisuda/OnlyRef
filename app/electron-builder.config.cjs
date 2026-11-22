@@ -39,8 +39,8 @@ const getUvExtraResources = () => {
 };
 
 module.exports = {
+  // Keep the published installer identity across product renames.
   appId: "com.picaptain.app",
-  productName: "PiCaptain",
   icon: "resources/icon.png",
   files: [
     "dist-electron",
