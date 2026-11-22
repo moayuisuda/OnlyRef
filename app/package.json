@@ -2,7 +2,7 @@
   "name": "picpin",
   "productName": "PicPin",
   "private": true,
-  "version": "1.0.28",
+  "version": "1.0.29",
   "type": "module",
   "main": "dist-electron/main.cjs",
   "scripts": {
